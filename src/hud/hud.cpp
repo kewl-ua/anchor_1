@@ -476,6 +476,42 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Takes ammunition from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
             return;
+        case engine::StructureType::Trench:
+            draw_text(TextFormat("At a position (standing %d s): %d%% of hits taken by the walls.",
+                                 static_cast<int>(engine::kSettleTicks / engine::kTicksPerSecond), engine::kTrenchCover),
+                      area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text(TextFormat("Walking along it: %d%%, and own fire outward -%d%%.", engine::kTrenchWalkingCover,
+                                 100 - engine::kTrenchWalkingFirePercent),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text(s.parapet ? "Parapet: +25% cover from the front." : "Tracks cross it slowly, wheels can't.",
+                      area.x, line4, kCardFontSize, theme::kTextDim);
+            return;
+        case engine::StructureType::Foxhole:
+            draw_text(TextFormat("%d%% of hits taken by the walls; own accuracy -%d%%.", engine::kFoxholeCover,
+                                 100 - engine::kFoxholeAccuracyPercent),
+                      area.x, line2, kCardFontSize, theme::kTextDim);
+            if (s.upgrading) {
+                const float done = static_cast<float>(s.upgrade_work) / static_cast<float>(engine::kDugoutWork);
+                draw_text(TextFormat("Digging out a dugout: %d%% (the men in it dig)", static_cast<int>(done * 100)),
+                          area.x, line3, kCardFontSize, theme::kWarning);
+                DrawRectangleRec({area.x, line4 + 4, area.width, 6}, {0, 0, 0, 170});
+                DrawRectangleRec({area.x, line4 + 4, area.width * done, 6}, {230, 200, 60, 255});
+            } else if (s.parapet) {
+                draw_text("Parapet: +25% cover from the front.", area.x, line3, kCardFontSize, theme::kTextDim);
+            }
+            return;
+        case engine::StructureType::Parapet:
+            draw_text(TextFormat("+%d%% cover against fire from the front.", engine::kParapetCover), area.x, line2,
+                      kCardFontSize, theme::kTextDim);
+            return;
+        case engine::StructureType::Dugout:
+            draw_text(TextFormat("Shelter: %d / %d inside. Bullets and fragments don't reach them.",
+                                 static_cast<int>(s.garrison.size()), def.capacity),
+                      area.x, line2, kCardFontSize, theme::kText);
+            draw_text("No firing from inside, and no seeing out.", area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("A grenade through the entrance hurts those inside.", area.x, line4, kCardFontSize,
+                      theme::kWarning);
+            return;
         case engine::StructureType::FuelDepot:
             draw_text("Takes fuel from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text(TextFormat("Burns if destroyed: %d%% of the fuel is lost.", engine::kFuelDepotLossPercent),

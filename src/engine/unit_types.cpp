@@ -44,6 +44,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
                    .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1)},
         .cost = {1, 25, 0, 20, 0},
         .train_time = seconds(12),
+        .abilities = {AbilityId::DigTrench, AbilityId::DigFoxhole, AbilityId::BuildParapet},
+        .ability_count = 3,
     },
     {
         .name = "Machine gunner",
@@ -145,6 +147,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .sight = tiles(6),
         .mass = 10,
         .vehicle = true,
+        .wheeled = true,
         .weapon = {.name = "Unarmed", .damage = 0, .damage_type = DamageType::Bullet, .range = tiles(0),
                    .reload = seconds(1), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
                    .accuracy = 0, .miss_spread = tiles(0)},
@@ -170,6 +173,25 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .detection = tiles(4),
         .stealthy = true,
         .sector_range = tiles(15),
+    },
+    {
+        // Lighter than a rifleman, deadlier up close: storms trenches and houses.
+        .name = "Assault trooper",
+        .short_name = "AST",
+        .max_hp = 32,
+        .armor = {0, 0, 45},
+        .speed = tiles_per_second(23, 20),
+        .radius = tiles(1, 5),
+        .sight = tiles(7),
+        .mass = 1,
+        .vehicle = false,
+        .weapon = {.name = "Short assault rifle", .damage = 7, .damage_type = DamageType::Bullet,
+                   .range = tiles(4), .reload = seconds(4, 5), .projectile_speed = kInstantHit,
+                   .splash_radius = kNoSplash, .accuracy = 75, .miss_spread = tiles(1)},
+        .cost = {1, 25, 0, 35, 0},
+        .train_time = seconds(15),
+        .abilities = {AbilityId::ThrowGrenade},
+        .ability_count = 1,
     },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
@@ -200,6 +222,18 @@ constexpr AbilityDef kAbilities[] = {
      .weapon = {.name = "30mm grenade", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(6),
                 .reload = 0, .projectile_speed = tiles_per_second(10), .splash_radius = tiles(1),
                 .accuracy = 75, .miss_spread = tiles(1)}},
+    {.name = "Dig a trench (drag a line)", .label = "Trench", .target = AbilityTarget::Line,
+     .range = tiles(0), .cooldown = 0},
+    {.name = "Dig a foxhole here: hits -50%, own accuracy -20%", .label = "Foxhole",
+     .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
+    {.name = "Parapet facing a direction: +25% cover from the front", .label = "Parapet",
+     .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
+    // Thrown in: into a trench, through a dugout's entrance or a window.
+    {.name = "Hand grenade: into a trench, a dugout, a house", .label = "Grenade", .target = AbilityTarget::Point,
+     .range = tiles(3), .cooldown = seconds(15),
+     .weapon = {.name = "Hand grenade", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(3),
+                .reload = 0, .projectile_speed = tiles_per_second(8), .splash_radius = tiles(1),
+                .accuracy = 85, .miss_spread = tiles(1, 2)}},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -221,7 +255,8 @@ constexpr StructureDef kStructureTypes[] = {
      .roster = {UnitTypeId::Worker, UnitTypeId::Truck}, .roster_size = 2},
     {.name = "Infantry barracks", .max_hp = 1500, .armor = {0, 10, 60},
      .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 150, 0, 0}, .build_time = seconds(30),
-     .roster = {UnitTypeId::Rifleman, UnitTypeId::MachineGunner, UnitTypeId::Grenadier}, .roster_size = 3},
+     .roster = {UnitTypeId::Rifleman, UnitTypeId::MachineGunner, UnitTypeId::Grenadier, UnitTypeId::Assault},
+     .roster_size = 4},
     {.name = "Armor barracks", .max_hp = 2200, .armor = {0, 15, 70},
      .buildable = true, .width = 4, .height = 4, .cost = {0, 0, 250, 0, 50}, .build_time = seconds(45),
      .roster = {UnitTypeId::Tank, UnitTypeId::Ifv}, .roster_size = 2},
@@ -238,6 +273,12 @@ constexpr StructureDef kStructureTypes[] = {
     {.name = "Recon barracks", .max_hp = 1000, .armor = {0, 10, 60},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 100, 0, 0}, .build_time = seconds(25),
      .roster = {UnitTypeId::Scout}, .roster_size = 1},
+    // Field works, dug by infantry one tile at a time; shells fill them in.
+    {.name = "Trench", .max_hp = 200, .armor = {0, 10, 60}},
+    {.name = "Foxhole", .max_hp = 150, .armor = {0, 10, 60}},
+    {.name = "Parapet", .max_hp = 150, .armor = {0, 10, 60}},
+    // Logs and earth: holds against mortars and light shells, not against heavy ones.
+    {.name = "Dugout", .max_hp = 1200, .armor = {0, 30, 80}, .capacity = 8},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

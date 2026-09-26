@@ -76,6 +76,8 @@ public:
     bool targeting() const { return targeting_ != Targeting::None; }
     // The command grid for the current selection, for the HUD to draw.
     std::span<const hud::CommandButton> command_buttons() const { return buttons_; }
+    // A trench being dragged out: its tiles.
+    std::span<const engine::TilePos> trench_preview() const { return trench_preview_; }
 
 private:
     void prune_selection(const engine::World& world);
@@ -95,7 +97,9 @@ private:
     void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);
 
     // The command grid. Each cell holds an action; its hotkey is the cell's.
-    enum class Action : uint8_t { None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability };
+    enum class Action : uint8_t {
+        None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload
+    };
     struct Cell {
         Action action = Action::None;
         uint8_t param = 0;  // the unit, building or skill
@@ -119,6 +123,8 @@ private:
     std::optional<engine::StructureType> placing_;
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
+    std::optional<Vector2> line_start_;  // a line skill being dragged: where it started
+    std::vector<engine::TilePos> trench_preview_;
     std::array<hud::CommandButton, hud::kGridSlots> buttons_{};
     std::array<Cell, hud::kGridSlots> cells_{};
 };

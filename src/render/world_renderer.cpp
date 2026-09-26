@@ -183,6 +183,7 @@ void WorldRenderer::remember(const engine::World& world) {
     }
     for (const engine::Structure& s : world.structures()) {
         if (s.owner == viewer_ || s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
+        if (engine::is_fieldwork(s.type) && !s.parapet) continue;  // the remembered ground shows it
         if (reveal_ || world.sees(viewer_, s)) remembered_[s.id] = s;
     }
     // Gone, and we have seen the empty spot: forget it.
@@ -492,6 +493,64 @@ void draw_rail(const engine::TileMap& map, int tx, int ty, bool along_x) {
     for (const float v : {0.38f, 0.62f}) DrawLineEx(at(0.0f, v), at(1.0f, v), 1.2f, lit({178, 180, 184, 255}));
 }
 
+// Field works on a tile: a trench is a dark ditch joining its neighbours,
+// a foxhole a pit with a rim of spoil, a dugout a mound roofed with logs.
+template <typename Linked>
+void draw_works(const engine::TileMap& map, int tx, int ty, engine::Terrain terrain, Linked linked) {
+    const Vector2 c{static_cast<float>(tx) + 0.5f, static_cast<float>(ty) + 0.5f};
+    const Color ditch = lit({52, 44, 34, 255});
+    const Color spoil = lit({138, 116, 84, 255});
+    switch (terrain) {
+        case engine::Terrain::Trench: {
+            constexpr int kSteps[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            bool joined = false;
+            for (const auto& d : kSteps) {
+                if (!linked(tx + d[0], ty + d[1])) continue;
+                joined = true;
+                const Vector2 edge{c.x + 0.5f * static_cast<float>(d[0]), c.y + 0.5f * static_cast<float>(d[1])};
+                DrawLineEx(on_terrain(map, c), on_terrain(map, edge), 7.0f, spoil);
+                DrawLineEx(on_terrain(map, c), on_terrain(map, edge), 4.0f, ditch);
+            }
+            fill_ground_ellipse(on_terrain(map, c), joined ? 0.12f : 0.25f, {52, 44, 34, 255});
+            break;
+        }
+        case engine::Terrain::Foxhole:
+            fill_ground_ellipse(on_terrain(map, c), 0.34f, {138, 116, 84, 255});
+            fill_ground_ellipse(on_terrain(map, c), 0.22f, {52, 44, 34, 255});
+            break;
+        case engine::Terrain::Dugout: {
+            const Vector2 top = on_terrain(map, c, 4.0f);
+            fill_ground_ellipse(on_terrain(map, c), 0.46f, {118, 100, 74, 255});
+            fill_ground_ellipse(top, 0.36f, {104, 88, 64, 255});
+            for (const float k : {-0.2f, 0.0f, 0.2f}) {  // logs of the roof
+                DrawLineEx(on_terrain(map, {c.x - 0.25f, c.y + k}, 5.0f), on_terrain(map, {c.x + 0.25f, c.y + k}, 5.0f),
+                           2.0f, lit({92, 70, 48, 255}));
+            }
+            const Vector2 door = on_terrain(map, {c.x + 0.3f, c.y + 0.3f});
+            DrawRectangleRec({door.x - 3.0f, door.y - 4.0f, 6.0f, 4.0f}, lit({30, 26, 22, 255}));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// A parapet: a bank of earth across the tile on its front side.
+void draw_parapet(const engine::TileMap& map, const engine::Structure& s, float light) {
+    if (s.tiles.empty()) return;
+    g_light = light;
+    const Vector2 c{static_cast<float>(s.tiles.front().x) + 0.5f, static_cast<float>(s.tiles.front().y) + 0.5f};
+    Vector2 f = to_vector2(s.facing);
+    const float len = std::hypot(f.x, f.y);
+    f = len > 0.0f ? Vector2{f.x / len, f.y / len} : Vector2{1.0f, 0.0f};
+    const Vector2 mid{c.x + f.x * 0.36f, c.y + f.y * 0.36f};
+    const Vector2 a{mid.x - f.y * 0.45f, mid.y + f.x * 0.45f};
+    const Vector2 b{mid.x + f.y * 0.45f, mid.y - f.x * 0.45f};
+    DrawLineEx(on_terrain(map, a, 2.0f), on_terrain(map, b, 2.0f), 8.0f, lit({112, 94, 68, 255}));
+    DrawLineEx(on_terrain(map, a, 4.0f), on_terrain(map, b, 4.0f), 4.0f, lit({146, 124, 90, 255}));
+    g_light = 1.0f;
+}
+
 // Grey boulders of a stone outcrop, fewer as it is quarried away.
 void draw_rock(const engine::TileMap& map, int tx, int ty, int32_t left) {
     const uint32_t h = tile_hash(tx, ty);
@@ -666,7 +725,7 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
 
 void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, float alpha,
                          std::span<const engine::EntityId> selection, engine::EntityId selected_structure,
-                         const BuildGhost* ghost) const {
+                         const BuildGhost* ghost, std::span<const engine::TilePos> trench) const {
     const engine::TileMap& map = world.map();
     const Rectangle view = camera.visible_world_rect();
     auto is_selected = [&](engine::EntityId id) {
@@ -678,6 +737,14 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     draw_terrain(world, view);
     draw_remains(map);
 
+    // Parapets: ours as they are, others' as last seen.
+    for (const engine::Structure& s : world.structures()) {
+        if (s.parapet && s.owner == viewer_) draw_parapet(map, s, 1.0f);
+    }
+    for (const auto& [id, s] : remembered_) {
+        if (s.parapet) draw_parapet(map, s, reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight);
+    }
+
     for (const engine::Unit& u : world.units()) {
         if (!is_selected(u.id) || u.inside) continue;
         const float radius = to_float(engine::unit_type(u.type).radius) + 0.1f;
@@ -687,6 +754,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     draw_pings(map);
 
     if (ghost) draw_ghost(map, *ghost);
+    for (const engine::TilePos& t : trench) {
+        const auto x = static_cast<float>(t.x);
+        const auto y = static_cast<float>(t.y);
+        const Color color = world.diggable(t) ? theme::kSelection : theme::kDanger;
+        fill_quad(on_terrain(map, {x, y}), on_terrain(map, {x + 1, y}), on_terrain(map, {x + 1, y + 1}),
+                  on_terrain(map, {x, y + 1}), ColorAlpha(color, 0.3f));
+    }
     if (const engine::Structure* s = world.find_structure(selected_structure)) {
         const Rectangle r = footprint(*s, -0.15f);
         const Vector2 corners[4] = {on_terrain(map, {r.x, r.y}), on_terrain(map, {r.x + r.width, r.y}),
@@ -765,11 +839,17 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
         drawables.push_back({.depth = c.x + c.y + 1.0f, .building = &s, .light = light});
     };
+    // Field works and dugouts are holes in the ground, drawn with it.
+    auto is_building = [](const engine::Structure& s) {
+        return s.type != engine::StructureType::House && s.type != engine::StructureType::Bridge &&
+               !engine::is_fieldwork(s.type) && s.type != engine::StructureType::Dugout;
+    };
     for (const engine::Structure& s : world.structures()) {
-        if (s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
-        if (s.owner == viewer_) add_building(s, 1.0f);
+        if (is_building(s) && s.owner == viewer_) add_building(s, 1.0f);
     }
-    for (const auto& [id, s] : remembered_) add_building(s, reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight);
+    for (const auto& [id, s] : remembered_) {
+        if (is_building(s)) add_building(s, reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight);
+    }
     std::vector<TrainCar> cars;
     collect_trains(world, alpha, cars);
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
@@ -845,6 +925,14 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         const engine::Terrain terrain = seen_terrain_[static_cast<size_t>(ty * map.width() + tx)];
         g_light = state == kInView ? 1.0f : kFogLight;
         fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
+        if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
+            terrain == engine::Terrain::Dugout) {
+            draw_works(map, tx, ty, terrain, [&](int x, int y) {
+                if (!map.contains_tile(x, y)) return false;
+                const engine::Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
+                return t == engine::Terrain::Trench || t == engine::Terrain::Foxhole || t == engine::Terrain::Dugout;
+            });
+        }
         if (terrain == engine::Terrain::Rail) {
             auto track = [&](int x, int y) {
                 return map.contains_tile(x, y) &&

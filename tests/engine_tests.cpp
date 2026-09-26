@@ -350,9 +350,11 @@ void test_demo_map_is_fair() {
         CHECK(symmetric);
         CHECK(highest >= 3);
         for (size_t t = 0; t < kTerrainCount; ++t) {
-            // Every kind of natural terrain is there; ruins and buildings come later.
+            // Every kind of natural terrain is there; ruins, buildings and field works come later.
             const auto terrain = static_cast<Terrain>(t);
-            if (terrain != Terrain::Ruins && terrain != Terrain::Building) CHECK(counts[t] > 0);
+            const bool made = terrain == Terrain::Ruins || terrain == Terrain::Building || terrain == Terrain::Trench ||
+                              terrain == Terrain::Foxhole || terrain == Terrain::Dugout;
+            if (!made) CHECK(counts[t] > 0);
         }
         CHECK(counts[static_cast<size_t>(Terrain::Ruins)] == 0);  // nothing destroyed yet
 
@@ -821,6 +823,282 @@ void test_skills_need_the_unit_and_the_time() {
     issue(sim, use_ability(0, {ifv}, AbilityId::LobGrenade, 8, 12));  // too soon
     for (int i = 0; i < 5; ++i) sim.step();
     CHECK(sim.world().find_unit(ifv)->ability_ready[1] == ready);
+}
+
+// --- Field works ---------------------------------------------------------------
+
+Command dig_trench(std::vector<EntityId> diggers, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    Command cmd = use_ability(0, std::move(diggers), AbilityId::DigTrench, x0, y0);
+    cmd.target_end = at(x1, y1);
+    return cmd;
+}
+
+// The middle of tile (10, 10), where our man stands in these tests.
+FixedVec2 post() { return at_half(21, 21); }
+
+// Riflemen dig a trench along a line; tracks cross it slowly, wheels not at all.
+void test_riflemen_dig_a_trench() {
+    Simulation sim(1, TileMap(30, 20));
+    std::vector<EntityId> squad;
+    for (int i = 0; i < 2; ++i) squad.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(5, 8 + i)));
+    const EntityId mg = sim.world_for_setup().spawn_unit(0, UnitTypeId::MachineGunner, at(5, 12));
+    issue(sim, dig_trench(squad, 10, 0, 10, 19));
+    issue(sim, dig_trench({mg}, 12, 0, 12, 5));  // not his job
+    for (int i = 0; i < 6000; ++i) sim.step();
+
+    for (int y = 0; y < kMaxTrenchLength; ++y) CHECK(sim.world().map().terrain(10, y) == Terrain::Trench);
+    CHECK(sim.world().map().terrain(10, kMaxTrenchLength) == Terrain::Grass);  // one order digs this much
+    CHECK(sim.world().map().terrain(12, 0) == Terrain::Grass);
+    for (EntityId id : squad) CHECK(sim.world().find_unit(id)->order == Order::Idle);
+    const Structure* t = sim.world().structure_at({10, 5});
+    CHECK(t && t->type == StructureType::Trench && t->owner == 0);
+
+    const TileMap& map = sim.world().map();
+    CHECK(map.passable({10, 5}, MoveClass::Foot) && map.passable({10, 5}, MoveClass::Vehicle));
+    CHECK(!map.passable({10, 5}, MoveClass::Wheeled));
+    CHECK(move_class(unit_type(UnitTypeId::Truck)) == MoveClass::Wheeled);
+    CHECK(move_class(unit_type(UnitTypeId::Tank)) == MoveClass::Vehicle);
+}
+
+// Damage a rifleman on post() takes in 5 s from a machine gun firing at the
+// spot from 5 tiles east or west, summed over 20 duels. `prepare` digs him in.
+template <typename Prepare>
+int32_t damage_taken(bool from_east, Prepare prepare) {
+    int32_t total = 0;
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        Simulation sim(seed, TileMap(30, 20));
+        const EntityId man = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, post());
+        prepare(sim, man);
+        const Fixed dx = Fixed::from_int(from_east ? 5 : -5);
+        const EntityId gun = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, {post().x + dx, post().y});
+        Command fire = make_order(CommandType::AttackGround, 1, {gun}, 0, 0);
+        fire.target = post();
+        sim.schedule(sim.world().tick(), fire);
+        for (int i = 0; i < 100; ++i) sim.step();
+        total += unit_type(UnitTypeId::Rifleman).max_hp - hp_of(sim, man);
+    }
+    return total;
+}
+
+void in_the_open(Simulation&, EntityId) {}
+
+void settle(Simulation& sim) {
+    for (Tick i = 0; i < kSettleTicks + 2; ++i) sim.step();
+}
+
+// A foxhole takes half the hits; a trench too, once the man is at a position.
+void test_foxholes_and_trenches_give_cover() {
+    const int32_t open = damage_taken(false, in_the_open);
+    const int32_t foxhole = damage_taken(false, [](Simulation& sim, EntityId) {
+        sim.world_for_setup().place_structure(StructureType::Foxhole, 0, {10, 10}, 1, 1);
+    });
+    const int32_t trench = damage_taken(false, [](Simulation& sim, EntityId) {
+        sim.world_for_setup().place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+        settle(sim);
+    });
+    CHECK(open > 0);
+    for (const int32_t dug_in : {foxhole, trench}) {
+        CHECK(dug_in * 100 < open * 70);
+        CHECK(dug_in * 100 > open * 30);
+    }
+}
+
+// A parapet helps only against fire from its front.
+void test_parapet_faces_one_way() {
+    auto parapet_east = [](Simulation& sim, EntityId man) {
+        sim.schedule(sim.world().tick(), use_ability(0, {man}, AbilityId::BuildParapet, 20, 10));
+        for (Tick i = 0; i < kParapetWork + 5; ++i) sim.step();
+        const Structure* mound = sim.world().structure_at({10, 10});
+        CHECK(mound && mound->type == StructureType::Parapet && mound->facing.x > Fixed{});
+    };
+    const int32_t front = damage_taken(true, parapet_east);
+    const int32_t back = damage_taken(false, parapet_east);
+    CHECK(back > 0);
+    CHECK(front * 100 < back * 90);
+}
+
+// A man in a foxhole shoots worse: -20% accuracy.
+void test_foxholes_spoil_the_aim() {
+    auto hits = [](bool foxhole) {
+        int32_t total = 0;
+        for (uint64_t seed = 1; seed <= 20; ++seed) {
+            Simulation sim(seed, TileMap(30, 20));
+            World& w = sim.world_for_setup();
+            if (foxhole) w.place_structure(StructureType::Foxhole, 0, {10, 10}, 1, 1);
+            w.spawn_unit(0, UnitTypeId::Rifleman, post());
+            const EntityId truck = w.spawn_unit(1, UnitTypeId::Truck, {post().x + Fixed::from_int(4), post().y});
+            for (int i = 0; i < 200; ++i) sim.step();
+            total += unit_type(UnitTypeId::Truck).max_hp - hp_of(sim, truck);
+        }
+        return total;
+    };
+    const int32_t open = hits(false);
+    const int32_t dug_in = hits(true);
+    CHECK(open > 0);
+    CHECK(dug_in * 100 < open * 92);
+}
+
+// Fresh into a trench and firing at once, before settling at a position:
+// small arms at a quarter of the damage.
+void test_firing_while_walking_in_a_trench() {
+    Simulation sim(1, TileMap(30, 20));
+    sim.world_for_setup().place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+    sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, post());
+    const EntityId target = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, at_half(29, 21));
+    int32_t first = 0;
+    for (Tick i = 0; i + 5 < kSettleTicks && first == 0; ++i) {
+        sim.step();
+        first = unit_type(UnitTypeId::MachineGunner).max_hp - hp_of(sim, target);
+    }
+    const WeaponDef& rifle = unit_type(UnitTypeId::Rifleman).weapon;
+    CHECK(first > 0 && first <= std::max(1, rifle.damage * kTrenchWalkingFirePercent / 100));
+}
+
+// A rifleman digs a foxhole and puts a parapet on it; on open ground a
+// parapet is a mound of its own.
+void test_riflemen_build_foxholes_and_parapets() {
+    Simulation sim(1, TileMap(30, 20));
+    const EntityId a = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(11, 11));
+    const EntityId b = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(21, 11));
+    sim.schedule(0, use_ability(0, {a}, AbilityId::DigFoxhole, 0, 0));
+    sim.schedule(0, use_ability(0, {b}, AbilityId::BuildParapet, 25, 5));
+    for (Tick i = 0; i < kFoxholeWork + 5; ++i) sim.step();
+    const Structure* hole = sim.world().structure_at({5, 5});
+    CHECK(hole && hole->type == StructureType::Foxhole && !hole->parapet);
+    CHECK(sim.world().map().terrain(5, 5) == Terrain::Foxhole);
+    const Structure* mound = sim.world().structure_at({10, 5});
+    CHECK(mound && mound->type == StructureType::Parapet && mound->parapet && mound->facing.x > Fixed{});
+    CHECK(sim.world().map().terrain(10, 5) == Terrain::Grass);  // a mound, still open ground
+
+    issue(sim, use_ability(0, {a}, AbilityId::BuildParapet, 5, 0));
+    for (Tick i = 0; i < kParapetWork + 5; ++i) sim.step();
+    hole = sim.world().structure_at({5, 5});
+    CHECK(hole && hole->type == StructureType::Foxhole && hole->parapet);
+}
+
+// Up close in a trench fight the walls don't help: from 2 tiles a rifleman
+// hurts a man at a position in a trench about twice as much as from 4.
+void test_trench_fight_ignores_cover() {
+    auto damage_from = [](Fixed distance) {
+        int32_t total = 0;
+        for (uint64_t seed = 1; seed <= 20; ++seed) {
+            Simulation sim(seed, TileMap(30, 20));
+            World& w = sim.world_for_setup();
+            w.place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+            const EntityId target = w.spawn_unit(0, UnitTypeId::MachineGunner, post());
+            settle(sim);
+            const EntityId rifle = w.spawn_unit(1, UnitTypeId::Rifleman, {post().x + distance, post().y});
+            Command fire = make_order(CommandType::AttackGround, 1, {rifle}, 0, 0);
+            fire.target = post();
+            sim.schedule(sim.world().tick(), fire);
+            for (int i = 0; i < 60; ++i) sim.step();
+            total += unit_type(UnitTypeId::MachineGunner).max_hp - hp_of(sim, target);
+        }
+        return total;
+    };
+    const int32_t close = damage_from(kCloseQuarters);
+    const int32_t far = damage_from(Fixed::from_int(4));
+    CHECK(far > 0);
+    CHECK(close * 100 > far * 150);
+}
+
+// Up close the assault trooper hits hardest.
+void test_trench_fight() {
+    auto first_hit = [](UnitTypeId attacker) {
+        Simulation sim(2, TileMap(30, 20));
+        World& w = sim.world_for_setup();
+        w.place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+        const EntityId target = w.spawn_unit(0, UnitTypeId::MachineGunner, post());
+        settle(sim);
+        w.spawn_unit(1, attacker, {post().x + kCloseQuarters, post().y});
+        for (int i = 0; i < 400; ++i) {
+            sim.step();
+            const int32_t lost = unit_type(UnitTypeId::MachineGunner).max_hp - hp_of(sim, target);
+            if (lost > 0) return lost;
+        }
+        return 0;
+    };
+    const WeaponDef& smg = unit_type(UnitTypeId::Assault).weapon;
+    CHECK(first_hit(UnitTypeId::Assault) == smg.damage * kAssaultCloseQuartersPercent / 100);
+    CHECK(first_hit(UnitTypeId::Rifleman) == unit_type(UnitTypeId::Rifleman).weapon.damage);
+}
+
+Command use_ability_at(PlayerId player, std::vector<EntityId> units, AbilityId ability, FixedVec2 where) {
+    Command cmd = use_ability(player, std::move(units), ability, 0, 0);
+    cmd.target = where;
+    return cmd;
+}
+
+// A foxhole dug out into a dugout: materials up front, the men in it do
+// the work and end up inside, sheltered and blind, until a grenade comes in.
+void test_foxhole_becomes_a_dugout() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    Stock two = kDugoutCost;
+    for (int32_t& amount : two) amount *= 2;
+    w.set_stock(0, two);
+    const EntityId hole = w.place_structure(StructureType::Foxhole, 0, {10, 10}, 1, 1);
+    const EntityId empty = w.place_structure(StructureType::Foxhole, 0, {10, 16}, 1, 1);  // nobody in it
+    std::vector<EntityId> men;
+    for (int i = 0; i < 2; ++i) men.push_back(w.spawn_unit(0, UnitTypeId::Rifleman, post()));
+    issue(sim, {.type = CommandType::Upgrade, .player = 0, .target_unit = hole});
+    issue(sim, {.type = CommandType::Upgrade, .player = 0, .target_unit = hole});  // already under way
+    issue(sim, {.type = CommandType::Upgrade, .player = 0, .target_unit = empty});
+    for (Tick i = 0; i < kDugoutWork / 2 + 10; ++i) sim.step();
+    CHECK(sim.world().find_structure(empty)->type == StructureType::Foxhole);  // no one to dig it
+    CHECK(sim.world().find_structure(empty)->upgrading);
+    CHECK(!sim.world().visible(0, {14, 10}));  // underground: they see nothing
+    const Structure* d = sim.world().find_structure(hole);
+    CHECK(d && d->type == StructureType::Dugout);
+    CHECK(sim.world().stock(0) == Stock{});  // both paid up front
+    CHECK(sim.world().map().terrain(10, 10) == Terrain::Dugout);
+    CHECK(d && d->garrison.size() == 2 && d->owner == 0);
+    for (EntityId id : men) CHECK(sim.world().find_unit(id)->inside == hole);
+
+    // Bullets don't reach them, and they don't fire out, even at an enemy our
+    // observation post sees.
+    const EntityId post_scout = w.spawn_unit(0, UnitTypeId::Scout, at_half(21, 7));
+    issue(sim, observe(0, {post_scout}, 14, 10));
+    const EntityId mg = w.spawn_unit(1, UnitTypeId::MachineGunner, at_half(29, 21));
+    for (int i = 0; i < 200; ++i) sim.step();
+    for (EntityId id : men) CHECK(hp_of(sim, id) == unit_type(UnitTypeId::Rifleman).max_hp);
+    const Unit* enemy = sim.world().find_unit(mg);
+    CHECK(enemy && sim.world().sees(0, *enemy));
+    CHECK(hp_of(sim, mg) == unit_type(UnitTypeId::MachineGunner).max_hp);
+
+    // An assault trooper's grenade goes in through the entrance.
+    const EntityId stormer = w.spawn_unit(1, UnitTypeId::Assault, at_half(27, 21));
+    issue(sim, use_ability_at(1, {stormer}, AbilityId::ThrowGrenade, post()));
+    for (int i = 0; i < 60; ++i) sim.step();
+    int hurt = 0;
+    for (EntityId id : men) hurt += hp_of(sim, id) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+    CHECK(hurt == 2);
+
+    // Out they come on order.
+    issue(sim, {.type = CommandType::Unload, .player = 0, .target_unit = hole});
+    for (int i = 0; i < 3; ++i) sim.step();
+    for (EntityId id : men) {
+        const Unit* u = sim.world().find_unit(id);
+        CHECK(!u || u->inside == 0);
+    }
+}
+
+// A grenade lobbed next to a foxhole: its walls don't stop what falls from above.
+void test_grenades_fall_into_foxholes() {
+    int hits = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        Simulation sim(seed, TileMap(30, 20));
+        World& w = sim.world_for_setup();
+        w.place_structure(StructureType::Foxhole, 0, {10, 10}, 1, 1);
+        const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, post());
+        const EntityId stormer = w.spawn_unit(1, UnitTypeId::Assault, at_half(27, 21));
+        sim.schedule(0, use_ability_at(1, {stormer}, AbilityId::ThrowGrenade, at_half(23, 21)));
+        for (int i = 0; i < 30; ++i) sim.step();
+        // The grenade's hit, not a rifle bullet exchanged afterwards.
+        const int32_t grenade = ability_def(AbilityId::ThrowGrenade).weapon.damage;
+        hits += unit_type(UnitTypeId::Rifleman).max_hp - hp_of(sim, man) >= grenade ? 1 : 0;
+    }
+    CHECK(hits >= 7);
 }
 
 // --- Structures --------------------------------------------------------------
@@ -1406,6 +1684,16 @@ int main() {
     test_mg_sweep_hits_along_the_front();
     test_grenade_goes_over_cover();
     test_skills_need_the_unit_and_the_time();
+    test_riflemen_dig_a_trench();
+    test_foxholes_and_trenches_give_cover();
+    test_parapet_faces_one_way();
+    test_foxholes_spoil_the_aim();
+    test_firing_while_walking_in_a_trench();
+    test_riflemen_build_foxholes_and_parapets();
+    test_trench_fight_ignores_cover();
+    test_trench_fight();
+    test_foxhole_becomes_a_dugout();
+    test_grenades_fall_into_foxholes();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

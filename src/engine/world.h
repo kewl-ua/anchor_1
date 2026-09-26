@@ -50,6 +50,35 @@ inline constexpr int32_t kSpotStealthyPercent = 50;
 // observation from several posts finds what one alone would miss.
 inline constexpr Fixed kSectorDetection = Fixed::from_int(4);
 
+// Field works. Cover is the share of hits (percent) the walls take instead
+// of the man: bullets and fragments from the level or below, not from above
+// and not lobbed ones.
+inline constexpr int32_t kFoxholeCover = 50;
+inline constexpr int32_t kTrenchCover = 50;         // at a position in a trench...
+inline constexpr int32_t kTrenchWalkingCover = 10;  // ...walking along it
+inline constexpr int32_t kParapetCover = 25;        // on top, against fire from the front
+inline constexpr Tick kSettleTicks = 2 * kTicksPerSecond;  // standing this long in a trench = at a position
+// Small arms fired from a trench before settling at a position hit this hard (percent).
+inline constexpr int32_t kTrenchWalkingFirePercent = 25;
+inline constexpr int32_t kFoxholeAccuracyPercent = 80;
+// A trench fight: this close, walls protect nobody.
+inline constexpr Fixed kCloseQuarters = Fixed::from_int(2);
+inline constexpr int32_t kAssaultCloseQuartersPercent = 150;  // assault troopers' damage up close
+// Digging, for one rifleman; several at one trench tile dig it faster.
+inline constexpr Tick kTrenchWork = 6 * kTicksPerSecond;
+inline constexpr Tick kFoxholeWork = 8 * kTicksPerSecond;
+inline constexpr Tick kParapetWork = 5 * kTicksPerSecond;
+inline constexpr int32_t kMaxTrenchLength = 16;  // tiles per order
+// A foxhole dug out into a dugout by the men standing in it (up to 4).
+inline constexpr Stock kDugoutCost = {0, 0, 60, 0, 0};
+inline constexpr Tick kDugoutWork = 20 * kTicksPerSecond;
+inline constexpr int32_t kDugoutDiggers = 4;
+inline constexpr int32_t kGrenadeVictims = 3;  // a grenade into a room hurts this many inside
+
+// The tiles of a trench dug from a to b: a 4-connected line, so men can walk
+// along it, at most kMaxTrenchLength long.
+std::vector<TilePos> trench_line(TilePos a, TilePos b);
+
 struct Unit {
     EntityId id = 0;
     PlayerId owner = 0;
@@ -97,6 +126,7 @@ struct Unit {
     AbilityId order_ability = AbilityId::AreaShot;     // Order::Ability
     FixedVec2 order_point2{};                          // the other end of a line
     int32_t shots_left = 0;                            // a burst in progress
+    Tick still = 0;                                    // ticks since it last moved
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -116,6 +146,7 @@ struct Projectile {
     Fixed target_height{};
     WeaponDef weapon{};     // what was fired
     bool lobbed = false;    // arcs over everything and only comes down at the target
+    bool enters = false;    // a hand grenade: goes in through a window or a dugout's entrance
 };
 
 // Where a projectile went off, kept for a few seconds so the renderer (and
@@ -173,6 +204,8 @@ public:
     void set_stock(PlayerId player, const Stock& stock) { stock_[player % kMaxPlayers] = stock; }
     // A player's railway station (the first one), if it still stands.
     const Structure* station_of(PlayerId player) const;
+    // Open ground a trench, foxhole or parapet can go on.
+    bool diggable(TilePos t) const;
 
     // Fog of war, updated every kVisionInterval ticks. A tile is visible when
     // one of the player's units or buildings has a line of sight to it;
@@ -237,12 +270,16 @@ private:
     void apply_haul(const Command& cmd);
     void apply_observe(const Command& cmd);
 
-    // Skills (world_skills.cpp).
+    // Skills and field works (world_skills.cpp).
     void apply_ability(const Command& cmd);
+    void apply_upgrade(const Command& cmd);
+    void apply_unload(const Command& cmd);
     void update_ability(Unit& u);
     void finish_ability(Unit& u);
+    void update_upgrades();
     // A lobbed shot: arcs over everything, comes down at the aim point.
-    void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon);
+    void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters);
+    EntityId place_fieldwork(StructureType type, PlayerId owner, TilePos t, FixedVec2 facing);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
     void update_building(Unit& u);
@@ -311,9 +348,21 @@ private:
     bool move_to(Unit& u, FixedVec2 next);
     bool can_stand(const Unit& u, FixedVec2 p) const;
 
+    // A hit on the way to a unit: where it comes from decides cover and the
+    // high ground bonus.
+    struct Shot {
+        FixedVec2 from;               // the shooter, or the burst
+        uint8_t elevation = 0;        // the shooter's, for the high ground rule
+        bool blast = false;           // fragments from a burst, not a bullet
+        bool plunging = false;        // lobbed or a fireball: walls don't help
+        int32_t damage_percent = 100;
+    };
+    // Percent of hits the victim's field works take for him.
+    int32_t cover_percent(const Unit& victim, const Shot& shot) const;
+
     void move_projectiles();
     void explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit);
-    void hurt(const Unit& victim, const WeaponDef& weapon, uint8_t attacker_elevation);
+    void hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot);
     void apply_damage_and_remove_dead();
     void separate_units();
     FixedVec2 clamp_to_map(FixedVec2 p, Fixed margin) const;
@@ -347,6 +396,7 @@ private:
     std::map<uint64_t, std::vector<int32_t>> sight_cache_;
     uint32_t sight_cache_map_revision_ = 0;
     std::vector<Sector> sectors_;  // rebuilt with the fog
+    std::map<int32_t, Tick> dig_work_;  // trench tiles being dug: tile index -> work done
 };
 
 }  // namespace engine

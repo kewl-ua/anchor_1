@@ -96,7 +96,7 @@ void Game::draw(hud::NetStatus net) const {
     std::optional<render::BuildGhost> ghost;
     if (const auto& p = controller_.placement()) ghost = render::BuildGhost{p->type, p->origin, p->valid};
     renderer_.draw(sim_.world(), camera_, alpha_, controller_.selection(), controller_.selected_structure(),
-                   ghost ? &*ghost : nullptr);
+                   ghost ? &*ghost : nullptr, controller_.trench_preview());
 
     net.input_delay = lockstep_.input_delay();
     net.waiting = stall_time_ >= kStallNoticeSeconds;

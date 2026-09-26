@@ -54,7 +54,13 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
         for (int32_t dx = 0; dx < w; ++dx) {
             const TilePos t{origin.x + dx, origin.y + dy};
             if (!map_.contains(t)) continue;
-            map_.set_terrain(t.x, t.y, Terrain::Building);
+            switch (type) {
+                case StructureType::Trench: map_.set_terrain(t.x, t.y, Terrain::Trench); break;
+                case StructureType::Foxhole: map_.set_terrain(t.x, t.y, Terrain::Foxhole); break;
+                case StructureType::Dugout: map_.set_terrain(t.x, t.y, Terrain::Dugout); break;
+                case StructureType::Parapet: break;  // a mound on the ground it stands on
+                default: map_.set_terrain(t.x, t.y, Terrain::Building); break;
+            }
             map_.set_resource(t, 0);
             structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = s.id;
             s.tiles.push_back(t);
@@ -395,7 +401,9 @@ void World::burn_fuel_depot(const Structure& depot) {
                                          .splash_radius = Fixed::from_int(2), .accuracy = 100, .miss_spread = Fixed{}};
     for (const Unit& u : units_) {
         if (u.inside) continue;
-        if (distance_sq_to(depot, u.pos) <= square_raw(kFireball.splash_radius)) hurt(u, kFireball, 0);
+        if (distance_sq_to(depot, u.pos) <= square_raw(kFireball.splash_radius)) {
+            hurt(u, kFireball, {depot.center, 0, true, true});
+        }
     }
     for (const Structure& s : structures_) {
         if (s.id != depot.id && s.hp > 0) {

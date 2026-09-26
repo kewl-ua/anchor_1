@@ -25,6 +25,10 @@ enum class StructureType : uint8_t {
     AmmoDepot,         // trucks unload ammunition here
     FuelDepot,         // trucks unload fuel here; flimsy, and it burns
     ReconBarracks,     // hires scouts
+    Trench,            // field works, one per tile, dug by riflemen
+    Foxhole,
+    Parapet,           // on open ground; on a trench or foxhole it is part of that
+    Dugout,            // a foxhole upgraded into a shelter
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -86,6 +90,13 @@ struct Structure {
     // the next train comes.
     Stock cargo{};
     Tick next_train = 0;
+
+    // Field works: a parapet on the side facing `facing` (for a Parapet,
+    // it is the whole thing), and a foxhole being turned into a dugout.
+    bool parapet = false;
+    FixedVec2 facing{};
+    bool upgrading = false;
+    Tick upgrade_work = 0;
 };
 
 // Which depot takes in a resource that trucks bring (food, ammo, fuel).
@@ -99,6 +110,13 @@ inline std::optional<StructureType> depot_for(Resource r) {
 }
 
 // Squared distance from a point to the nearest tile of a structure (0 inside it).
+// Field works: passable ground that gives cover.
+inline bool is_fieldwork(StructureType t) {
+    return t == StructureType::Trench || t == StructureType::Foxhole || t == StructureType::Parapet;
+}
+// Infantry can go inside: a house, a dugout. Whoever is inside holds it.
+inline bool is_shelter(StructureType t) { return t == StructureType::House || t == StructureType::Dugout; }
+
 inline uint64_t distance_sq_to(const Structure& s, FixedVec2 p) {
     uint64_t best = UINT64_MAX;
     for (const TilePos& t : s.tiles) best = std::min(best, distance_sq_to_tile(t, p));

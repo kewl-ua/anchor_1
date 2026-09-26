@@ -30,15 +30,17 @@ Fixed eye_height(const UnitTypeDef& def) { return def.vehicle ? kVehicleTop : kI
 
 int32_t structure_sight(const Structure& s) {
     if (s.type == StructureType::House || s.type == StructureType::Bridge) return 0;  // the garrison looks instead
+    if (is_fieldwork(s.type) || s.type == StructureType::Dugout) return 0;           // just holes in the ground
     if (!s.built) return kSiteSight;
     return s.type == StructureType::Headquarters ? kHeadquartersSight : kBuildingSight;
 }
 
-// Cover: forests, the trails under their canopy, and the inside of a house.
+// Cover: forests, the trails under their canopy, trenches and foxholes, and
+// the inside of a house or dugout.
 bool in_cover(const TileMap& map, const Unit& u) {
     if (u.inside) return true;
     const Terrain t = map.terrain_at(u.pos);
-    return t == Terrain::Forest || t == Terrain::Trail;
+    return t == Terrain::Forest || t == Terrain::Trail || t == Terrain::Trench || t == Terrain::Foxhole;
 }
 
 }  // namespace
@@ -215,6 +217,7 @@ void World::update_vision() {
         if (u.owner >= kMaxPlayers) continue;
         const UnitTypeDef& def = unit_type(u.type);
         if (const Structure* s = find_structure(u.inside)) {
+            if (s->type == StructureType::Dugout) continue;  // underground: sees nothing
             look(u.owner, s->center, def.sight, kWindowHeight, s->id);
         } else {
             look(u.owner, u.pos, def.sight, eye_height(def), 0);

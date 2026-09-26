@@ -54,6 +54,26 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     }
     update_placement(world, camera, mouse);
 
+    // A line skill (a trench): press where it starts, release where it ends.
+    const bool aiming_line = targeting_ == Targeting::Ability &&
+                             engine::ability_def(aiming_).target == engine::AbilityTarget::Line;
+    if (!aiming_line) line_start_.reset();
+    trench_preview_.clear();
+    if (aiming_line && !over_hud) {
+        const Vector2 here = ground_under(world, camera, mouse);
+        const Vector2 from = line_start_ ? *line_start_ : here;
+        auto tile = [](Vector2 g) {
+            return engine::TilePos{static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))};
+        };
+        trench_preview_ = engine::trench_line(tile(from), tile(here));
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !hud.button_at(mouse)) line_start_ = here;
+        if (line_start_ && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+            order_ability(lockstep, world, renderer, aiming_, *line_start_, here);
+            line_start_.reset();
+            if (!shift) targeting_ = Targeting::None;
+        }
+    }
+
     // Orders can target the minimap too, like in AoE II.
     const std::optional<Vector2> minimap_ground = hud.minimap_to_ground(mouse);
 
@@ -71,6 +91,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                     build_menu_ = false;
                 }
             }
+        } else if (aiming_line) {
+            // handled above: a line is dragged
         } else if (targeting() && target) {
             if (targeting_ == Targeting::AttackMove) order_attack_move(lockstep, renderer, *target);
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
@@ -116,8 +138,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                        has_trucks(world)) {
                 // Trucks go back on the supply run; anyone else selected just goes there.
                 order_haul(lockstep, world, renderer, ground);
-            } else if (structure && structure->type == engine::StructureType::House) {
-                // Our infantry moves in; a house the enemy holds gets shelled.
+            } else if (structure && engine::is_shelter(structure->type)) {
+                // Our infantry moves in; a house or dugout the enemy holds gets shelled.
                 if (structure->owner == engine::kNoOwner || structure->owner == player_) {
                     order_garrison(lockstep, structure->id);
                 } else {
@@ -145,6 +167,7 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Worker: return "Rear troop";
         case engine::UnitTypeId::Truck: return "Truck";
         case engine::UnitTypeId::Scout: return "Scout";
+        case engine::UnitTypeId::Assault: return "Assault";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -188,6 +211,14 @@ void PlayerController::rebuild_grid(const engine::World& world) {
 
     if (const engine::Structure* s = world.find_structure(selected_structure_)) {
         if (s->owner != player_ || !s->built) return;
+        if (s->type == engine::StructureType::Foxhole) {
+            put(0, Action::Upgrade, 0, "Dugout", "Dig it out into a dugout: the men standing in it do the work",
+                engine::kDugoutCost)
+                .enabled = !s->upgrading;
+        }
+        if (engine::is_shelter(s->type) && !s->garrison.empty()) {
+            put(0, Action::Unload, 0, "Leave", "Everyone out");
+        }
         const engine::StructureDef& def = engine::structure_type(s->type);
         for (uint8_t i = 0; i < def.roster_size; ++i) {
             const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
@@ -281,6 +312,14 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             targeting_ = Targeting::None;
             break;
         case Action::Hire: order_train(lockstep, world, static_cast<engine::UnitTypeId>(cell.param)); break;
+        case Action::Upgrade:
+        case Action::Unload: {
+            engine::Command cmd{.type = cell.action == Action::Upgrade ? engine::CommandType::Upgrade
+                                                                      : engine::CommandType::Unload,
+                                .target_unit = selected_structure_};
+            lockstep.submit(std::move(cmd));
+            break;
+        }
         case Action::Haul: {
             engine::Command haul{.type = engine::CommandType::Haul};
             for (engine::EntityId id : selection_) {
@@ -544,7 +583,7 @@ void PlayerController::click_select(const engine::World& world, const render::Rt
         const Vector2 ground = ground_under(world, camera, mouse);
         const engine::Structure* s = world.structure_at(
             {static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))});
-        if (s && s->owner == player_ && s->type != engine::StructureType::House) selected_structure_ = s->id;
+        if (s && s->owner == player_) selected_structure_ = s->id;
         return;
     }
     selected_structure_ = 0;

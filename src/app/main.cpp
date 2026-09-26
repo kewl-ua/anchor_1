@@ -40,7 +40,8 @@ struct Options {
     // `--scene garrison`: instead of attacking, the infantry moves into the
     // nearest house and the tanks shell the next one until it collapses.
     // Also `economy`, `build`, `logistics` (depots by the station, supply
-    // trucks, the first train) and `recon` (scouts' observation posts).
+    // trucks, the first train), `recon` (scouts' observation posts), `skills`
+    // (tank and IFV skills) and `works` (riflemen dig in).
     std::string scene;
 };
 
@@ -174,6 +175,35 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         skill(ifvs, engine::AbilityId::MgSweep, ahead(6.0f));
         game.select_units(tanks);
         return center;
+    }
+
+    if (options.scene == "works") {
+        // Four riflemen dig a trench across the front, two dig foxholes where
+        // they stand; the riflemen stay selected.
+        std::vector<engine::EntityId> riflemen;
+        Vector2 sum{0, 0};
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me || u.type != engine::UnitTypeId::Rifleman) continue;
+            riflemen.push_back(u.id);
+            sum.x += render::to_vector2(u.pos).x;
+            sum.y += render::to_vector2(u.pos).y;
+        }
+        if (riflemen.size() < 6) return std::nullopt;
+        const auto n = static_cast<float>(riflemen.size());
+        const Vector2 c{sum.x / n, sum.y / n};
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        // Across the front: the army faces (+1, -1) (or back), the trench runs along (1, 1).
+        const Vector2 mid{c.x + 3.0f * fwd, c.y - 3.0f * fwd};
+        engine::Command trench{.type = engine::CommandType::Ability,
+                               .units = {riflemen[0], riflemen[1], riflemen[2], riflemen[3]},
+                               .target = render::to_fixed_vec2({mid.x - 4.0f, mid.y - 4.0f}),
+                               .ability = static_cast<uint8_t>(engine::AbilityId::DigTrench),
+                               .target_end = render::to_fixed_vec2({mid.x + 4.0f, mid.y + 4.0f})};
+        game.submit(trench);
+        game.submit({.type = engine::CommandType::Ability, .units = {riflemen[4], riflemen[5]},
+                     .ability = static_cast<uint8_t>(engine::AbilityId::DigFoxhole)});
+        game.select_units(riflemen);
+        return mid;
     }
 
     if (options.scene == "build") {

@@ -164,7 +164,7 @@ void World::build_structures() {
 
 void World::apply_garrison(const Command& cmd) {
     const Structure* s = find_structure(cmd.target_unit);
-    if (!s || structure_type(s->type).capacity == 0) return;
+    if (!s || !is_shelter(s->type)) return;
     const TilePos goal = map_.clamp_tile(tile_of(s->center));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
         if (def_of(*u).vehicle || u->inside == s->id) continue;  // only infantry goes in
@@ -219,7 +219,7 @@ void World::leave_structure(Unit& u) {
     FixedVec2 from = u.pos;
     if (Structure* s = find_structure_mut(u.inside)) {
         std::erase(s->garrison, u.id);
-        if (s->garrison.empty() && s->type == StructureType::House) s->owner = kNoOwner;
+        if (s->garrison.empty() && is_shelter(s->type)) s->owner = kNoOwner;
         from = s->center;
     }
     u.inside = 0;
@@ -231,6 +231,7 @@ void World::leave_structure(Unit& u) {
 // comes into sight and range.
 void World::update_garrisoned(Unit& u) {
     if (u.order == Order::Retrain) return update_retrain(u);  // at drill in the headquarters
+    if (const Structure* s = find_structure(u.inside); s && s->type == StructureType::Dugout) return;  // sheltering
     const Unit* target = find_enemy_in_sight(u);
     if (!target) return;
     const UnitTypeDef& def = def_of(u);
@@ -262,8 +263,13 @@ void World::collapse(const Structure& s) {
             if (std::find(s.tiles.begin(), s.tiles.end(), t) != s.tiles.end()) u.hp = 0;
         }
     }
-    const Terrain rubble = s.type == StructureType::Bridge ? Terrain::Water : Terrain::Ruins;
+    Terrain rubble = s.type == StructureType::Bridge ? Terrain::Water : Terrain::Ruins;
+    if (is_fieldwork(s.type) || s.type == StructureType::Dugout) rubble = Terrain::Grass;  // filled in
     for (const TilePos& t : s.tiles) {
+        if (s.type == StructureType::Parapet) {  // just a mound on the ground
+            structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
+            continue;
+        }
         map_.set_terrain(t.x, t.y, rubble);
         structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
     }
@@ -288,6 +294,8 @@ void World::apply(const Command& cmd) {
         case CommandType::Haul: apply_haul(cmd); break;
         case CommandType::Observe: apply_observe(cmd); break;
         case CommandType::Ability: apply_ability(cmd); break;
+        case CommandType::Upgrade: apply_upgrade(cmd); break;
+        case CommandType::Unload: apply_unload(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -403,12 +411,14 @@ void World::apply_stop(const Command& cmd) {
 void World::step() {
     update_trains();
     update_production();
+    update_upgrades();
     for (Unit& u : units_) {
         u.prev_pos = u.pos;
         u.moving = false;
     }
 
     for (Unit& u : units_) update_unit(u);
+    for (Unit& u : units_) u.still = u.moving ? 0 : u.still + 1;
     // Projectiles move after units, so a unit that stepped aside this tick dodges.
     move_projectiles();
     apply_damage_and_remove_dead();
@@ -773,8 +783,25 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     // A skill's own gun (a coaxial machine gun) doesn't reload the main one.
     if (weapon.reload > 0) shooter.cooldown = weapon.reload;
 
+    // Where he fires from: a foxhole spoils the aim; small arms fired from a
+    // trench before settling at a position barely count; assault troops
+    // are deadly up close.
+    const Structure* works = structure_at(map_.clamp_tile(tile_of(shooter.pos)));
+    int32_t accuracy = weapon.accuracy;
+    Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
+    if (works && !shooter.inside) {
+        if (works->type == StructureType::Foxhole) accuracy = accuracy * kFoxholeAccuracyPercent / 100;
+        if (works->type == StructureType::Trench && shooter.still < kSettleTicks &&
+            weapon.damage_type == DamageType::Bullet) {
+            shot.damage_percent = kTrenchWalkingFirePercent;
+        }
+    }
+    if (shooter.type == UnitTypeId::Assault && (aim - shooter.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {
+        shot.damage_percent = shot.damage_percent * kAssaultCloseQuartersPercent / 100;
+    }
+
     // A miss lands somewhere near the aim point, on the ground.
-    if (rng_.next_below(100) >= weapon.accuracy) {
+    if (static_cast<int32_t>(rng_.next_below(100)) >= accuracy) {
         aim.x += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
         aim.y += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
         aim = clamp_to_map(aim, Fixed{});
@@ -790,14 +817,14 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     Fixed end = Fixed::from_int(1);
     trace_terrain(line, start, true, instant ? kFoliagePercentBullet : kFoliagePercentShell, shooter.inside, end);
 
-    const uint8_t elevation = map_.elevation_at(shooter.pos);
+    const uint8_t elevation = shot.elevation;
     shooter.last_shot_tick = tick_;
 
     if (instant) {
         // Bullets hit whoever is first in the line: the target, someone else, or nobody.
         Fixed hit_t;
         if (const Unit* victim = first_unit_on(line, start, end, shooter.id, hit_t)) {
-            hurt(*victim, weapon, elevation);
+            hurt(*victim, weapon, shot);
             end = hit_t;
         }
         shooter.last_shot_at = line.point(end);
@@ -855,6 +882,19 @@ void World::move_projectiles() {
 void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
+    const Shot blast{at, p.shooter_elevation, true, p.lobbed};
+
+    // Thrown in through a window or down a dugout's entrance: the men
+    // inside take it, walls or not.
+    if (p.enters) {
+        if (const Structure* s = structure_at(map_.clamp_tile(tile_of(at))); s && !s->garrison.empty()) {
+            const std::vector<EntityId> inside = s->garrison;
+            for (size_t i = 0; i < inside.size() && i < static_cast<size_t>(kGrenadeVictims); ++i) {
+                if (const Unit* v = find_unit(inside[i])) hurt(*v, weapon, {at, p.shooter_elevation, true, true});
+            }
+            return;
+        }
+    }
 
     if (weapon.splash_radius.raw > 0) {
         // Explosions don't care whose units they hit (except the gun that
@@ -862,7 +902,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         for (const Unit& u : units_) {
             if (u.id == p.shooter || u.inside) continue;
             if ((u.pos - at).length_sq_raw() <= square_raw(weapon.splash_radius + def_of(u).radius)) {
-                hurt(u, weapon, p.shooter_elevation);
+                hurt(u, weapon, blast);
             }
         }
         // Every house or bridge the blast reaches takes it once.
@@ -895,16 +935,45 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
             }
         }
     }
-    if (direct_hit) hurt(*direct_hit, weapon, p.shooter_elevation);
+    if (direct_hit) hurt(*direct_hit, weapon, {p.origin, p.shooter_elevation, false, p.lobbed});
 }
 
-void World::hurt(const Unit& victim, const WeaponDef& weapon, uint8_t attacker_elevation) {
+int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
+    if (shot.plunging || victim.inside) return 0;
+    if (shot.elevation > map_.elevation_at(victim.pos)) return 0;  // fired down into it
+    const TilePos tile = map_.clamp_tile(tile_of(victim.pos));
+    const Structure* works = structure_at(tile);
+    if (!works || !is_fieldwork(works->type)) return 0;
+    if (shot.blast) {
+        if (tile_of(shot.from) == tile) return 0;  // burst right in it
+    } else if ((shot.from - victim.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {
+        return 0;  // a trench fight
+    }
+    int32_t cover = 0;
+    if (works->type == StructureType::Foxhole) cover = kFoxholeCover;
+    if (works->type == StructureType::Trench) cover = victim.still >= kSettleTicks ? kTrenchCover : kTrenchWalkingCover;
+    if (works->parapet) {
+        const FixedVec2 to_shot = shot.from - victim.pos;
+        const int64_t front = static_cast<int64_t>(to_shot.x.raw) * works->facing.x.raw +
+                              static_cast<int64_t>(to_shot.y.raw) * works->facing.y.raw;
+        if (front > 0) cover = 100 - (100 - cover) * (100 - kParapetCover) / 100;
+    }
+    return cover;
+}
+
+void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) {
+    // The walls of a trench or foxhole take it instead.
+    if (const int32_t cover = cover_percent(victim, shot);
+        cover > 0 && static_cast<int32_t>(rng_.next_below(100)) < cover) {
+        return;
+    }
     const auto type = static_cast<size_t>(weapon.damage_type);
     int32_t amount = std::max(1, weapon.damage - def_of(victim).armor[type]);
+    amount = amount * shot.damage_percent / 100;
 
     const uint8_t victim_elevation = map_.elevation_at(victim.pos);
-    if (attacker_elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
-    if (attacker_elevation < victim_elevation) amount = amount * kLowGroundPercent / 100;
+    if (shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
+    if (shot.elevation < victim_elevation) amount = amount * kLowGroundPercent / 100;
 
     pending_damage_.push_back({victim.id, std::max(1, amount)});
 }
@@ -934,7 +1003,7 @@ void World::apply_damage_and_remove_dead() {
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
     for (Structure& s : structures_) {
         std::erase_if(s.garrison, [this](EntityId id) { return find_unit(id) == nullptr; });
-        if (s.garrison.empty() && s.type == StructureType::House) s.owner = kNoOwner;
+        if (s.garrison.empty() && is_shelter(s.type)) s.owner = kNoOwner;
     }
 }
 
@@ -1026,6 +1095,7 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(u.order_ability));
         mix_vec(u.order_point2);
         mix(static_cast<uint32_t>(u.shots_left));
+        mix(u.still);
     }
     for (const Structure& s : structures_) {
         mix(s.id);
@@ -1040,6 +1110,14 @@ uint64_t World::checksum() const {
         mix(s.build_progress);
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
+        mix(s.parapet ? 1 : 0);
+        mix_vec(s.facing);
+        mix(s.upgrading ? 1 : 0);
+        mix(s.upgrade_work);
+    }
+    for (const auto& [tile, work] : dig_work_) {
+        mix(static_cast<uint32_t>(tile));
+        mix(work);
     }
     for (const Stock& st : stock_) {
         for (int32_t amount : st) mix(static_cast<uint32_t>(amount));
@@ -1061,6 +1139,7 @@ uint64_t World::checksum() const {
         mix_fixed(p.weapon.projectile_speed);
         mix_fixed(p.weapon.splash_radius);
         mix(p.lobbed ? 1 : 0);
+        mix(p.enters ? 1 : 0);
     }
     return hash;
 }

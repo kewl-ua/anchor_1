@@ -40,6 +40,10 @@ enum class AbilityId : uint8_t {
     SwitchAmmo,  // tank: HE <-> armor-piercing; the gun has to be reloaded
     MgSweep,     // IFV: a machine-gun burst along the front in a direction, not at a target
     LobGrenade,  // IFV: grenade launcher at an area, over cover
+    DigTrench,     // rifleman: dig a trench along a line
+    DigFoxhole,    // rifleman: dig a foxhole where he stands
+    BuildParapet,  // rifleman: throw up a parapet facing a direction
+    ThrowGrenade,  // assault trooper: a hand grenade, into a trench, a dugout, a house
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -75,6 +79,7 @@ struct UnitTypeDef {
     Fixed sight;   // tiles; idle units engage enemies closer than this
     int32_t mass;  // heavier units push lighter ones aside
     bool vehicle;
+    bool wheeled = false;  // a wheeled vehicle: no ditches, no trenches
     WeaponDef weapon;
     Stock cost{};  // Personnel, Food, Materials, Ammo, Fuel
     Tick train_time = 0;
@@ -99,13 +104,17 @@ enum class UnitTypeId : uint8_t {
     Worker,  // rear trooper
     Truck,   // supply truck: station -> depots
     Scout,
+    Assault,  // assault trooper: close combat, storming trenches and houses
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
 
 const UnitTypeDef& unit_type(UnitTypeId id);
 
-inline MoveClass move_class(const UnitTypeDef& def) { return def.vehicle ? MoveClass::Vehicle : MoveClass::Foot; }
+inline MoveClass move_class(const UnitTypeDef& def) {
+    if (!def.vehicle) return MoveClass::Foot;
+    return def.wheeled ? MoveClass::Wheeled : MoveClass::Vehicle;
+}
 // Trucks carry no weapon: they never pick fights.
 inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
 

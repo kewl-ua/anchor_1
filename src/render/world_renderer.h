@@ -48,9 +48,10 @@ public:
 
     // alpha in [0, 1]: progress from the last tick towards the next one.
     // `selection` must be sorted.
+    // `trench` is a trench being laid out: its tiles, drawn green where they can be dug.
     void draw(const engine::World& world, const RtsCamera& camera, float alpha,
               std::span<const engine::EntityId> selection, engine::EntityId selected_structure = 0,
-              const BuildGhost* ghost = nullptr) const;
+              const BuildGhost* ghost = nullptr, std::span<const engine::TilePos> trench = {}) const;
 
 private:
     struct Ping {

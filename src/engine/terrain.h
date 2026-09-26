@@ -22,13 +22,17 @@ enum class Terrain : uint8_t {
     Rock,      // stone outcrop: impassable, quarried for materials
     Building,  // under a player's building (headquarters...)
     Rail,      // railway track: trains bring supplies along it to the station
+    Trench,    // dug by infantry; tracks cross it slowly, wheels not at all
+    Foxhole,   // a dug-in firing position
+    Dugout,    // a shelter dug into the ground, roofed with logs (a Dugout structure)
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
 
 enum class MoveClass : uint8_t {
     Foot,
-    Vehicle,
+    Vehicle,  // tracked: tanks, IFVs
+    Wheeled,  // trucks: roads and fields, no ditches
     Count,
 };
 inline constexpr size_t kMoveClassCount = static_cast<size_t>(MoveClass::Count);
@@ -39,18 +43,22 @@ struct TerrainDef {
     std::array<int32_t, kMoveClassCount> speed_percent;
 };
 
+// Speeds: {foot, tracked, wheeled}.
 inline constexpr TerrainDef kTerrainDefs[] = {
-    {"Field", {100, 100}},
-    {"Forest", {55, 0}},
-    {"Forest trail", {100, 70}},
-    {"Water", {0, 0}},
-    {"Village", {90, 60}},
-    {"House", {0, 0}},
-    {"Bridge", {100, 100}},
-    {"Ruins", {70, 40}},
-    {"Rock", {0, 0}},
-    {"Building", {0, 0}},
-    {"Railway", {90, 80}},
+    {"Field", {100, 100, 100}},
+    {"Forest", {55, 0, 0}},
+    {"Forest trail", {100, 70, 70}},
+    {"Water", {0, 0, 0}},
+    {"Village", {90, 60, 60}},
+    {"House", {0, 0, 0}},
+    {"Bridge", {100, 100, 100}},
+    {"Ruins", {70, 40, 30}},
+    {"Rock", {0, 0, 0}},
+    {"Building", {0, 0, 0}},
+    {"Railway", {90, 80, 60}},
+    {"Trench", {75, 30, 0}},
+    {"Foxhole", {80, 50, 0}},
+    {"Dugout", {0, 0, 0}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

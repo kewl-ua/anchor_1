@@ -28,6 +28,8 @@ enum class CommandType : uint8_t {
     Haul,          // supply trucks: run between the station and the depots
     Observe,       // scouts: hold an observation post watching the sector towards `target`
     Ability,       // use a skill (`ability`) at `target` (a line: to `target_end`)
+    Upgrade,       // a foxhole (target_unit) is dug out into a dugout
+    Unload,        // everyone inside a house or dugout (target_unit) comes out
 };
 
 // The only way anything outside the engine can change the game state.

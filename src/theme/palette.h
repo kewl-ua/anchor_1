@@ -36,6 +36,9 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Rock: return {104, 106, 102, 255};
         case engine::Terrain::Building: return {132, 128, 118, 255};
         case engine::Terrain::Rail: return {110, 100, 88, 255};
+        case engine::Terrain::Trench: return {98, 84, 62, 255};
+        case engine::Terrain::Foxhole: return {104, 90, 66, 255};
+        case engine::Terrain::Dugout: return {92, 80, 60, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;
