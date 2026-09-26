@@ -38,11 +38,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsKeyPressed(KEY_ESCAPE) || selection_.empty()) targeting_ = Targeting::None;
     if (IsKeyPressed(KEY_ESCAPE) || !has_workers(world)) placing_.reset();
 
-    // Command panel hotkeys: 1, 2, 3 build (rear troops); Q, W, E hire (a building).
-    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR};
+    // Command panel hotkeys: 1-5 build (rear troops); Q, W, E, T hire (a building).
+    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE};
     constexpr KeyboardKey kHireKeys[] = {KEY_Q, KEY_W, KEY_E, KEY_T};
-    for (size_t i = 0; i < 4; ++i) {
+    static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
+    for (size_t i = 0; i < std::size(kBuildKeys); ++i) {
         if (IsKeyPressed(kBuildKeys[i]) && selected_structure_ == 0) press_button(lockstep, world, i);
+    }
+    for (size_t i = 0; i < std::size(kHireKeys); ++i) {
         if (IsKeyPressed(kHireKeys[i]) && selected_structure_ != 0) press_button(lockstep, world, i);
     }
     update_placement(world, camera, mouse);
@@ -99,6 +102,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 order_gather(lockstep, world, renderer, ground);
             } else if (structure && structure->owner == player_ && !structure->built && has_workers(world)) {
                 order_help_build(lockstep, structure->id);
+            } else if (structure && structure->owner == player_ && is_supply_point(structure->type) &&
+                       has_trucks(world)) {
+                // Trucks go back on the supply run; anyone else selected just goes there.
+                order_haul(lockstep, world, renderer, ground);
             } else if (structure && structure->type == engine::StructureType::House) {
                 // Our infantry moves in; a house the enemy holds gets shelled.
                 if (structure->owner == engine::kNoOwner || structure->owner == player_) {
@@ -150,8 +157,39 @@ void PlayerController::select_army(const engine::World& world) {
     selection_.clear();
     selected_structure_ = 0;
     for (const engine::Unit& u : world.units()) {
-        if (u.owner == player_ && !engine::unit_type(u.type).worker) selection_.push_back(u.id);
+        if (u.owner == player_ && engine::is_armed(engine::unit_type(u.type)) && !engine::unit_type(u.type).worker) {
+            selection_.push_back(u.id);
+        }
     }
+}
+
+bool PlayerController::has_trucks(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && u->type == engine::UnitTypeId::Truck;
+    });
+}
+
+bool PlayerController::is_supply_point(engine::StructureType type) {
+    return type == engine::StructureType::Station || type == engine::StructureType::Warehouse ||
+           type == engine::StructureType::AmmoDepot || type == engine::StructureType::FuelDepot;
+}
+
+void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& world,
+                                  render::WorldRenderer& renderer, Vector2 ground) {
+    engine::Command haul;
+    haul.type = engine::CommandType::Haul;
+    engine::Command move;
+    move.type = engine::CommandType::Move;
+    move.target = render::to_fixed_vec2(ground);
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (!u) continue;
+        (u->type == engine::UnitTypeId::Truck ? haul : move).units.push_back(id);
+    }
+    if (!haul.units.empty()) lockstep.submit(std::move(haul));
+    if (!move.units.empty()) lockstep.submit(std::move(move));
+    renderer.add_order_ping(ground, false);
 }
 
 bool PlayerController::has_workers(const engine::World& world) const {

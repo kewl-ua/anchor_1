@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <raylib.h>
@@ -42,6 +44,9 @@ public:
     void order_gather(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                       Vector2 ground);
     void order_retrain(net::Lockstep& lockstep);
+    // Supply trucks in the selection resume their run; the rest move to the point.
+    void order_haul(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                    Vector2 ground);
     void order_train(net::Lockstep& lockstep, const engine::World& world, engine::UnitTypeId type);
     void order_build(net::Lockstep& lockstep, const Placement& placement);
     void order_help_build(net::Lockstep& lockstep, engine::EntityId site);
@@ -56,6 +61,11 @@ public:
     void select_structure(engine::EntityId id) {
         selection_.clear();
         selected_structure_ = id;
+    }
+    void select_units(std::vector<engine::EntityId> ids) {
+        std::sort(ids.begin(), ids.end());
+        selection_ = std::move(ids);
+        selected_structure_ = 0;
     }
     bool dragging() const;
     Rectangle drag_rect() const;  // screen space
@@ -76,6 +86,9 @@ private:
     void order_to_point(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground,
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
+    bool has_trucks(const engine::World& world) const;
+    // Where a supply truck loads or unloads.
+    static bool is_supply_point(engine::StructureType type);
     // Buttons of the command panel (and their hotkeys) for the current selection.
     void press_button(net::Lockstep& lockstep, const engine::World& world, size_t index);
     void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);

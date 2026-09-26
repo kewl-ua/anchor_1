@@ -21,6 +21,7 @@ enum class Terrain : uint8_t {
     Ruins,     // what's left of a collapsed house
     Rock,      // stone outcrop: impassable, quarried for materials
     Building,  // under a player's building (headquarters...)
+    Rail,      // railway track: trains bring supplies along it to the station
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -49,6 +50,7 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Ruins", {70, 40}},
     {"Rock", {0, 0}},
     {"Building", {0, 0}},
+    {"Railway", {90, 80}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

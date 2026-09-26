@@ -58,6 +58,7 @@ enum class UnitTypeId : uint8_t {
     Tank,
     Ifv,
     Worker,  // rear trooper
+    Truck,   // supply truck: station -> depots
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
@@ -65,6 +66,8 @@ inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
 const UnitTypeDef& unit_type(UnitTypeId id);
 
 inline MoveClass move_class(const UnitTypeDef& def) { return def.vehicle ? MoveClass::Vehicle : MoveClass::Foot; }
+// Trucks carry no weapon: they never pick fights.
+inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
 
 // Damage multipliers for shooting down from / up at a higher tile (AoE II values).
 inline constexpr int32_t kHighGroundPercent = 125;

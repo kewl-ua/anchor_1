@@ -256,6 +256,7 @@ void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
 // A house comes down on everyone inside; a bridge drops whoever is on it
 // into the river.
 void World::collapse(const Structure& s) {
+    if (s.type == StructureType::FuelDepot) burn_fuel_depot(s);
     if (s.type != StructureType::Bridge) {
         for (EntityId id : s.garrison) {
             if (Unit* u = find_unit_mut(id)) u->hp = 0;
@@ -290,6 +291,7 @@ void World::apply(const Command& cmd) {
         case CommandType::Train: apply_train(cmd); break;
         case CommandType::Retrain: apply_retrain(cmd); break;
         case CommandType::Build: apply_build(cmd); break;
+        case CommandType::Haul: apply_haul(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -361,6 +363,7 @@ void World::apply_attack(const Command& cmd) {
     const Unit* target = find_unit(cmd.target_unit);
     if (!target || target->owner == cmd.player) return;
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
+        if (!is_armed(def_of(*u))) continue;  // a truck has nothing to attack with
         leave_structure(*u);
         u->order = Order::Attack;
         u->order_target = target->id;
@@ -374,6 +377,7 @@ void World::apply_attack_ground(const Command& cmd) {
     const FixedVec2 target = clamp_to_map(cmd.target, Fixed{});
     const TilePos goal = map_.clamp_tile(tile_of(target));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
+        if (!is_armed(def_of(*u))) continue;
         leave_structure(*u);
         u->order = Order::AttackGround;
         u->order_point = target;  // everyone fires at the same spot
@@ -400,7 +404,7 @@ void World::apply_stop(const Command& cmd) {
 // --- Tick --------------------------------------------------------------------
 
 void World::step() {
-    reinforce();
+    update_trains();
     update_production();
     for (Unit& u : units_) {
         u.prev_pos = u.pos;
@@ -433,6 +437,7 @@ void World::update_unit(Unit& u) {
 
     switch (u.order) {
         case Order::Idle:
+            if (!is_armed(def_of(u))) break;
             if (const Unit* target = find_enemy_in_sight(u)) engage(u, *target);
             break;
 
@@ -450,7 +455,7 @@ void World::update_unit(Unit& u) {
             break;
 
         case Order::AttackMove:
-            if (const Unit* target = find_enemy_in_sight(u)) {
+            if (const Unit* target = is_armed(def_of(u)) ? find_enemy_in_sight(u) : nullptr) {
                 engage(u, *target);
             } else if (navigate(u, u.order_point, u.order_path, u.order_goal, true) != Step::Moved) {
                 finish_order();
@@ -475,6 +480,10 @@ void World::update_unit(Unit& u) {
 
         case Order::Build:
             update_building(u);
+            break;
+
+        case Order::Haul:
+            update_hauling(u);
             break;
     }
 }
@@ -995,6 +1004,7 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.gather_tile.x));
         mix(static_cast<uint32_t>(u.gather_tile.y));
         mix(static_cast<uint32_t>(u.carrying));
+        mix(static_cast<uint8_t>(u.carrying_type));
         mix(u.work);
     }
     for (const Structure& s : structures_) {
@@ -1008,11 +1018,12 @@ uint64_t World::checksum() const {
         mix(s.progress);
         mix(s.built ? 1 : 0);
         mix(s.build_progress);
+        for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
+        mix(s.next_train);
     }
     for (const Stock& st : stock_) {
         for (int32_t amount : st) mix(static_cast<uint32_t>(amount));
     }
-    mix(next_reinforcement_);
     mix(map_.revision());
     for (const Projectile& p : projectiles_) {
         mix(p.id);

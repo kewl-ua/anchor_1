@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <span>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <raylib.h>
@@ -11,6 +12,13 @@
 #include "render/camera.h"
 
 namespace render {
+
+// A railway car on the track: where it is and which way it points.
+struct TrainCar {
+    Vector2 ground;
+    Vector2 facing;
+    int kind;  // 0 is the locomotive, then the wagons
+};
 
 // A building the player is about to place: drawn green where it fits, red where not.
 struct BuildGhost {
@@ -55,6 +63,10 @@ private:
         float age;
         bool vehicle;
     };
+    struct StructureSeen {
+        Vector2 center;
+        engine::StructureType type;
+    };
 
     void draw_terrain(const engine::TileMap& map, Rectangle view) const;
     void draw_remains(const engine::TileMap& map) const;
@@ -68,6 +80,9 @@ private:
     void draw_blasts(const engine::TileMap& map) const;
     void draw_health_bar(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_structure_overlays(const engine::World& world, Rectangle view) const;
+    // Trains running on schedule to each station, as railway cars to draw.
+    void collect_trains(const engine::World& world, float alpha, std::vector<TrainCar>& cars) const;
+    static std::vector<Vector2> rail_route(const engine::World& world, const engine::Structure& station);
 
     // Smoothed height of every tile corner, (width + 1) x (height + 1).
     // Terrain doesn't change yet, so it's computed once per map.
@@ -83,7 +98,10 @@ private:
     engine::Tick impacts_seen_until_ = 0;
     // What was alive / standing last frame, to notice deaths and collapses.
     std::unordered_map<engine::EntityId, Remains> units_seen_;
-    std::unordered_map<engine::EntityId, Vector2> structures_seen_;
+    std::unordered_map<engine::EntityId, StructureSeen> structures_seen_;
+    // Each station's track, from its wall to the end of the line.
+    std::vector<std::pair<engine::EntityId, std::vector<Vector2>>> rail_routes_;
+    uint32_t routes_revision_ = 0;
 };
 
 // Interpolated ground position of a unit.

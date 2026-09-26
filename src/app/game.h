@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include <raylib.h>
 
@@ -40,6 +42,7 @@ public:
     // Development helpers for --smoke-test.
     void submit(engine::Command cmd) { lockstep_.submit(std::move(cmd)); }
     void select_structure(engine::EntityId id) { controller_.select_structure(id); }
+    void select_units(std::vector<engine::EntityId> ids) { controller_.select_units(std::move(ids)); }
     void set_tick_limit(engine::Tick limit) { tick_limit_ = limit; }
     void set_time_scale(float scale) { time_scale_ = scale; }
     void select_army_and_attack_move(Vector2 ground);

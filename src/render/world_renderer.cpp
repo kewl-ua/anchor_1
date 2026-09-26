@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 #include "render/convert.h"
@@ -80,6 +81,43 @@ void fill_ground_ellipse(Vector2 center, float radius_tiles, Color color) {
                 radius_tiles * kCircleRy, color);
 }
 
+// A box standing on the terrain, `lift` pixels up, turned along `facing`:
+// hulls, truck cabs, railway cars. Returns the top face's corners.
+std::array<Vector2, 4> draw_box(const engine::TileMap& map, Vector2 ground, Vector2 facing, float length, float width,
+                                float height, Color color, float lift = 0.0f) {
+    const Vector2 fwd{facing.x * length * 0.5f, facing.y * length * 0.5f};
+    const Vector2 side{-facing.y * width * 0.5f, facing.x * width * 0.5f};
+    const Vector2 corners_ground[4] = {
+        {ground.x + fwd.x + side.x, ground.y + fwd.y + side.y},
+        {ground.x + fwd.x - side.x, ground.y + fwd.y - side.y},
+        {ground.x - fwd.x - side.x, ground.y - fwd.y - side.y},
+        {ground.x - fwd.x + side.x, ground.y - fwd.y + side.y},
+    };
+    std::array<Vector2, 4> base;
+    std::array<Vector2, 4> top;
+    for (size_t i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, corners_ground[i], lift);
+        top[i] = {base[i].x, base[i].y - height};
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        const size_t j = (i + 1) % 4;
+        fill_quad(base[i], base[j], top[j], top[i], shade(color, 0.55f));
+    }
+    fill_quad(top[0], top[1], top[2], top[3], color);
+    for (size_t i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(color, 0.45f));
+    return top;
+}
+
+// What the freight looks like: food under tarpaulin, ammunition crates, fuel.
+Color cargo_color(engine::Resource r) {
+    switch (r) {
+        case engine::Resource::Food: return {150, 138, 100, 255};
+        case engine::Resource::Ammo: return {98, 106, 70, 255};
+        case engine::Resource::Fuel: return {170, 172, 168, 255};
+        default: return {120, 88, 52, 255};
+    }
+}
+
 }  // namespace
 
 Vector2 unit_ground_pos(const engine::Unit& unit, float alpha) {
@@ -135,13 +173,25 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     }
     units_seen_ = std::move(alive);
 
-    // Structures that vanished came down: a cloud of dust.
-    std::unordered_map<engine::EntityId, Vector2> standing;
-    for (const engine::Structure& s : world.structures()) standing[s.id] = to_vector2(s.center);
-    for (const auto& [id, center] : structures_seen_) {
-        if (!standing.contains(id)) blasts_.push_back({center, 0.0f, 1.6f});
+    // Structures that vanished came down: a cloud of dust, or a fuel fire.
+    std::unordered_map<engine::EntityId, StructureSeen> standing;
+    for (const engine::Structure& s : world.structures()) standing[s.id] = {to_vector2(s.center), s.type};
+    for (const auto& [id, seen] : structures_seen_) {
+        if (standing.contains(id)) continue;
+        const bool fuel = seen.type == engine::StructureType::FuelDepot;
+        blasts_.push_back({seen.center, 0.0f, fuel ? 3.0f : 1.6f});
+        if (fuel) blasts_.push_back({seen.center, -0.3f, 2.2f});  // a second, later burst
     }
     structures_seen_ = std::move(standing);
+
+    // The track only changes with the map.
+    if (map.revision() != routes_revision_ || rail_routes_.empty()) {
+        routes_revision_ = map.revision();
+        rail_routes_.clear();
+        for (const engine::Structure& s : world.structures()) {
+            if (s.type == engine::StructureType::Station) rail_routes_.emplace_back(s.id, rail_route(world, s));
+        }
+    }
 
     for (Ping& p : pings_) p.age += dt;
     for (Blast& b : blasts_) b.age += dt;
@@ -263,15 +313,20 @@ struct BuildingStyle {
     Color walls;
     Color roof;
     int window_rows;
-    bool big_doors;  // a tank hangar
+    bool big_doors = false;  // a tank hangar, a warehouse
+    bool tanks = false;      // fuel tanks on the pad
 };
 
 BuildingStyle style_of(engine::StructureType type) {
     switch (type) {
-        case engine::StructureType::InfantryBarracks: return {16.0f, {150, 146, 118, 255}, {92, 104, 76, 255}, 1, false};
+        case engine::StructureType::InfantryBarracks: return {16.0f, {150, 146, 118, 255}, {92, 104, 76, 255}, 1};
         case engine::StructureType::ArmorBarracks: return {22.0f, {128, 132, 124, 255}, {86, 92, 84, 255}, 0, true};
         case engine::StructureType::Warehouse: return {13.0f, {142, 112, 80, 255}, {110, 84, 60, 255}, 0, true};
-        default: return {24.0f, {168, 164, 150, 255}, {142, 140, 128, 255}, 2, false};  // headquarters
+        case engine::StructureType::Station: return {15.0f, {156, 98, 78, 255}, {98, 76, 66, 255}, 1};
+        // Half dug in, under earth: only a low front shows.
+        case engine::StructureType::AmmoDepot: return {8.0f, {112, 118, 90, 255}, {96, 104, 72, 255}, 0, true};
+        case engine::StructureType::FuelDepot: return {5.0f, {128, 126, 118, 255}, {110, 108, 100, 255}, 0, false, true};
+        default: return {24.0f, {168, 164, 150, 255}, {142, 140, 128, 255}, 2};  // headquarters
     }
 }
 
@@ -331,6 +386,21 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
         }
     }
 
+    if (style.tanks) {
+        // Two upright tanks on the pad.
+        for (const float t : {0.3f, 0.7f}) {
+            const Vector2 g{r.x + r.width * t, r.y + r.height * (1.0f - t)};
+            const Vector2 bottom = on_terrain(map, g, style.wall);
+            const Vector2 cap{bottom.x, bottom.y - 12.0f};
+            const float rx = 0.32f * kCircleRx;
+            const Color steel = shade({176, 178, 172, 255}, soot);
+            fill_ground_ellipse(bottom, 0.32f, shade(steel, 0.6f));
+            DrawRectangleRec({bottom.x - rx, cap.y, 2.0f * rx, bottom.y - cap.y}, shade(steel, 0.8f));
+            fill_ground_ellipse(cap, 0.32f, steel);
+            draw_ground_ellipse(cap, 0.32f, shade(steel, 0.5f));
+        }
+    }
+
     const Vector2 pole = top[0];
     DrawLineEx(pole, {pole.x, pole.y - 22.0f}, 2.0f, {50, 50, 50, 255});
     DrawRectangleRec({pole.x, pole.y - 22.0f, 14.0f, 9.0f}, theme::player_color(s.owner));
@@ -348,6 +418,19 @@ void draw_ghost(const engine::TileMap& map, const BuildGhost& ghost) {
     const Color color = ghost.valid ? theme::kSelection : theme::kDanger;
     fill_quad(c[0], c[1], c[2], c[3], ColorAlpha(color, 0.3f));
     for (int i = 0; i < 4; ++i) DrawLineEx(c[i], c[(i + 1) % 4], 2.0f, color);
+}
+
+// Sleepers and two rails across a railway tile, along x or along y.
+void draw_rail(const engine::TileMap& map, int tx, int ty, bool along_x) {
+    const auto x = static_cast<float>(tx);
+    const auto y = static_cast<float>(ty);
+    // (u, v) inside the tile: u along the track, v across it.
+    auto at = [&](float u, float v) { return on_terrain(map, along_x ? Vector2{x + u, y + v} : Vector2{x + v, y + u}); };
+    for (int i = 0; i < 4; ++i) {
+        const float u = 0.125f + 0.25f * static_cast<float>(i);
+        DrawLineEx(at(u, 0.26f), at(u, 0.74f), 2.0f, {84, 64, 46, 255});
+    }
+    for (const float v : {0.38f, 0.62f}) DrawLineEx(at(0.0f, v), at(1.0f, v), 1.2f, {178, 180, 184, 255});
 }
 
 // Grey boulders of a stone outcrop, fewer as it is quarried away.
@@ -377,7 +460,118 @@ void draw_ruins(const engine::TileMap& map, int tx, int ty) {
     }
 }
 
+constexpr float kCarLength = 1.1f;  // tiles, coupling included
+constexpr int kTrainCars = 5;
+
+// Point `d` tiles along a polyline, and the direction of travel there.
+std::pair<Vector2, Vector2> along(const std::vector<Vector2>& line, float d) {
+    for (size_t i = 0; i + 1 < line.size(); ++i) {
+        const Vector2 a = line[i];
+        const Vector2 b = line[i + 1];
+        const float len = std::hypot(b.x - a.x, b.y - a.y);
+        if (len <= 0.0f) continue;
+        const Vector2 dir{(b.x - a.x) / len, (b.y - a.y) / len};
+        if (d <= len || i + 2 == line.size()) return {{a.x + dir.x * d, a.y + dir.y * d}, dir};
+        d -= len;
+    }
+    return {line.front(), {1.0f, 0.0f}};
+}
+
+void draw_train_car(const engine::TileMap& map, const TrainCar& car) {
+    static constexpr Color kColors[] = {{58, 66, 60, 255}, {122, 78, 56, 255}, {104, 110, 76, 255},
+                                        {166, 168, 164, 255}, {122, 78, 56, 255}};
+    const Color color = kColors[static_cast<size_t>(car.kind) % std::size(kColors)];
+    const float height = car.kind == 0 ? 12.0f : 9.0f;
+    fill_ground_ellipse(on_terrain(map, car.ground), 0.45f, {0, 0, 0, 60});
+    draw_box(map, car.ground, car.facing, kCarLength - 0.15f, 0.5f, height, color, 2.0f);
+    if (car.kind == 0) {  // the cab and the stack
+        const Vector2 cab{car.ground.x - car.facing.x * 0.28f, car.ground.y - car.facing.y * 0.28f};
+        draw_box(map, cab, car.facing, 0.34f, 0.46f, 6.0f, shade(color, 1.2f), 14.0f);
+        const Vector2 stack = on_terrain(map, {car.ground.x + car.facing.x * 0.3f, car.ground.y + car.facing.y * 0.3f},
+                                         14.0f);
+        DrawRectangleRec({stack.x - 1.5f, stack.y - 5.0f, 3.0f, 5.0f}, {40, 40, 40, 255});
+    }
+}
+
 }  // namespace
+
+// Follows the railway from the tile next to the station out to the end of
+// the line. Starts at the station's wall so the train stops right at it.
+std::vector<Vector2> WorldRenderer::rail_route(const engine::World& world, const engine::Structure& station) {
+    const engine::TileMap& map = world.map();
+    auto is_rail = [&](engine::TilePos t) { return map.contains(t) && map.terrain(t) == engine::Terrain::Rail; };
+    constexpr engine::TilePos kSteps[] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+    std::optional<engine::TilePos> start;
+    engine::TilePos inward{};
+    for (const engine::TilePos& t : station.tiles) {
+        for (const engine::TilePos& d : kSteps) {
+            const engine::TilePos n{t.x + d.x, t.y + d.y};
+            if (!start && is_rail(n)) {
+                start = n;
+                inward = {-d.x, -d.y};
+            }
+        }
+    }
+    if (!start) return {};
+
+    std::vector<Vector2> route;
+    const Vector2 first{static_cast<float>(start->x) + 0.5f, static_cast<float>(start->y) + 0.5f};
+    route.push_back({first.x + static_cast<float>(inward.x) * 0.5f, first.y + static_cast<float>(inward.y) * 0.5f});
+    std::vector<bool> visited(static_cast<size_t>(map.width() * map.height()), false);
+    engine::TilePos cur = *start;
+    for (;;) {
+        visited[static_cast<size_t>(cur.y * map.width() + cur.x)] = true;
+        route.push_back({static_cast<float>(cur.x) + 0.5f, static_cast<float>(cur.y) + 0.5f});
+        std::optional<engine::TilePos> next;
+        for (const engine::TilePos& d : kSteps) {
+            const engine::TilePos n{cur.x + d.x, cur.y + d.y};
+            if (is_rail(n) && !visited[static_cast<size_t>(n.y * map.width() + n.x)]) next = n;
+        }
+        if (!next) break;
+        cur = *next;
+    }
+    return route;
+}
+
+void WorldRenderer::collect_trains(const engine::World& world, float alpha, std::vector<TrainCar>& cars) const {
+    for (const auto& [station_id, route] : rail_routes_) {
+        const engine::Structure* station = world.find_structure(station_id);
+        if (!station || route.size() < 2) continue;
+        float line = 0.0f;
+        for (size_t i = 0; i + 1 < route.size(); ++i) {
+            line += std::hypot(route[i + 1].x - route[i].x, route[i + 1].y - route[i].y);
+        }
+        const float train = kTrainCars * kCarLength;
+
+        // The schedule: it slows down coming in, stands, speeds up going out.
+        const float now = static_cast<float>(world.tick()) + alpha;
+        const auto interval = static_cast<float>(engine::kTrainInterval);
+        const auto approach = static_cast<float>(engine::kTrainApproachTicks);
+        const auto stay = static_cast<float>(engine::kTrainStayTicks);
+        const auto next = static_cast<float>(station->next_train);
+        const float last = next - interval;
+        constexpr float kStop = 0.2f;  // head of the train this far from the station
+        float head = -1.0f;
+        if (next - now < approach) {
+            const float t = std::max(0.0f, next - now) / approach;
+            head = kStop + (line + train) * t * t;
+        } else if (last > 0.0f && now - last < stay) {
+            head = kStop;
+        } else if (last > 0.0f && now - last < stay + approach) {
+            const float t = (now - last - stay) / approach;
+            head = kStop + (line + train) * t * t;
+        }
+        if (head < 0.0f) continue;
+
+        for (int i = 0; i < kTrainCars; ++i) {
+            const float d = head + kCarLength * (static_cast<float>(i) + 0.5f);
+            if (d > line) break;  // still beyond the map edge
+            const auto [ground, dir] = along(route, d);
+            cars.push_back({ground, {-dir.x, -dir.y}, i});
+        }
+    }
+}
 
 // Garrison flags and health bars over houses and bridges.
 void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangle view) const {
@@ -446,6 +640,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         bool rock = false;
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
+        const TrainCar* car = nullptr;
     };
     std::vector<Drawable> drawables;
     drawables.reserve(world.units().size() + world.projectiles().size() + 1024);
@@ -497,6 +692,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
         drawables.push_back({.depth = c.x + c.y + 1.0f, .building = &s});
     }
+    std::vector<TrainCar> cars;
+    collect_trains(world, alpha, cars);
+    for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
     for (const Drawable& d : drawables) {
@@ -506,6 +704,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_projectile(*d.projectile, alpha);
         } else if (d.building) {
             draw_building(map, *d.building);
+        } else if (d.car) {
+            draw_train_car(map, *d.car);
         } else if (d.ruins) {
             draw_ruins(map, d.house_x, d.house_y);
         } else if (d.rock) {
@@ -558,7 +758,15 @@ void WorldRenderer::draw_terrain(const engine::TileMap& map, Rectangle view) con
         const float noise = static_cast<float>(tile_hash(tx, ty) & 0xFF) / 255.0f - 0.5f;
         const float height = (h00 + h10 + h01 + h11) * 0.25f;
         const float light = 1.0f + noise * 0.07f + slope_x * 0.30f - slope_y * 0.18f + height * 0.05f;
-        fill_quad(top, right, bottom, left, shade(theme::terrain_color(map.terrain(tx, ty)), light));
+        const engine::Terrain terrain = map.terrain(tx, ty);
+        fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
+        if (terrain == engine::Terrain::Rail) {
+            auto track = [&](int x, int y) {
+                return map.contains_tile(x, y) &&
+                       (map.terrain(x, y) == engine::Terrain::Rail || map.terrain(x, y) == engine::Terrain::Building);
+            };
+            draw_rail(map, tx, ty, track(tx - 1, ty) || track(tx + 1, ty));
+        }
     });
 }
 
@@ -669,33 +877,24 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
 
 void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground,
                                  Vector2 facing) const {
+    const Color color = shade(theme::player_color(u.owner), 0.85f);
+    if (u.type == engine::UnitTypeId::Truck) {
+        // Load bed behind, cab in front, the freight on the bed.
+        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
+        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 4.0f, shade(color, 0.7f));
+        if (u.carrying > 0) {
+            const float load = 3.0f + 5.0f * static_cast<float>(u.carrying) / static_cast<float>(engine::kTruckCapacity);
+            draw_box(map, at(-0.12f), facing, 0.5f, 0.38f, load, cargo_color(u.carrying_type), 4.0f);
+        }
+        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
+        return;
+    }
+
     const bool tank = u.type == engine::UnitTypeId::Tank;
     const float length = tank ? 0.95f : 0.85f;
     const float width = tank ? 0.58f : 0.5f;
     const float hull = tank ? 6.0f : 8.0f;  // hull height, pixels
-
-    const Vector2 fwd{facing.x * length * 0.5f, facing.y * length * 0.5f};
-    const Vector2 side{-facing.y * width * 0.5f, facing.x * width * 0.5f};
-    const Vector2 corners_ground[4] = {
-        {ground.x + fwd.x + side.x, ground.y + fwd.y + side.y},
-        {ground.x + fwd.x - side.x, ground.y + fwd.y - side.y},
-        {ground.x - fwd.x - side.x, ground.y - fwd.y - side.y},
-        {ground.x - fwd.x + side.x, ground.y - fwd.y + side.y},
-    };
-    Vector2 base[4];
-    Vector2 top[4];
-    for (int i = 0; i < 4; ++i) {
-        base[i] = on_terrain(map, corners_ground[i]);
-        top[i] = {base[i].x, base[i].y - hull};
-    }
-
-    const Color color = shade(theme::player_color(u.owner), 0.85f);
-    for (int i = 0; i < 4; ++i) {
-        const int j = (i + 1) % 4;
-        fill_quad(base[i], base[j], top[j], top[i], shade(color, 0.55f));
-    }
-    fill_quad(top[0], top[1], top[2], top[3], color);
-    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(color, 0.45f));
+    draw_box(map, ground, facing, length, width, hull, color);
 
     // Turret and gun.
     const Vector2 center = on_terrain(map, ground, hull + 2.0f);
@@ -757,6 +956,7 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
 
 void WorldRenderer::draw_blasts(const engine::TileMap& map) const {
     for (const Blast& b : blasts_) {
+        if (b.age < 0.0f) continue;  // not yet
         const float t = b.age / kBlastLifetime;
         const Vector2 p = on_terrain(map, b.ground);
         const float radius = b.radius * (0.5f + t);

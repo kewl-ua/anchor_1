@@ -178,6 +178,10 @@ TickInput sample_input() {
     build.target_unit = 99;
     build.structure_type = 3;
     input.commands.push_back(build);
+    Command haul;
+    haul.type = CommandType::Haul;
+    haul.units = {17, 18};
+    input.commands.push_back(haul);
     return input;
 }
 

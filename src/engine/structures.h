@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "engine/command.h"
@@ -19,7 +20,10 @@ enum class StructureType : uint8_t {
     Headquarters,      // a player's base: takes in materials, hires rear troops, retrains them
     InfantryBarracks,  // riflemen, machine gunners, grenadiers (assault troops later)
     ArmorBarracks,     // armor crews: tanks and IFVs
-    Warehouse,         // rear troops drop materials here; later trucks unload supplies
+    Warehouse,         // materials from rear troops, food from trucks
+    Station,           // the railhead: trains unload here, trucks load
+    AmmoDepot,         // trucks unload ammunition here
+    FuelDepot,         // trucks unload fuel here; flimsy, and it burns
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -51,6 +55,8 @@ inline constexpr StructureType kBuildable[] = {
     StructureType::InfantryBarracks,
     StructureType::ArmorBarracks,
     StructureType::Warehouse,
+    StructureType::AmmoDepot,
+    StructureType::FuelDepot,
 };
 
 inline constexpr PlayerId kNoOwner = 255;
@@ -73,7 +79,22 @@ struct Structure {
     // Units being trained, front first; already paid for.
     std::vector<UnitTypeId> queue;
     Tick progress = 0;  // ticks spent on queue.front()
+
+    // A station: supplies the trains brought, waiting for trucks, and when
+    // the next train comes.
+    Stock cargo{};
+    Tick next_train = 0;
 };
+
+// Which depot takes in a resource that trucks bring (food, ammo, fuel).
+inline std::optional<StructureType> depot_for(Resource r) {
+    switch (r) {
+        case Resource::Food: return StructureType::Warehouse;
+        case Resource::Ammo: return StructureType::AmmoDepot;
+        case Resource::Fuel: return StructureType::FuelDepot;
+        default: return std::nullopt;
+    }
+}
 
 // Squared distance from a point to the nearest tile of a structure (0 inside it).
 inline uint64_t distance_sq_to(const Structure& s, FixedVec2 p) {

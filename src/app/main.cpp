@@ -37,6 +37,8 @@ struct Options {
     std::optional<engine::Tick> smoke_ticks;
     // `--scene garrison`: instead of attacking, the infantry moves into the
     // nearest house and the tanks shell the next one until it collapses.
+    // Also `economy`, `build` and `logistics` (depots by the station, supply
+    // trucks, the first train).
     std::string scene;
 };
 
@@ -67,6 +69,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             if (u.owner == me && engine::unit_type(u.type).worker) gather.units.push_back(u.id);
         }
         if (wood) gather.target = engine::tile_center(*wood);
+        game.select_units(gather.units);  // shows the building buttons
         game.submit(gather);
         for (const engine::Structure& s : world.structures()) {
             if (s.type != engine::StructureType::Headquarters || s.owner != me) continue;
@@ -78,6 +81,42 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const Vector2 b2 = render::to_vector2(base);
         const Vector2 w2 = wood ? render::to_vector2(engine::tile_center(*wood)) : b2;
         return Vector2{(b2.x + w2.x) * 0.5f, (b2.y + w2.y) * 0.5f};
+    }
+
+    if (options.scene == "logistics") {
+        // Rear troops put up an ammunition depot and a warehouse by the
+        // station; the headquarters hires two supply trucks for the first train.
+        const int32_t size = world.map().width();
+        const engine::TilePos station = engine::demo_station_origin(size, 0);
+        engine::TilePos ammo{station.x + 6, station.y + 4};
+        engine::TilePos food{station.x + 9, station.y + 4};
+        if (me == 1) {  // the same spots, mirrored through the map center
+            ammo = {size - 2 - ammo.x, size - 2 - ammo.y};
+            food = {size - 2 - food.x, size - 2 - food.y};
+        }
+        std::vector<engine::EntityId> workers;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner == me && engine::unit_type(u.type).worker) workers.push_back(u.id);
+        }
+        if (workers.size() < 5) return std::nullopt;
+        game.submit({.type = engine::CommandType::Build,
+                     .units = {workers[0], workers[1], workers[2]},
+                     .target = engine::tile_center(ammo),
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::AmmoDepot)});
+        game.submit({.type = engine::CommandType::Build,
+                     .units = {workers[3], workers[4]},
+                     .target = engine::tile_center(food),
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::Warehouse)});
+        for (const engine::Structure& s : world.structures()) {
+            if (s.type != engine::StructureType::Headquarters || s.owner != me) continue;
+            for (int i = 0; i < 2; ++i) {
+                game.submit({.type = engine::CommandType::Train, .target_unit = s.id,
+                             .unit_type = static_cast<uint8_t>(engine::UnitTypeId::Truck)});
+            }
+        }
+        const Vector2 a = render::to_vector2(world.station_of(me)->center);
+        const Vector2 b = render::to_vector2(engine::tile_center(ammo));
+        return Vector2{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
     }
 
     if (options.scene == "build") {
@@ -277,12 +316,12 @@ int main(int argc, char** argv) {
                 smoke_ordered = true;
             }
             game->update(GetFrameTime());
-            if (smoke && options->scene == "build") {
-                // Show the barracks' card on the command panel.
+            if (smoke && (options->scene == "build" || options->scene == "logistics")) {
+                // Show the barracks' or the station's card on the command panel.
+                const engine::StructureType shown = options->scene == "build" ? engine::StructureType::InfantryBarracks
+                                                                              : engine::StructureType::Station;
                 for (const engine::Structure& s : game->world().structures()) {
-                    if (s.type == engine::StructureType::InfantryBarracks && s.owner == game->local_player()) {
-                        game->select_structure(s.id);
-                    }
+                    if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);
                 }
             }
             if (smoke && smoke_look) {

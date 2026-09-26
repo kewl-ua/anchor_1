@@ -49,8 +49,28 @@ inline constexpr int32_t kRockMaterials = 400;
 inline constexpr Tick kRetrainTicks = 10 * kTicksPerSecond;
 inline constexpr size_t kMaxQueue = 5;
 
-// Personnel reinforcements (later they will arrive by train).
-inline constexpr Tick kReinforcementInterval = 30 * kTicksPerSecond;
-inline constexpr int32_t kReinforcementSize = 2;
+// --- Railway ---
+// A train comes to every standing station on a schedule. The men walk off
+// into the player's personnel pool; the freight waits at the station for
+// trucks. (Rail upgrades will make trains come more often and carry more.)
+inline constexpr Tick kTrainInterval = 60 * kTicksPerSecond;
+inline constexpr Stock kTrainCargo = {4, 120, 0, 80, 60};  // Personnel, Food, Materials, Ammo, Fuel
+// How long a train takes to roll in from the map edge, and stands at the
+// station: only for drawing, the delivery happens on arrival.
+inline constexpr Tick kTrainApproachTicks = 8 * kTicksPerSecond;
+inline constexpr Tick kTrainStayTicks = 5 * kTicksPerSecond;
+
+// --- Trucks ---
+inline constexpr int32_t kTruckCapacity = 40;
+inline constexpr Tick kTruckLoadTicks = 2 * kTicksPerSecond;
+// Unloading: the driver alone manages one unit a second; every rear trooper
+// standing by the depot adds two more (up to four helpers).
+inline constexpr int32_t kUnloadWorkPerUnit = kTicksPerSecond;
+inline constexpr int32_t kUnloadDriverWork = 1;
+inline constexpr int32_t kUnloadHelperWork = 2;
+inline constexpr int32_t kMaxUnloadHelpers = 4;
+
+// A fuel depot going up burns this share of the owner's fuel.
+inline constexpr int32_t kFuelDepotLossPercent = 30;
 
 }  // namespace engine

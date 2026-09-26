@@ -1,5 +1,5 @@
 // The economy half of World: resources on the map, rear troops' work,
-// headquarters production and personnel reinforcements.
+// construction, production, and the supply chain: trains, trucks and depots.
 
 #include <algorithm>
 
@@ -64,6 +64,7 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
     if (s.tiles.empty()) return 0;
     const auto n = static_cast<int32_t>(s.tiles.size());
     s.center = {sum.x / n, sum.y / n};
+    if (type == StructureType::Station) s.next_train = tick_ + kTrainInterval;
     structures_.push_back(std::move(s));  // ids only grow: still sorted
     on_map_changed();
     return structures_.back().id;
@@ -296,20 +297,116 @@ void World::update_production() {
         if (++s.progress < unit_type(type).train_time) continue;
         s.progress = 0;
         s.queue.erase(s.queue.begin());
-        spawn_unit(s.owner, type, door_of(s, move_class(unit_type(type))));
+        const EntityId id = spawn_unit(s.owner, type, door_of(s, move_class(unit_type(type))));
+        if (type == UnitTypeId::Truck) find_unit_mut(id)->order = Order::Haul;  // straight onto the supply run
     }
 }
 
-// New men arrive on a schedule at every player that still has a headquarters.
-void World::reinforce() {
-    if (tick_ < next_reinforcement_) return;
-    next_reinforcement_ += kReinforcementInterval;
-    std::array<bool, kMaxPlayers> has_hq{};
-    for (const Structure& s : structures_) {
-        if (s.type == StructureType::Headquarters && s.owner < kMaxPlayers) has_hq[s.owner] = true;
+// Trains come to every station on schedule: the men join the personnel pool,
+// the freight waits at the station for trucks. No station, no trains.
+void World::update_trains() {
+    for (Structure& s : structures_) {
+        if (s.type != StructureType::Station || s.owner >= kMaxPlayers || tick_ < s.next_train) continue;
+        s.next_train += kTrainInterval;
+        Stock& stock = stock_[s.owner];
+        for (size_t r = 0; r < kResourceCount; ++r) {
+            if (static_cast<Resource>(r) == Resource::Personnel) {
+                stock[r] += kTrainCargo[r];
+            } else {
+                s.cargo[r] += kTrainCargo[r];
+            }
+        }
     }
-    for (size_t p = 0; p < kMaxPlayers; ++p) {
-        if (has_hq[p]) stock_[p][static_cast<size_t>(Resource::Personnel)] += kReinforcementSize;
+}
+
+void World::apply_haul(const Command& cmd) {
+    for (EntityId id : cmd.units) {
+        Unit* u = find_unit_mut(id);
+        if (!u || u->owner != cmd.player || u->type != UnitTypeId::Truck) continue;
+        u->order = Order::Haul;
+        u->order_path.reset();
+        u->chase_path.reset();
+        u->speed_cap = Fixed{};
+        u->engaged = 0;
+        u->work = 0;
+    }
+}
+
+// The supply run: load at the station whatever a depot of ours takes (most
+// plentiful first), drive it to the nearest depot for it, unload, repeat.
+// With nothing to carry or nowhere to put it, the truck waits.
+void World::update_hauling(Unit& u) {
+    if (u.carrying == 0) {
+        const Structure* station = station_of(u.owner);
+        if (!station) return;
+        std::optional<Resource> pick;
+        for (Resource r : {Resource::Ammo, Resource::Fuel, Resource::Food}) {
+            const auto i = static_cast<size_t>(r);
+            if (station->cargo[i] <= 0 || !nearest_owned(u.owner, *depot_for(r), u.pos)) continue;
+            if (!pick || station->cargo[i] > station->cargo[static_cast<size_t>(*pick)]) pick = r;
+        }
+        if (!pick) return;
+        if (distance_sq_to(*station, u.pos) > square_raw(kDoorReach)) {
+            navigate(u, station->center, u.order_path, map_.clamp_tile(tile_of(station->center)), false);
+            u.work = 0;
+            return;
+        }
+        if (++u.work < kTruckLoadTicks) return;
+        u.work = 0;
+        Structure* s = find_structure_mut(station->id);
+        const auto i = static_cast<size_t>(*pick);
+        const int32_t load = std::min(kTruckCapacity, s->cargo[i]);
+        s->cargo[i] -= load;
+        u.carrying = load;
+        u.carrying_type = *pick;
+        return;
+    }
+
+    const Structure* depot = nearest_owned(u.owner, *depot_for(u.carrying_type), u.pos);
+    if (!depot) return;
+    if (distance_sq_to(*depot, u.pos) > square_raw(kDoorReach)) {
+        navigate(u, depot->center, u.chase_path, map_.clamp_tile(tile_of(depot->center)), false);
+        u.work = 0;
+        return;
+    }
+    // The driver unloads alone at a crawl; rear troops standing by make it quick.
+    int32_t helpers = 0;
+    const uint64_t reach_sq = square_raw(Fixed::from_int(2));
+    for (const Unit& other : units_) {
+        if (helpers >= kMaxUnloadHelpers) break;
+        if (other.owner != u.owner || other.inside || !unit_type(other.type).worker) continue;
+        if (distance_sq_to(*depot, other.pos) <= reach_sq) ++helpers;
+    }
+    u.work += static_cast<Tick>(kUnloadDriverWork + kUnloadHelperWork * helpers);
+    Stock& stock = stock_[u.owner % kMaxPlayers];
+    while (u.work >= static_cast<Tick>(kUnloadWorkPerUnit) && u.carrying > 0) {
+        u.work -= kUnloadWorkPerUnit;
+        --u.carrying;
+        ++stock[static_cast<size_t>(u.carrying_type)];
+    }
+    if (u.carrying == 0) u.work = 0;
+}
+
+// A fuel depot going up: a fireball that hurts everything around, and a good
+// part of the owner's fuel gone with it.
+void World::burn_fuel_depot(const Structure& depot) {
+    static constexpr WeaponDef kFireball{.name = "Fuel fire", .damage = 120, .damage_type = DamageType::Explosive,
+                                         .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
+                                         .splash_radius = Fixed::from_int(2), .accuracy = 100, .miss_spread = Fixed{}};
+    for (const Unit& u : units_) {
+        if (u.inside) continue;
+        if (distance_sq_to(depot, u.pos) <= square_raw(kFireball.splash_radius)) hurt(u, kFireball, 0);
+    }
+    for (const Structure& s : structures_) {
+        if (s.id != depot.id && s.hp > 0) {
+            uint64_t closest = UINT64_MAX;
+            for (const TilePos& t : s.tiles) closest = std::min(closest, distance_sq_to_tile(t, depot.center));
+            if (closest <= square_raw(kFireball.splash_radius)) hurt_structure(s, kFireball);
+        }
+    }
+    if (depot.owner < kMaxPlayers) {
+        int32_t& fuel = stock_[depot.owner][static_cast<size_t>(Resource::Fuel)];
+        fuel -= fuel * kFuelDepotLossPercent / 100;
     }
 }
 
@@ -321,6 +418,27 @@ const Structure* World::nearest_headquarters(PlayerId owner, FixedVec2 from) con
     for (const Structure& s : structures_) {
         if (s.type != StructureType::Headquarters || s.owner != owner) continue;
         const uint64_t d = (s.center - from).length_sq_raw();
+        if (!best || d < best_sq) {
+            best = &s;
+            best_sq = d;
+        }
+    }
+    return best;
+}
+
+const Structure* World::station_of(PlayerId player) const {
+    for (const Structure& s : structures_) {
+        if (s.type == StructureType::Station && s.owner == player) return &s;
+    }
+    return nullptr;
+}
+
+const Structure* World::nearest_owned(PlayerId owner, StructureType type, FixedVec2 from) const {
+    const Structure* best = nullptr;
+    uint64_t best_sq = 0;
+    for (const Structure& s : structures_) {
+        if (s.type != type || s.owner != owner || !s.built) continue;
+        const uint64_t d = distance_sq_to(s, from);
         if (!best || d < best_sq) {
             best = &s;
             best_sq = d;

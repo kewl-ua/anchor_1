@@ -124,6 +124,23 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .train_time = seconds(10),
         .worker = true,
     },
+    {
+        // Unarmed and thin-skinned: the supply line is a target.
+        .name = "Supply truck",
+        .short_name = "TRK",
+        .max_hp = 120,
+        .armor = {3, 0, 0},
+        .speed = tiles_per_second(9, 5),
+        .radius = tiles(7, 20),
+        .sight = tiles(6),
+        .mass = 10,
+        .vehicle = true,
+        .weapon = {.name = "Unarmed", .damage = 0, .damage_type = DamageType::Bullet, .range = tiles(0),
+                   .reload = seconds(1), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 0, .miss_spread = tiles(0)},
+        .cost = {1, 0, 50, 0, 30},
+        .train_time = seconds(15),
+    },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -142,7 +159,7 @@ constexpr StructureDef kStructureTypes[] = {
     // Solid: blowing a bridge takes a real effort (sappers will do it faster).
     {.name = "Bridge", .max_hp = 1500, .armor = {0, 10, 60}},
     {.name = "Headquarters", .max_hp = 2500, .armor = {0, 20, 80},
-     .roster = {UnitTypeId::Worker}, .roster_size = 1},
+     .roster = {UnitTypeId::Worker, UnitTypeId::Truck}, .roster_size = 2},
     {.name = "Infantry barracks", .max_hp = 1500, .armor = {0, 10, 60},
      .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 150, 0, 0}, .build_time = seconds(30),
      .roster = {UnitTypeId::Rifleman, UnitTypeId::MachineGunner, UnitTypeId::Grenadier}, .roster_size = 3},
@@ -152,6 +169,13 @@ constexpr StructureDef kStructureTypes[] = {
     // Put one next to a woodline or a quarry to cut the walk, like an AoE II lumber camp.
     {.name = "Warehouse", .max_hp = 800, .armor = {0, 5, 40},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 75, 0, 0}, .build_time = seconds(20)},
+    // The railhead is given, not built: lose it and the trains stop coming.
+    {.name = "Railway station", .max_hp = 2000, .armor = {0, 15, 60}},
+    {.name = "Ammo depot", .max_hp = 900, .armor = {0, 5, 40},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 100, 0, 0}, .build_time = seconds(25)},
+    // Flimsy, and it goes up in flames with the fuel inside.
+    {.name = "Fuel depot", .max_hp = 450, .armor = {0, 0, 10},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 100, 0, 0}, .build_time = seconds(25)},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

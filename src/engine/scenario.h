@@ -31,4 +31,10 @@ void setup_demo_scenario(World& world);
 // Where a player's army starts on a map of the given size.
 FixedVec2 demo_base_position(int32_t map_size, PlayerId player);
 
+// A player's railway station: top-left tile of its 4 x 2 footprint. The track
+// runs from the player's own map edge into it.
+inline constexpr int32_t kStationWidth = 4;
+inline constexpr int32_t kStationHeight = 2;
+TilePos demo_station_origin(int32_t map_size, PlayerId player);
+
 }  // namespace engine

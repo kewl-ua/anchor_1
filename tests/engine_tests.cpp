@@ -838,12 +838,121 @@ void test_warehouse_takes_in_materials() {
     CHECK(westmost > Fixed::from_int(10));  // the headquarters is at x = 5..7
 }
 
-// New men arrive on schedule, but only while the headquarters stands.
-void test_personnel_reinforcements() {
-    Simulation sim = economy_sim({});
-    for (Tick i = 0; i <= kReinforcementInterval; ++i) sim.step();
-    CHECK(stock_of(sim, Resource::Personnel) == kReinforcementSize);
-    CHECK(sim.world().stock(1)[static_cast<size_t>(Resource::Personnel)] == 0);  // no headquarters
+// --- Logistics ---------------------------------------------------------------
+
+// The economy base plus our railway station on (26..29, 3..4).
+Simulation logistics_sim(const Stock& stock) {
+    Simulation sim = economy_sim(stock, false);
+    sim.world_for_setup().place_structure(StructureType::Station, 0, {26, 3}, 4, 2);
+    return sim;
+}
+
+constexpr auto kMen = static_cast<size_t>(Resource::Personnel);
+constexpr auto kAmmo = static_cast<size_t>(Resource::Ammo);
+
+Command haul(std::vector<EntityId> trucks) { return {.type = CommandType::Haul, .player = 0, .units = std::move(trucks)}; }
+
+// Trains come on schedule: the men join at once, the freight waits at the
+// station for trucks.
+void test_trains_bring_men_and_freight() {
+    Simulation sim = logistics_sim({});
+    for (Tick i = 0; i + 1 < kTrainInterval; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Personnel) == 0);  // not yet
+    sim.step();
+    sim.step();
+    Stock freight = kTrainCargo;
+    freight[kMen] = 0;
+    CHECK(stock_of(sim, Resource::Personnel) == kTrainCargo[kMen]);
+    CHECK(sim.world().station_of(0)->cargo == freight);
+    CHECK(stock_of(sim, Resource::Food) == 0);  // not ours until it's in a depot
+    CHECK(sim.world().stock(1)[kMen] == 0);     // no station, no trains
+
+    for (Tick i = 0; i < kTrainInterval; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Personnel) == 2 * kTrainCargo[kMen]);
+    CHECK(sim.world().station_of(0)->cargo[kAmmo] == 2 * kTrainCargo[kAmmo]);
+}
+
+// Ticks from the first train until a truck has unloaded a full load of
+// ammunition at the depot, with `helpers` rear troops standing by it.
+int haul_one_load(int helpers) {
+    Simulation sim = logistics_sim({});
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::AmmoDepot, 0, {20, 12}, 2, 2);
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::Truck, at(22, 8));
+    for (int i = 0; i < helpers; ++i) w.spawn_unit(0, UnitTypeId::Worker, at(19, 12 + i));
+    issue(sim, haul({truck}));
+    for (Tick i = 0; i <= kTrainInterval; ++i) sim.step();
+
+    int ticks = 0;
+    for (; ticks < 3000 && stock_of(sim, Resource::Ammo) < kTruckCapacity; ++ticks) {
+        sim.step();
+        // Nothing gets lost or made up on the way.
+        const Unit* u = sim.world().find_unit(truck);
+        const int32_t aboard = u->carrying_type == Resource::Ammo ? u->carrying : 0;
+        CHECK(stock_of(sim, Resource::Ammo) + aboard + sim.world().station_of(0)->cargo[kAmmo] ==
+              kTrainCargo[kAmmo]);
+    }
+    // Only ammunition moved: there is no depot for food or fuel.
+    CHECK(sim.world().station_of(0)->cargo[static_cast<size_t>(Resource::Food)] ==
+          kTrainCargo[static_cast<size_t>(Resource::Food)]);
+    return ticks;
+}
+
+void test_trucks_haul_freight_to_depots() {
+    const int ticks = haul_one_load(0);
+    CHECK(ticks < 3000);
+}
+
+// The driver alone unloads at a crawl; rear troops by the depot make it quick.
+void test_rear_troops_unload_faster() {
+    const int alone = haul_one_load(0);
+    const int crew = haul_one_load(2);
+    CHECK(crew * 2 < alone);
+}
+
+// Shell the station flat and the trains stop: no more men, no more freight.
+void test_no_trains_without_the_station() {
+    Simulation sim = logistics_sim({});
+    const EntityId station = sim.world().station_of(0)->id;
+    std::vector<EntityId> tanks;
+    for (int i = 0; i < 3; ++i) tanks.push_back(sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(26 + i, 9)));
+    issue(sim, fire_at(1, tanks, 28, 4));
+    for (int i = 0; i < 8000 && sim.world().find_structure(station); ++i) sim.step();
+    CHECK(sim.world().find_structure(station) == nullptr);
+    CHECK(sim.world().station_of(0) == nullptr);
+
+    const int32_t men = stock_of(sim, Resource::Personnel);
+    for (Tick i = 0; i <= 2 * kTrainInterval; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Personnel) == men);
+}
+
+// A fuel depot going up burns a good part of the fuel and whatever stands by it.
+void test_fuel_depot_burns() {
+    Simulation sim = economy_sim(stock_with({{Resource::Fuel, 100}}), false);
+    World& w = sim.world_for_setup();
+    const EntityId depot = w.place_structure(StructureType::FuelDepot, 0, {20, 12}, 2, 2);
+    // Next to the depot, but out of reach of the shells aimed at its middle.
+    const EntityId bystander = w.spawn_unit(0, UnitTypeId::Truck, {Fixed::from_ratio(37, 2), Fixed::from_int(12)});
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(27, 13));
+    issue(sim, fire_at(1, {tank}, 21, 13));
+    for (int i = 0; i < 3000 && sim.world().find_structure(depot); ++i) sim.step();
+    CHECK(sim.world().find_structure(depot) == nullptr);
+
+    sim.step();  // the fire's damage lands on the next tick
+    CHECK(stock_of(sim, Resource::Fuel) == 100 - 100 * kFuelDepotLossPercent / 100);
+    CHECK(sim.world().find_unit(bystander) == nullptr);
+}
+
+// Supply trucks carry no guns: they don't take attack orders.
+void test_trucks_are_unarmed() {
+    Simulation sim = logistics_sim({});
+    World& w = sim.world_for_setup();
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::Truck, at(10, 5));
+    const EntityId enemy = w.spawn_unit(1, UnitTypeId::Rifleman, at(12, 5));
+    issue(sim, {.type = CommandType::Attack, .player = 0, .units = {truck}, .target_unit = enemy});
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(hp_of(sim, enemy) == unit_type(UnitTypeId::Rifleman).max_hp);
+    CHECK(sim.world().find_unit(truck)->order == Order::Idle);
 }
 
 // --- Terrain and pathfinding -------------------------------------------------
@@ -964,7 +1073,12 @@ int main() {
     test_rear_troops_quarry_stone();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
-    test_personnel_reinforcements();
+    test_trains_bring_men_and_freight();
+    test_trucks_haul_freight_to_depots();
+    test_rear_troops_unload_faster();
+    test_no_trains_without_the_station();
+    test_fuel_depot_burns();
+    test_trucks_are_unarmed();
     test_rear_troops_build_barracks();
     test_more_builders_build_faster();
     test_building_placement_rules();

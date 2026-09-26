@@ -58,7 +58,7 @@ public:
     // Which command-panel button slot is under the point: a building's
     // hiring roster, or the rear troops' building list.
     std::optional<size_t> button_at(Vector2 screen_pos) const;
-    static constexpr size_t kButtonSlots = 3;
+    static constexpr size_t kButtonSlots = 5;
 
 private:
     struct Layout {

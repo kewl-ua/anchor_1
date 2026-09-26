@@ -30,6 +30,7 @@ enum class Order : uint8_t {
     Gather,        // work gather_tile, carry the materials to the headquarters, repeat
     Retrain,       // walk into headquarters order_target, come out a rifleman
     Build,         // walk to structure order_target and build it until it's done
+    Haul,          // supply truck: load at the station, unload at the depot, repeat
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -66,10 +67,11 @@ struct Unit {
     // windows.
     EntityId inside = 0;
 
-    // Rear troops at work.
+    // Rear troops and trucks at work.
     TilePos gather_tile{};  // the forest or rock being worked
-    int32_t carrying = 0;   // materials in hand
-    Tick work = 0;          // ticks into the current unit of work (or of retraining)
+    int32_t carrying = 0;   // materials in hand, or a truck's load
+    Resource carrying_type = Resource::Materials;
+    Tick work = 0;          // progress on the current bit of work (chopping, retraining, unloading)
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -135,8 +137,8 @@ public:
     // Economy.
     const Stock& stock(PlayerId player) const { return stock_[player % kMaxPlayers]; }
     void set_stock(PlayerId player, const Stock& stock) { stock_[player % kMaxPlayers] = stock; }
-    // Tick at which the next personnel reinforcements arrive.
-    Tick next_reinforcement() const { return next_reinforcement_; }
+    // A player's railway station (the first one), if it still stands.
+    const Structure* station_of(PlayerId player) const;
 
     // Hash of the whole state. Peers exchange it to detect desyncs early.
     uint64_t checksum() const;
@@ -179,11 +181,15 @@ private:
     void apply_train(const Command& cmd);
     void apply_retrain(const Command& cmd);
     void apply_build(const Command& cmd);
+    void apply_haul(const Command& cmd);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
     void update_building(Unit& u);
+    void update_hauling(Unit& u);
     void update_production();
-    void reinforce();
+    void update_trains();
+    void burn_fuel_depot(const Structure& depot);
+    const Structure* nearest_owned(PlayerId owner, StructureType type, FixedVec2 from) const;
     const Structure* nearest_headquarters(PlayerId owner, FixedVec2 from) const;
     // The nearest finished building of `owner` that takes in materials.
     const Structure* nearest_drop_off(PlayerId owner, FixedVec2 from) const;
@@ -243,7 +249,6 @@ private:
     std::vector<Structure> structures_;       // sorted by id
     std::vector<EntityId> structure_tiles_;  // structure id per tile, 0 = none
     std::array<Stock, kMaxPlayers> stock_{};
-    Tick next_reinforcement_ = kReinforcementInterval;
     // Damage is applied after every unit has acted, so all units of a tick
     // shoot "at the same time" and the id order gives no one an advantage.
     std::vector<PendingDamage> pending_damage_;

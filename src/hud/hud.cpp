@@ -50,6 +50,18 @@ Vector2 minimap_pixel_to_ground(Vector2 px, float w, float h) {
     return {(sum + diff) * 0.5f, (sum - diff) * 0.5f};
 }
 
+// Whole seconds until a future tick, rounded up.
+int seconds_until(const engine::World& world, engine::Tick when) {
+    const engine::Tick left = when > world.tick() ? when - world.tick() : 0;
+    return static_cast<int>((left + engine::kTicksPerSecond - 1) / engine::kTicksPerSecond);
+}
+
+// The largest font (down to 10) at which the text fits the width.
+int fitting_font(const char* text, int size, float width) {
+    while (size > 10 && static_cast<float>(MeasureText(text, size)) > width) --size;
+    return size;
+}
+
 }  // namespace
 
 Hud::~Hud() {
@@ -217,11 +229,16 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
         draw_text(amount, x, y, kSmallFontSize, theme::kText);
         x += static_cast<float>(MeasureText(amount, kSmallFontSize)) + 18;
     }
-    const engine::Tick until = world.next_reinforcement() - world.tick();
-    const char* reinforcements = TextFormat("+%d men in %ds", engine::kReinforcementSize,
-                                            static_cast<int>((until + engine::kTicksPerSecond - 1) / engine::kTicksPerSecond));
-    draw_text(reinforcements, x, y, kSmallFontSize, theme::kTextDim);
-    x += static_cast<float>(MeasureText(reinforcements, kSmallFontSize)) + 30;
+    // Men and freight only come by rail.
+    const char* train = "No station: no trains";
+    Color train_color = theme::kDanger;
+    if (const engine::Structure* station = world.station_of(state.local_player)) {
+        train = TextFormat("Train in %ds (+%d men)", seconds_until(world, station->next_train),
+                           engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)]);
+        train_color = theme::kTextDim;
+    }
+    draw_text(train, x, y, kSmallFontSize, train_color);
+    x += static_cast<float>(MeasureText(train, kSmallFontSize)) + 30;
 
     // Debug and network details, smaller.
     constexpr int kTiny = 14;
@@ -314,7 +331,8 @@ void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::
     const bool hover = CheckCollisionPointRec(GetMousePosition(), r);
     DrawRectangleRec(r, hover ? Color{52, 60, 54, 255} : Color{32, 36, 34, 255});
     DrawRectangleLinesEx(r, 1.0f, theme::kPanelBorder);
-    draw_text(TextFormat("%c  %s", hotkey, name), r.x + 6, r.y + 4, 14, affordable ? theme::kText : theme::kTextDim);
+    const char* label = TextFormat("%c  %s", hotkey, name);
+    draw_text(label, r.x + 6, r.y + 4, fitting_font(label, 14, r.width - 10), affordable ? theme::kText : theme::kTextDim);
 
     char price[96] = {};
     size_t used = 0;
@@ -328,10 +346,12 @@ void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::
 void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
     const engine::StructureDef& def = engine::structure_type(s.type);
     draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(s.owner));
-    draw_text(TextFormat("HP %d / %d", s.hp, def.max_hp), area.x + 220, area.y + 2, kSmallFontSize, theme::kText);
+    const char* hp = TextFormat("HP %d / %d", s.hp, def.max_hp);
+    draw_text(hp, area.x + 220, area.y + 2, kSmallFontSize, theme::kText);
+    const float bar_x = area.x + 220 + static_cast<float>(MeasureText(hp, kSmallFontSize)) + 14;
     const float frac = static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
-    DrawRectangleRec({area.x + 340, area.y + 6, 120, 6}, {0, 0, 0, 170});
-    DrawRectangleRec({area.x + 340, area.y + 6, 120 * frac, 6}, {200, 200, 190, 255});
+    DrawRectangleRec({bar_x, area.y + 6, 120, 6}, {0, 0, 0, 170});
+    DrawRectangleRec({bar_x, area.y + 6, 120 * frac, 6}, {200, 200, 190, 255});
 
     const float line2 = area.y + kFontSize + 10;
     if (!s.built) {
@@ -341,6 +361,43 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
         DrawRectangleRec({area.x, line2 + 24, 300, 6}, {0, 0, 0, 170});
         DrawRectangleRec({area.x, line2 + 24, 300 * done, 6}, {230, 200, 60, 255});
         return;
+    }
+
+    auto freight = [](const engine::Stock& cargo) {
+        return TextFormat("%d food, %d ammo, %d fuel", cargo[static_cast<size_t>(engine::Resource::Food)],
+                          cargo[static_cast<size_t>(engine::Resource::Ammo)],
+                          cargo[static_cast<size_t>(engine::Resource::Fuel)]);
+    };
+    const float line3 = line2 + kSmallFontSize + 6;
+    switch (s.type) {
+        case engine::StructureType::Station:
+            draw_text(TextFormat("Next train in %ds: +%d men, %s", seconds_until(world, s.next_train),
+                                 engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)],
+                                 freight(engine::kTrainCargo)),
+                      area.x, line2, kSmallFontSize, theme::kTextDim);
+            draw_text(TextFormat("Waiting for trucks: %s", freight(s.cargo)), area.x, line3, kSmallFontSize,
+                      theme::kText);
+            draw_text("Supply trucks (hired at the headquarters) take it to the depots.", area.x,
+                      line3 + kSmallFontSize + 6, 14, theme::kTextDim);
+            return;
+        case engine::StructureType::Warehouse:
+            draw_text("Takes food from supply trucks and materials from rear troops.", area.x, line2, kSmallFontSize,
+                      theme::kTextDim);
+            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kSmallFontSize,
+                      theme::kTextDim);
+            return;
+        case engine::StructureType::AmmoDepot:
+            draw_text("Takes ammunition from supply trucks.", area.x, line2, kSmallFontSize, theme::kTextDim);
+            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kSmallFontSize,
+                      theme::kTextDim);
+            return;
+        case engine::StructureType::FuelDepot:
+            draw_text("Takes fuel from supply trucks.", area.x, line2, kSmallFontSize, theme::kTextDim);
+            draw_text(TextFormat("Burns if destroyed: a fireball, and %d%% of the fuel is lost.",
+                                 engine::kFuelDepotLossPercent),
+                      area.x, line3, kSmallFontSize, theme::kWarning);
+            return;
+        default: break;
     }
 
     // The hiring queue: the front one with its progress.
@@ -367,7 +424,8 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                   kSmallFontSize, theme::kTextDim);
     }
 
-    static constexpr char kHireKeys[] = {'Q', 'W', 'E'};
+    static constexpr char kHireKeys[] = {'Q', 'W', 'E', 'T'};
+    static_assert(std::size(kHireKeys) >= engine::kMaxRoster);
     const engine::Stock& stock = world.stock(s.owner);
     for (size_t i = 0; i < std::min<size_t>(def.roster_size, kButtonSlots); ++i) {
         const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
@@ -380,8 +438,8 @@ void Hud::draw_help(Rectangle area) const {
         "LMB: select / drag box    Shift+LMB: add to selection    F2: select army",
         "RMB: move / attack / infantry into a house    S: stop    F10: quit",
         "A + LMB: attack-move    G + LMB: fire at ground    Space: jump to selection",
-        "Rear troops: RMB forest/rock to gather, 1-3 build, R retrain",
-        "Buildings: click to select, Q/W/E hire    Minimap: LMB camera, RMB send",
+        "Rear troops: RMB forest/rock to gather, 1-5 build, R retrain",
+        "Buildings: click, Q/W/E hire    Trucks: RMB station/depot    Minimap: LMB/RMB",
     };
     constexpr int kHelpFontSize = 14;
     float y = area.y;
@@ -401,7 +459,8 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
         workers = workers || (u && engine::unit_type(u->type).worker);
     }
     if (workers) {
-        static constexpr char kBuildKeys[] = {'1', '2', '3'};
+        static constexpr char kBuildKeys[] = {'1', '2', '3', '4', '5'};
+        static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
         const engine::Stock& stock = world.stock(state.local_player);
         for (size_t i = 0; i < std::min(std::size(engine::kBuildable), kButtonSlots); ++i) {
             const engine::StructureDef& def = engine::structure_type(engine::kBuildable[i]);
@@ -452,17 +511,23 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     static constexpr const char* kDamageNames[] = {"bullet", "explosive", "anti-tank"};
     const float line2 = area.y + kFontSize + 6;
     const float range = static_cast<float>(weapon.range.raw) / engine::Fixed::kOneRaw;
-    draw_text(TextFormat("%s: %d %s, range %.1f, every %.1f s", weapon.name, weapon.damage,
-                         kDamageNames[static_cast<int>(weapon.damage_type)], range,
-                         static_cast<float>(weapon.reload) / engine::kTicksPerSecond),
-              area.x, line2, kSmallFontSize, theme::kTextDim);
+    const char* armament = "Unarmed";
+    if (engine::is_armed(def)) {
+        armament = TextFormat("%s: %d %s, range %.1f, every %.1f s", weapon.name, weapon.damage,
+                              kDamageNames[static_cast<int>(weapon.damage_type)], range,
+                              static_cast<float>(weapon.reload) / engine::kTicksPerSecond);
+    } else if (u.type == engine::UnitTypeId::Truck) {
+        armament = TextFormat("Unarmed. Carries %d from the station to the depots.", engine::kTruckCapacity);
+    }
+    draw_text(armament, area.x, line2, kSmallFontSize, theme::kTextDim);
     draw_text(TextFormat("Armor: bullet %d, explosive %d, anti-tank %d", def.armor[0], def.armor[1], def.armor[2]),
               area.x, line2 + kSmallFontSize + 4, kSmallFontSize, theme::kTextDim);
 
-    static constexpr const char* kOrderNames[] = {"Idle",         "Moving",           "Attacking",
+    static constexpr const char* kOrderNames[] = {"Idle",          "Moving",           "Attacking",
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
-                                                  "Gathering",     "Retraining"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Retrain) + 1);
+                                                  "Gathering",     "Retraining",       "Building",
+                                                  "Supply run"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Haul) + 1);
     const char* state = kOrderNames[static_cast<int>(u.order)];
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
     if (const engine::Structure* s = world.find_structure(u.inside)) {
@@ -475,6 +540,13 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
         }
     }
     if (def.worker && u.carrying > 0) state = TextFormat("%s, carrying %d materials", state, u.carrying);
+    if (u.type == engine::UnitTypeId::Truck) {
+        if (u.carrying > 0) {
+            state = TextFormat("%s, %d %s aboard", state, u.carrying, engine::resource_name(u.carrying_type));
+        } else if (u.order == engine::Order::Haul) {
+            state = "Supply run, empty";
+        }
+    }
     draw_text(TextFormat("%s   %s, elevation %d", state, engine::terrain_def(world.map().terrain_at(u.pos)).name,
                          world.map().elevation_at(u.pos)),
               area.x, line2 + 2 * (kSmallFontSize + 4), kSmallFontSize, theme::kTextDim);

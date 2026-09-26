@@ -258,6 +258,14 @@ TileMap make_demo_map(int32_t size) {
                if (dist <= std::max(6, p.at(kBaseClearingPct))) p.paint(x, y, Terrain::Grass);
            });
 
+    // The railway: from the map edge straight into the station (mirrored for
+    // the other player). The station's own tiles are cleared for it.
+    const TilePos station = demo_station_origin(size, 0);
+    for (int32_t x = 0; x < station.x; ++x) p.paint(x, station.y, Terrain::Rail);
+    for (int32_t dy = 0; dy < kStationHeight; ++dy) {
+        for (int32_t dx = 0; dx < kStationWidth; ++dx) p.paint(station.x + dx, station.y + dy, Terrain::Grass);
+    }
+
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
     return map;
 }
@@ -274,6 +282,8 @@ void setup_demo_scenario(World& world) {
         world.place_structure(StructureType::Headquarters, player,
                               {bx - kHeadquartersSize / 2, by - kHeadquartersSize / 2}, kHeadquartersSize,
                               kHeadquartersSize);
+        world.place_structure(StructureType::Station, player, demo_station_origin(world.map().width(), player),
+                              kStationWidth, kStationHeight);
         // Rear troops behind the headquarters, the army in front of it.
         for (int i = 0; i < kStartingWorkers; ++i) {
             world.spawn_unit(player, UnitTypeId::Worker,
@@ -282,6 +292,14 @@ void setup_demo_scenario(World& world) {
         }
         spawn_army(world, player, bx + kArmyForwardTiles * forward, by - kArmyForwardTiles * forward);
     }
+}
+
+TilePos demo_station_origin(int32_t map_size, PlayerId player) {
+    const FixedVec2 base = demo_base_position(map_size, 0);
+    const TilePos first{base.x.to_int() - map_size * 7 / 100, base.y.to_int() - map_size * 5 / 100};
+    if (player == 0) return first;
+    // Point-mirrored through the map center, footprint included.
+    return {map_size - kStationWidth - first.x, map_size - kStationHeight - first.y};
 }
 
 FixedVec2 demo_base_position(int32_t map_size, PlayerId player) {

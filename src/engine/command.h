@@ -25,6 +25,7 @@ enum class CommandType : uint8_t {
     Retrain,       // rear troops: go to the headquarters and come out as riflemen
     Build,         // rear troops: put up a building (structure_type at target) or help
                    // finish one (target_unit)
+    Haul,          // supply trucks: run between the station and the depots
 };
 
 // The only way anything outside the engine can change the game state.
