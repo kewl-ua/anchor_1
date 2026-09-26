@@ -94,6 +94,9 @@ private:
     bool has_trucks(const engine::World& world) const;
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);
+    // Where a tanker or an ammunition truck loads up, and whether any selected one does there.
+    static std::optional<engine::StructureType> depot_for_refill(engine::UnitTypeId type);
+    bool refills_at(const engine::World& world, engine::StructureType depot) const;
     void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);
 
     // The command grid. Each cell holds an action; its hotkey is the cell's.

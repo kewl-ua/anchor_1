@@ -134,6 +134,19 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 order_gather(lockstep, world, renderer, ground);
             } else if (structure && structure->owner == player_ && !structure->built && has_workers(world)) {
                 order_help_build(lockstep, structure->id);
+            } else if (structure && structure->owner == player_ && refills_at(world, structure->type)) {
+                // Tankers to the fuel depot, ammunition trucks to the ammunition depot: load up.
+                engine::Command refill{.type = engine::CommandType::Ability,
+                                       .ability = static_cast<uint8_t>(engine::AbilityId::Refill)};
+                engine::Command move{.type = engine::CommandType::Move, .target = render::to_fixed_vec2(ground)};
+                for (engine::EntityId id : selection_) {
+                    const engine::Unit* u = world.find_unit(id);
+                    if (!u) continue;
+                    (depot_for_refill(u->type) == structure->type ? refill : move).units.push_back(id);
+                }
+                if (!refill.units.empty()) lockstep.submit(std::move(refill));
+                if (!move.units.empty()) lockstep.submit(std::move(move));
+                renderer.add_order_ping(ground, false);
             } else if (structure && structure->owner == player_ && is_supply_point(structure->type) &&
                        has_trucks(world)) {
                 // Trucks go back on the supply run; anyone else selected just goes there.
@@ -168,6 +181,8 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Truck: return "Truck";
         case engine::UnitTypeId::Scout: return "Scout";
         case engine::UnitTypeId::Assault: return "Assault";
+        case engine::UnitTypeId::FuelTanker: return "Tanker";
+        case engine::UnitTypeId::AmmoTruck: return "Ammo truck";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -264,7 +279,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         for (engine::EntityId unit_id : selection_) {
             const engine::Unit* u = world.find_unit(unit_id);
             if (!u || u->type != *lead) continue;
-            alt_loaded = u->ammo == 1;
+            alt_loaded = u->round_type == 1;
             const engine::Tick ready = u->ability_ready[i];
             const float left = ready > world.tick() && ability.cooldown > 0
                                    ? static_cast<float>(ready - world.tick()) / static_cast<float>(ability.cooldown)
@@ -395,6 +410,21 @@ bool PlayerController::has_trucks(const engine::World& world) const {
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
         return u && u->type == engine::UnitTypeId::Truck;
+    });
+}
+
+std::optional<engine::StructureType> PlayerController::depot_for_refill(engine::UnitTypeId type) {
+    switch (engine::unit_type(type).supplies) {
+        case engine::Resource::Fuel: return engine::StructureType::FuelDepot;
+        case engine::Resource::Ammo: return engine::StructureType::AmmoDepot;
+        default: return std::nullopt;
+    }
+}
+
+bool PlayerController::refills_at(const engine::World& world, engine::StructureType depot) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && depot_for_refill(u->type) == depot;
     });
 }
 

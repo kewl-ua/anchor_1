@@ -75,6 +75,15 @@ inline constexpr Tick kDugoutWork = 20 * kTicksPerSecond;
 inline constexpr int32_t kDugoutDiggers = 4;
 inline constexpr int32_t kGrenadeVictims = 3;  // a grenade into a room hurts this many inside
 
+// Vehicle supply. A unit of fuel from the stock drives a vehicle this many tiles.
+inline constexpr int32_t kTilesPerFuel = 2;
+// Service vehicles look after their own vehicles this close, handing over a
+// unit of cargo every so many ticks.
+inline constexpr Fixed kServiceRadius = Fixed::from_int(4);
+inline constexpr Tick kRefuelInterval = 4;
+inline constexpr Tick kRearmInterval = 8;
+inline constexpr Tick kRefillInterval = 2;  // loading at the depot
+
 // The tiles of a trench dug from a to b: a 4-connected line, so men can walk
 // along it, at most kMaxTrenchLength long.
 std::vector<TilePos> trench_line(TilePos a, TilePos b);
@@ -121,12 +130,16 @@ struct Unit {
     uint8_t seen_by = 0;
 
     // Skills.
-    uint8_t ammo = 0;                                  // 0: the main round, 1: the other one (a tank's AP)
+    uint8_t round_type = 0;                            // loaded: 0 the main round, 1 the other one (a tank's AP)
     std::array<Tick, kMaxAbilities> ability_ready{};  // tick from which each skill can be used again
     AbilityId order_ability = AbilityId::AreaShot;     // Order::Ability
     FixedVec2 order_point2{};                          // the other end of a line
     int32_t shots_left = 0;                            // a burst in progress
     Tick still = 0;                                    // ticks since it last moved
+
+    // Vehicles run out: fuel in tiles of driving, rounds for the main gun.
+    Fixed fuel{};
+    int32_t rounds = 0;
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -161,7 +174,7 @@ struct Impact {
 // The round a unit's gun is loaded with: the main one, or the alternative.
 inline const WeaponDef& weapon_of(const Unit& u) {
     const UnitTypeDef& def = unit_type(u.type);
-    return u.ammo == 1 && def.alt_weapon.damage > 0 ? def.alt_weapon : def.weapon;
+    return u.round_type == 1 && def.alt_weapon.damage > 0 ? def.alt_weapon : def.weapon;
 }
 
 // The complete game state.
@@ -187,6 +200,8 @@ public:
     // Impacts of the last few seconds, oldest first.
     const std::deque<Impact>& recent_impacts() const { return recent_impacts_; }
     const Unit* find_unit(EntityId id) const;
+    // Setup and tests: direct access to a unit (to hand it a nearly empty tank...).
+    Unit* unit_for_setup(EntityId id) { return find_unit_mut(id); }
 
     // Houses and bridges come from the map's House/Bridge tiles; player
     // buildings are placed with place_structure().
@@ -337,8 +352,15 @@ private:
                               EntityId own_structure, Fixed& stop);
     const Unit* first_unit_on(const FireLine& line, Fixed t0, Fixed t1, EntityId ignore, Fixed& hit) const;
     bool own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed start) const;
-    bool try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon);
-    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon);
+    // `spends` = the shot uses up one of the unit's rounds.
+    bool try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon, bool spends = true);
+    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends = true);
+    bool out_of_rounds(const Unit& u) const;
+    // Service vehicles: look after our vehicles nearby; load up at a depot.
+    void serve(Unit& u);
+    void refill(Unit& u);
+    // A fireball: fuel or ammunition going up.
+    void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire);
 
     // Movement. `formation` limits the speed to the group's slowest unit.
     std::shared_ptr<const FlowField> field_to(TilePos goal, MoveClass cls);

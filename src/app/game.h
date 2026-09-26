@@ -48,6 +48,8 @@ public:
     void select_army_and_attack_move(Vector2 ground);
     // Lifts the fog of war on screen (the game itself still plays by it).
     void set_reveal(bool reveal);
+    // Offline smoke scenes only: a peer changing the world directly would desync.
+    engine::World& world_for_setup() { return sim_.world_for_setup(); }
 
 private:
     engine::Simulation sim_;

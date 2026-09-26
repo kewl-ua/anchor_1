@@ -41,7 +41,8 @@ struct Options {
     // nearest house and the tanks shell the next one until it collapses.
     // Also `economy`, `build`, `logistics` (depots by the station, supply
     // trucks, the first train), `recon` (scouts' observation posts), `skills`
-    // (tank and IFV skills) and `works` (riflemen dig in).
+    // (tank and IFV skills), `works` (riflemen dig in) and `supply` (offline:
+    // dry tanks, a tanker and an ammunition truck).
     std::string scene;
 };
 
@@ -204,6 +205,37 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                      .ability = static_cast<uint8_t>(engine::AbilityId::DigFoxhole)});
         game.select_units(riflemen);
         return mid;
+    }
+
+    if (options.scene == "supply") {
+        // Offline: the tanks are nearly dry and the IFV has shot its racks
+        // empty; the tanker and the ammunition truck drive up to the army and
+        // look after them. A tank stays selected to show its card.
+        std::vector<engine::EntityId> service;
+        engine::EntityId tank = 0;
+        Vector2 army{0, 0};
+        int count = 0;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me) continue;
+            const engine::UnitTypeDef& def = engine::unit_type(u.type);
+            if (def.supplies != engine::Resource::Count) service.push_back(u.id);
+            if (def.fuel_capacity.raw > 0) {
+                if (options.mode == Options::Mode::Offline) {
+                    engine::Unit* v = game.world_for_setup().unit_for_setup(u.id);
+                    v->fuel = engine::Fixed::from_int(2);
+                    if (u.type == engine::UnitTypeId::Ifv) v->rounds = 0;
+                }
+                if (u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;
+                army.x += render::to_vector2(u.pos).x;
+                army.y += render::to_vector2(u.pos).y;
+                ++count;
+            }
+        }
+        if (count == 0 || service.empty()) return std::nullopt;
+        army = {army.x / static_cast<float>(count), army.y / static_cast<float>(count)};
+        game.submit({.type = engine::CommandType::Move, .units = service, .target = render::to_fixed_vec2(army)});
+        game.select_units({tank});
+        return army;
     }
 
     if (options.scene == "build") {

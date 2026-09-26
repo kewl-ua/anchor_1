@@ -648,6 +648,24 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                                    engine::terrain_def(world.map().terrain_at(u.pos)).name,
                                    world.map().elevation_at(u.pos));
     draw_text(where, area.x, line2 + 2 * step, fitting_font(where, kCardFontSize, area.width), theme::kTextDim);
+
+    // Fuel and rounds, or the cargo of a service vehicle.
+    const char* supply = nullptr;
+    Color supply_color = theme::kTextDim;
+    if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
+        const int fuel = static_cast<int>(to_float(u.fuel));
+        supply = TextFormat("Fuel %d / %d tiles    Rounds %d / %d", fuel, static_cast<int>(to_float(def.fuel_capacity)),
+                            u.rounds, def.rounds_capacity);
+        if (u.fuel.raw <= 0 || u.rounds <= 0) supply_color = theme::kDanger;
+    } else if (def.supplies != engine::Resource::Count) {
+        supply = TextFormat("Aboard: %d / %d %s. Serves our vehicles within %d tiles.", u.carrying,
+                            def.cargo_capacity, engine::resource_name(def.supplies),
+                            engine::kServiceRadius.to_int());
+        if (u.carrying <= 0) supply_color = theme::kWarning;
+    }
+    if (supply) {
+        draw_text(supply, area.x, line2 + 3 * step, fitting_font(supply, kCardFontSize, area.width), supply_color);
+    }
 }
 
 void Hud::draw_hp_bar(const engine::Unit& u, Rectangle area) const {

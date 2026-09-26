@@ -112,7 +112,7 @@ void World::apply_ability(const Command& cmd) {
         if (id == AbilityId::SwitchAmmo) {
             if (unit_type(u->type).alt_weapon.damage > 0) {
                 // The round in the breech has to come out: a full reload.
-                u->ammo ^= 1;
+                u->round_type ^= 1;
                 u->cooldown = std::max(u->cooldown, weapon_of(*u).reload);
             }
             continue;
@@ -120,8 +120,9 @@ void World::apply_ability(const Command& cmd) {
         leave_structure(*u);
         u->order = Order::Ability;
         u->order_ability = id;
-        // A foxhole is dug where the man stands.
-        u->order_point = id == AbilityId::DigFoxhole ? u->pos : clamp_to_map(cmd.target, Fixed{});
+        // A foxhole is dug where the man stands; a refill needs no point at all.
+        const bool here = id == AbilityId::DigFoxhole || id == AbilityId::Refill;
+        u->order_point = here ? u->pos : clamp_to_map(cmd.target, Fixed{});
         u->order_point2 = clamp_to_map(cmd.target_end, Fixed{});
         u->order_goal = map_.clamp_tile(tile_of(u->order_point));
         u->order_path.reset();
@@ -177,7 +178,7 @@ void World::update_ability(Unit& u) {
             const FixedVec2 across{-dir.y, dir.x};
             const Fixed offset = Fixed::from_raw(rng_.next_range(-kSweepSpread.raw, kSweepSpread.raw));
             const FixedVec2 aim = clamp_to_map(u.pos + dir * ability.range + across * offset, Fixed{});
-            fire(u, aim, map_.surface_height(aim) + kInfantryCenter, ability.weapon);
+            fire(u, aim, map_.surface_height(aim) + kInfantryCenter, ability.weapon, false);  // the coaxial's own belt
             if (--u.shots_left <= 0) finish_ability(u);
             return;
         }
@@ -250,11 +251,79 @@ void World::update_ability(Unit& u) {
             return finish_ability(u);
         }
 
+        case AbilityId::Refill:
+            return refill(u);
+
         case AbilityId::SwitchAmmo:
         case AbilityId::Count:
             break;
     }
     finish_ability(u);
+}
+
+// Off to the depot for the kind of cargo this vehicle carries, and load up
+// from the stock until full (or the stock runs dry).
+void World::refill(Unit& u) {
+    const UnitTypeDef& def = unit_type(u.type);
+    const StructureType depot_type = def.supplies == Resource::Fuel ? StructureType::FuelDepot : StructureType::AmmoDepot;
+    const Structure* depot = nearest_owned(u.owner, depot_type, u.pos);
+    int32_t& stock = stock_[u.owner % kMaxPlayers][static_cast<size_t>(def.supplies)];
+    if (!depot || def.supplies == Resource::Count || u.carrying >= def.cargo_capacity || stock <= 0) {
+        return finish_ability(u);
+    }
+    if (distance_sq_to(*depot, u.pos) > square_raw(Fixed::from_int(1))) {
+        navigate(u, depot->center, u.order_path, map_.clamp_tile(tile_of(depot->center)), false);
+        return;
+    }
+    if (++u.work < kRefillInterval) return;
+    u.work = 0;
+    --stock;
+    ++u.carrying;
+    u.carrying_type = def.supplies;
+}
+
+// A tanker or an ammunition truck standing by looks after the neediest of
+// our vehicles close to it: drives up and hands over, a unit at a time.
+void World::serve(Unit& u) {
+    const UnitTypeDef& def = unit_type(u.type);
+    if (u.carrying <= 0) return;
+    const bool fuel = def.supplies == Resource::Fuel;
+    const Unit* neediest = nullptr;
+    int64_t most_missing = 0;  // per mille of a full tank or rack
+    for (const Unit& v : units_) {
+        if (v.owner != u.owner || v.inside || v.id == u.id) continue;
+        const UnitTypeDef& vd = unit_type(v.type);
+        int64_t missing = 0;
+        if (fuel && vd.fuel_capacity.raw > 0) {
+            missing = static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;
+        } else if (!fuel && vd.rounds_capacity > 0) {
+            missing = static_cast<int64_t>(vd.rounds_capacity - v.rounds) * 1000 / vd.rounds_capacity;
+        }
+        if (missing <= 0 || (v.pos - u.pos).length_sq_raw() > square_raw(kServiceRadius)) continue;
+        if (!neediest || missing > most_missing) {
+            neediest = &v;
+            most_missing = missing;
+        }
+    }
+    if (!neediest) {
+        u.work = 0;
+        return;
+    }
+    const Fixed reach = def.radius + unit_type(neediest->type).radius + Fixed::from_ratio(1, 2);
+    if ((neediest->pos - u.pos).length_sq_raw() > square_raw(reach)) {
+        navigate(u, neediest->pos, u.chase_path, map_.clamp_tile(tile_of(neediest->pos)), false);
+        return;
+    }
+    if (++u.work < (fuel ? kRefuelInterval : kRearmInterval)) return;
+    u.work = 0;
+    Unit* v = find_unit_mut(neediest->id);
+    const UnitTypeDef& vd = unit_type(v->type);
+    if (fuel) {
+        v->fuel = min(vd.fuel_capacity, v->fuel + Fixed::from_int(kTilesPerFuel));
+    } else {
+        v->rounds = std::min(vd.rounds_capacity, v->rounds + vd.rounds_per_supply);
+    }
+    --u.carrying;
 }
 
 void World::lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters) {

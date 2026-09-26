@@ -305,6 +305,9 @@ void World::update_production() {
         s.queue.erase(s.queue.begin());
         const EntityId id = spawn_unit(s.owner, type, door_of(s, move_class(unit_type(type))));
         if (type == UnitTypeId::Truck) find_unit_mut(id)->order = Order::Haul;  // straight onto the supply run
+        // A tanker or an ammunition truck comes with what was paid for aboard; for more, the depot.
+        const UnitTypeDef& def = unit_type(type);
+        if (def.supplies != Resource::Count) find_unit_mut(id)->carrying = def.cost[static_cast<size_t>(def.supplies)];
     }
 }
 
@@ -432,6 +435,22 @@ const Structure* World::nearest_headquarters(PlayerId owner, FixedVec2 from) con
         }
     }
     return best;
+}
+
+void World::burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire) {
+    recent_impacts_.push_back({tick_, at, UnitTypeId::FuelTanker, fire.splash_radius});
+    for (const Unit& u : units_) {
+        if (u.inside || u.hp <= 0) continue;
+        if ((u.pos - at).length_sq_raw() <= square_raw(fire.splash_radius + unit_type(u.type).radius)) {
+            hurt(u, fire, {at, 0, true, true});
+        }
+    }
+    for (const Structure& s : structures_) {
+        uint64_t closest = UINT64_MAX;
+        for (const TilePos& t : s.tiles) closest = std::min(closest, distance_sq_to_tile(t, at));
+        if (s.hp > 0 && closest <= square_raw(fire.splash_radius)) hurt_structure(s, fire);
+    }
+    (void)owner;
 }
 
 const Structure* World::station_of(PlayerId player) const {

@@ -83,6 +83,14 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
         if (auto free = nearest_passable(map_, tile_of(u.pos), class_of(u))) u.pos = tile_center(*free);
     }
     u.prev_pos = u.pos;
+    // Fresh from the barracks: tanks full, racks full, cargo aboard.
+    const UnitTypeDef& def = unit_type(type);
+    u.fuel = def.fuel_capacity;
+    u.rounds = def.rounds_capacity;
+    if (def.supplies != Resource::Count) {
+        u.carrying = def.cargo_capacity;
+        u.carrying_type = def.supplies;
+    }
     units_.push_back(u);  // ids only grow, so the vector stays sorted
     return u.id;
 }
@@ -444,6 +452,7 @@ void World::update_unit(Unit& u) {
 
     switch (u.order) {
         case Order::Idle:
+            if (def_of(u).supplies != Resource::Count) serve(u);
             if (!is_armed(def_of(u))) break;
             if (const Unit* target = find_enemy_in_sight(u)) engage(u, *target);
             break;
@@ -586,6 +595,7 @@ std::shared_ptr<const FlowField> World::field_to(TilePos goal, MoveClass cls) {
 
 World::Step World::navigate(Unit& u, FixedVec2 point, std::shared_ptr<const FlowField>& path, TilePos field_goal,
                             bool formation) {
+    if (def_of(u).fuel_capacity.raw > 0 && u.fuel.raw <= 0) return Step::Blocked;  // dry: going nowhere
     const MoveClass cls = class_of(u);
 
     // Close and nothing in the way: walk straight there.
@@ -630,6 +640,8 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     if (dist.raw == 0) return Step::Arrived;
 
     const UnitTypeDef& def = def_of(u);
+    const bool thirsty = def.fuel_capacity.raw > 0;
+    if (thirsty && u.fuel.raw <= 0) return Step::Blocked;  // out of fuel: stuck where it stands
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
     // Terrain slows down (forest for infantry, villages for vehicles...).
@@ -638,8 +650,10 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
 
     u.facing = to_point;
     const FixedVec2 next = dist <= speed ? point : u.pos + to_point * (speed / dist);
+    const FixedVec2 before = u.pos;
     if (!move_to(u, next)) return Step::Blocked;
     u.moving = true;
+    if (thirsty) u.fuel = max(Fixed{}, u.fuel - (u.pos - before).length());
     return u.pos == point ? Step::Arrived : Step::Moved;
 }
 
@@ -758,7 +772,11 @@ bool World::own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed 
     return false;
 }
 
-bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon) {
+bool World::out_of_rounds(const Unit& u) const { return def_of(u).rounds_capacity > 0 && u.rounds <= 0; }
+
+bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon, bool spends) {
+    // Nothing left in the racks: the crew holds its ground and waits for a truck.
+    if (spends && out_of_rounds(shooter)) return true;
     // Someone in a house is shot at through the house: aim at the windows.
     Fixed aim_height = map_.surface_height(aim) + kGroundAim;
     if (target) aim_height = map_.surface_height(aim) + (target->inside ? kWindowHeight : center_height(*target));
@@ -773,15 +791,16 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const Wea
         if (aimed == 0 || structure_id_at(tile_of(line.point(stop))) != aimed) return false;
     }
     if (own_troops_in_line(shooter, line, start)) return true;  // hold fire, the line itself is fine
-    fire(shooter, aim, aim_height, weapon);
+    fire(shooter, aim, aim_height, weapon, spends);
     return true;
 }
 
 // --- Combat ------------------------------------------------------------------
 
-void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon) {
+void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends) {
     // A skill's own gun (a coaxial machine gun) doesn't reload the main one.
     if (weapon.reload > 0) shooter.cooldown = weapon.reload;
+    if (spends && def_of(shooter).rounds_capacity > 0) shooter.rounds = std::max(0, shooter.rounds - 1);
 
     // Where he fires from: a foxhole spoils the aim; small arms fired from a
     // trench before settling at a position barely count; assault troops
@@ -1000,6 +1019,19 @@ void World::apply_damage_and_remove_dead() {
         on_map_changed();
     }
 
+    // A tanker or an ammunition truck hit with its load aboard goes up.
+    for (const Unit& u : units_) {
+        if (u.hp > 0 || u.carrying <= 0 || def_of(u).supplies == Resource::Count) continue;
+        static constexpr WeaponDef kTankerFire{.name = "Burning fuel", .damage = 60,
+                                               .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
+                                               .projectile_speed = Fixed{}, .splash_radius = Fixed::from_ratio(3, 2),
+                                               .accuracy = 100, .miss_spread = Fixed{}};
+        static constexpr WeaponDef kAmmoCookOff{.name = "Cooking-off rounds", .damage = 45,
+                                                .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
+                                                .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
+                                                .accuracy = 100, .miss_spread = Fixed{}};
+        burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
+    }
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
     for (Structure& s : structures_) {
         std::erase_if(s.garrison, [this](EntityId id) { return find_unit(id) == nullptr; });
@@ -1090,12 +1122,14 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(u.carrying_type));
         mix(u.work);
         mix(u.seen_by);
-        mix(u.ammo);
+        mix(u.round_type);
         for (Tick t : u.ability_ready) mix(t);
         mix(static_cast<uint8_t>(u.order_ability));
         mix_vec(u.order_point2);
         mix(static_cast<uint32_t>(u.shots_left));
         mix(u.still);
+        mix_fixed(u.fuel);
+        mix(static_cast<uint32_t>(u.rounds));
     }
     for (const Structure& s : structures_) {
         mix(s.id);

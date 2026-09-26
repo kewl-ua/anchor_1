@@ -292,6 +292,11 @@ void setup_demo_scenario(World& world) {
                               Fixed::from_int(by + 3 * forward)});
         }
         spawn_army(world, player, bx + kArmyForwardTiles * forward, by - kArmyForwardTiles * forward);
+        // A fuel tanker and an ammunition truck, full, by the headquarters.
+        world.spawn_unit(player, UnitTypeId::FuelTanker,
+                         {Fixed::from_int(bx + 3 * forward), Fixed::from_int(by + 1 * forward)});
+        world.spawn_unit(player, UnitTypeId::AmmoTruck,
+                         {Fixed::from_int(bx + 4 * forward), Fixed::from_int(by + 2 * forward)});
     }
 }
 

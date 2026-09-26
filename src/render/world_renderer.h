@@ -93,6 +93,7 @@ private:
     void draw_shots(const engine::World& world, float alpha) const;
     void draw_blasts(const engine::TileMap& map) const;
     void draw_health_bar(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
+    void draw_supply_warning(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_structure_overlays(const engine::World& world, Rectangle view) const;
     // Trains running on schedule to each station, as railway cars to draw.
     void collect_trains(const engine::World& world, float alpha, std::vector<TrainCar>& cars) const;

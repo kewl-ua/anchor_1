@@ -716,7 +716,7 @@ void test_tank_switches_rounds() {
         sim.step();
         if (armor_piercing) {
             const Unit* u = sim.world().find_unit(gun);
-            CHECK(u->ammo == 1);
+            CHECK(u->round_type == 1);
             CHECK(u->cooldown + 1 >= unit_type(UnitTypeId::Tank).alt_weapon.reload);  // reloading
         }
         int32_t prev = hp_of(sim, target);
@@ -1564,6 +1564,142 @@ void test_trucks_are_unarmed() {
     CHECK(sim.world().find_unit(truck)->order == Order::Idle);
 }
 
+// --- Vehicle supply ------------------------------------------------------------
+
+// Out of fuel a tank stops where it is, but its gun still works.
+void test_out_of_fuel_but_still_shooting() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+    sim.world_for_setup().unit_for_setup(tank)->fuel = Fixed::from_int(3);
+    issue(sim, make_move(0, {tank}, 30, 10));
+    for (int i = 0; i < 400; ++i) sim.step();
+    const Unit* t = sim.world().find_unit(tank);
+    CHECK(t->fuel == Fixed{});
+    CHECK(t->pos.x > Fixed::from_int(7) && t->pos.x < Fixed::from_int(9));  // 3 tiles and no more
+    CHECK(t->order == Order::Idle);
+
+    const FixedVec2 stuck = t->pos;
+    sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, {stuck.x + Fixed::from_int(6), stuck.y});
+    for (int i = 0; i < 100; ++i) sim.step();
+    t = sim.world().find_unit(tank);
+    CHECK(t->last_shot_tick != kNeverFired);
+    CHECK(t->pos == stuck);
+}
+
+// A tanker standing by fills up our vehicles close to it, not the far ones.
+void test_tanker_refuels_vehicles_nearby() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const EntityId near = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    const EntityId far = w.spawn_unit(0, UnitTypeId::Ifv, at(25, 10));
+    w.unit_for_setup(near)->fuel = Fixed{};
+    w.unit_for_setup(far)->fuel = Fixed{};
+    const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(7, 10));
+    const int32_t cargo = sim.world().find_unit(tanker)->carrying;
+    CHECK(cargo == unit_type(UnitTypeId::FuelTanker).cargo_capacity);
+    for (int i = 0; i < 500; ++i) sim.step();
+
+    const Unit* t = sim.world().find_unit(near);
+    const int32_t handed = cargo - sim.world().find_unit(tanker)->carrying;
+    CHECK(t->fuel == unit_type(UnitTypeId::Tank).fuel_capacity);  // full
+    CHECK(t->fuel == Fixed::from_int(kTilesPerFuel * handed));   // nothing lost, nothing made up
+    CHECK(sim.world().find_unit(far)->fuel == Fixed{});           // out of its reach
+
+    const FixedVec2 filled_at = t->pos;
+    issue(sim, make_move(0, {near}, 20, 15));
+    for (int i = 0; i < 20; ++i) sim.step();
+    CHECK(sim.world().find_unit(near)->pos != filled_at);  // driving again
+}
+
+// Out of rounds a tank holds its fire until an ammunition truck rearms it.
+void test_out_of_rounds_until_rearmed() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    w.unit_for_setup(tank)->rounds = 0;
+    w.spawn_unit(1, UnitTypeId::Rifleman, at(16, 10));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->last_shot_tick == kNeverFired);
+
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(7, 10));
+    for (int i = 0; i < 300; ++i) sim.step();
+    const Unit* t = sim.world().find_unit(tank);
+    CHECK(t->last_shot_tick != kNeverFired);
+    CHECK(t->rounds > 0 && t->rounds <= unit_type(UnitTypeId::Tank).rounds_capacity);
+    CHECK(sim.world().find_unit(truck)->carrying < unit_type(UnitTypeId::AmmoTruck).cargo_capacity);
+
+
+    // Rearmed to the brim, not beyond: an IFV takes five rounds a load.
+    Simulation rack(3, TileMap(40, 20));
+    const EntityId ifv = rack.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(10, 10));
+    rack.world_for_setup().unit_for_setup(ifv)->rounds = 3;
+    rack.world_for_setup().spawn_unit(0, UnitTypeId::AmmoTruck, at(7, 10));
+    for (int i = 0; i < 1000; ++i) rack.step();
+    CHECK(rack.world().find_unit(ifv)->rounds == unit_type(UnitTypeId::Ifv).rounds_capacity);
+
+    // Every shot takes a round: two in the racks, two shots, then silence.
+    Simulation duel(2, TileMap(40, 20));
+    const EntityId gun = duel.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    duel.world_for_setup().unit_for_setup(gun)->rounds = 2;
+    duel.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(16, 10));
+    for (int i = 0; i < 400; ++i) duel.step();
+    const Unit* g = duel.world().find_unit(gun);
+    CHECK(g && g->rounds == 0);
+    CHECK(g && g->last_shot_tick != kNeverFired && g->last_shot_tick < 2 * unit_type(UnitTypeId::Tank).weapon.reload + 5);
+}
+
+// An empty tanker loads up at the fuel depot from the stock; hired ones
+// come with what was paid for aboard.
+void test_service_vehicles_refill_at_depots() {
+    const Stock stock = stock_with({{Resource::Fuel, 50 + 40}, {Resource::Personnel, 1}, {Resource::Materials, 60}});
+    Simulation sim = economy_sim(stock, false);
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::FuelDepot, 0, {20, 12}, 2, 2);
+    const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(24, 8));
+    w.unit_for_setup(tanker)->carrying = 0;
+    const EntityId ammo = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(24, 6));
+    w.unit_for_setup(ammo)->carrying = 5;
+    issue(sim, {.type = CommandType::Train, .player = 0, .target_unit = headquarters_of(sim),
+                .unit_type = static_cast<uint8_t>(UnitTypeId::FuelTanker)});
+    for (int i = 0; i < 3; ++i) sim.step();
+    issue(sim, use_ability(0, {tanker, ammo}, AbilityId::Refill, 0, 0));
+    for (int i = 0; i < 500; ++i) sim.step();
+
+    CHECK(sim.world().find_unit(tanker)->carrying == 50);  // all the stock had
+    CHECK(stock_of(sim, Resource::Fuel) == 0);
+    CHECK(sim.world().find_unit(tanker)->order == Order::Idle);
+    CHECK(sim.world().find_unit(ammo)->carrying == 5);  // no ammunition depot to load at
+    int hired = 0;
+    for (const Unit& u : sim.world().units()) {
+        if (u.type != UnitTypeId::FuelTanker || u.id == tanker) continue;
+        ++hired;
+        CHECK(u.carrying == unit_type(UnitTypeId::FuelTanker).cost[static_cast<size_t>(Resource::Fuel)]);
+    }
+    CHECK(hired == 1);
+}
+
+// A tanker hit with fuel aboard goes up and burns whatever stands next to it;
+// an empty one just stops.
+void test_tanker_goes_up_in_flames() {
+    auto neighbour_hurt = [](int32_t fuel_aboard) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(10, 10));
+        w.unit_for_setup(tanker)->hp = 1;
+        w.unit_for_setup(tanker)->carrying = fuel_aboard;
+        const EntityId neighbour = w.spawn_unit(0, UnitTypeId::Truck, at(11, 11));
+        w.spawn_unit(1, UnitTypeId::Rifleman, at(10, 5));
+        for (int i = 0; i < 200 && sim.world().find_unit(tanker); ++i) sim.step();
+        CHECK(sim.world().find_unit(tanker) == nullptr);
+        sim.step();  // the fire's damage lands on the next tick
+        sim.step();
+        // Burnt, not just shot at by the rifleman who goes on firing.
+        return unit_type(UnitTypeId::Truck).max_hp - hp_of(sim, neighbour) >= 30;
+    };
+    CHECK(neighbour_hurt(100));
+    CHECK(!neighbour_hurt(0));
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -1694,6 +1830,11 @@ int main() {
     test_trench_fight();
     test_foxhole_becomes_a_dugout();
     test_grenades_fall_into_foxholes();
+    test_out_of_fuel_but_still_shooting();
+    test_tanker_refuels_vehicles_nearby();
+    test_out_of_rounds_until_rearmed();
+    test_service_vehicles_refill_at_depots();
+    test_tanker_goes_up_in_flames();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

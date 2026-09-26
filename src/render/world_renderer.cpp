@@ -885,6 +885,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             (is_selected(d.unit->id) || d.unit->hp < engine::unit_type(d.unit->type).max_hp)) {
             draw_health_bar(map, *d.unit, alpha);
         }
+        if (d.unit && !d.unit->inside && d.unit->owner == viewer_) draw_supply_warning(map, *d.unit, alpha);
     }
 
     EndMode2D();
@@ -1084,6 +1085,16 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
         return;
     }
+    if (u.type == engine::UnitTypeId::FuelTanker || u.type == engine::UnitTypeId::AmmoTruck) {
+        // A cab and behind it a silver tank, or a covered bed of olive crates.
+        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
+        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 3.0f, shade(color, 0.7f));
+        const bool fuel = u.type == engine::UnitTypeId::FuelTanker;
+        const Color body = fuel ? Color{176, 178, 172, 255} : Color{98, 106, 70, 255};
+        draw_box(map, at(-0.12f), facing, 0.52f, fuel ? 0.34f : 0.4f, fuel ? 7.0f : 6.0f, body, 3.0f);
+        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
+        return;
+    }
 
     const bool tank = u.type == engine::UnitTypeId::Tank;
     const float length = tank ? 0.95f : 0.85f;
@@ -1165,6 +1176,27 @@ void WorldRenderer::draw_blasts(const engine::TileMap& map) const {
         fill_ground_ellipse(p, radius, ColorAlpha({255, 170, 60, 255}, 0.55f * (1.0f - t)));
         fill_ground_ellipse({p.x, p.y - 3.0f}, radius * 0.5f, ColorAlpha({255, 240, 190, 255}, 0.8f * (1.0f - t)));
         draw_ground_ellipse(p, radius * 1.1f, ColorAlpha({90, 80, 70, 255}, 0.6f * (1.0f - t)));
+    }
+}
+
+// Our vehicles running low: an F for fuel, an A for rounds; amber when
+// low, red when out.
+void WorldRenderer::draw_supply_warning(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
+    const engine::UnitTypeDef& def = engine::unit_type(u.type);
+    auto level = [](float left) { return left <= 0.0f ? 2 : left < 0.25f ? 1 : 0; };
+    const int fuel = def.fuel_capacity.raw > 0 ? level(to_float(u.fuel) / to_float(def.fuel_capacity)) : 0;
+    const int rounds = def.rounds_capacity > 0
+                           ? level(static_cast<float>(u.rounds) / static_cast<float>(def.rounds_capacity))
+                           : 0;
+    if (fuel == 0 && rounds == 0) return;
+    const Vector2 feet = on_terrain(map, unit_ground_pos(u, alpha));
+    float x = feet.x + 17.0f;
+    const float y = feet.y - 30.0f;
+    for (const auto& [letter, state] : {std::pair{"F", fuel}, std::pair{"A", rounds}}) {
+        if (state == 0) continue;
+        DrawRectangleRec({x, y, 10, 11}, state == 2 ? Color{200, 50, 40, 230} : Color{220, 160, 40, 230});
+        DrawText(letter, static_cast<int>(x + 2), static_cast<int>(y + 1), 10, WHITE);
+        x += 12.0f;
     }
 }
 

@@ -44,6 +44,7 @@ enum class AbilityId : uint8_t {
     DigFoxhole,    // rifleman: dig a foxhole where he stands
     BuildParapet,  // rifleman: throw up a parapet facing a direction
     ThrowGrenade,  // assault trooper: a hand grenade, into a trench, a dugout, a house
+    Refill,        // fuel tanker, ammo truck: load up at the fuel or ammunition depot
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -84,6 +85,13 @@ struct UnitTypeDef {
     Stock cost{};  // Personnel, Food, Materials, Ammo, Fuel
     Tick train_time = 0;
     bool worker = false;  // rear troops: gather, build, unload
+    // Fuel and ammunition carried (0: doesn't run out). Fuel is in tiles of driving.
+    Fixed fuel_capacity{};
+    int32_t rounds_capacity = 0;
+    int32_t rounds_per_supply = 1;  // rounds per unit of ammunition from the stock
+    // Service vehicles: what they bring to the others (Count: nothing), and how much fits.
+    Resource supplies = Resource::Count;
+    int32_t cargo_capacity = 0;
     // How close an enemy hiding in cover must be for this unit to make him out.
     Fixed detection = Fixed::from_int(2);
     bool stealthy = false;  // hard to spot in cover (scouts)
@@ -105,6 +113,8 @@ enum class UnitTypeId : uint8_t {
     Truck,   // supply truck: station -> depots
     Scout,
     Assault,  // assault trooper: close combat, storming trenches and houses
+    FuelTanker,  // refuels vehicles; burns when hit
+    AmmoTruck,   // brings rounds to vehicles; its load goes off when hit
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
