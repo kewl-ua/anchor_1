@@ -29,6 +29,7 @@ enum class Order : uint8_t {
     Garrison,      // walk to structure order_target and go in
     Gather,        // work gather_tile, carry the materials to the headquarters, repeat
     Retrain,       // walk into headquarters order_target, come out a rifleman
+    Build,         // walk to structure order_target and build it until it's done
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -127,6 +128,9 @@ public:
     const Structure* structure_at(TilePos tile) const;
     // Setup: a player's building on a w x h block of tiles starting at `origin`.
     EntityId place_structure(StructureType type, PlayerId owner, TilePos origin, int32_t w, int32_t h);
+    // Whether a building of this type fits with its top-left tile at `origin`:
+    // open ground only, nothing else there.
+    bool can_place(StructureType type, TilePos origin) const;
 
     // Economy.
     const Stock& stock(PlayerId player) const { return stock_[player % kMaxPlayers]; }
@@ -174,11 +178,15 @@ private:
     void apply_gather(const Command& cmd);
     void apply_train(const Command& cmd);
     void apply_retrain(const Command& cmd);
+    void apply_build(const Command& cmd);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
+    void update_building(Unit& u);
     void update_production();
     void reinforce();
     const Structure* nearest_headquarters(PlayerId owner, FixedVec2 from) const;
+    // The nearest finished building of `owner` that takes in materials.
+    const Structure* nearest_drop_off(PlayerId owner, FixedVec2 from) const;
     std::optional<TilePos> nearest_resource(TilePos around, int32_t radius) const;
     FixedVec2 door_of(const Structure& s, MoveClass cls) const;
 

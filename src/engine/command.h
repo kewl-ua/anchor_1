@@ -23,6 +23,8 @@ enum class CommandType : uint8_t {
     Gather,        // rear troops: cut timber / quarry stone at `target`
     Train,         // a building (target_unit) hires a unit (unit_type)
     Retrain,       // rear troops: go to the headquarters and come out as riflemen
+    Build,         // rear troops: put up a building (structure_type at target) or help
+                   // finish one (target_unit)
 };
 
 // The only way anything outside the engine can change the game state.
@@ -31,9 +33,10 @@ struct Command {
     CommandType type = CommandType::Stop;
     PlayerId player = 0;
     std::vector<EntityId> units;
-    FixedVec2 target{};        // Move, AttackMove, AttackGround, Gather
-    EntityId target_unit = 0;  // Attack: a unit; Garrison, Train: a structure
-    uint8_t unit_type = 0;     // Train: a UnitTypeId
+    FixedVec2 target{};          // Move, AttackMove, AttackGround, Gather; Build: the top-left tile
+    EntityId target_unit = 0;    // Attack: a unit; Garrison, Train, Build: a structure
+    uint8_t unit_type = 0;       // Train: a UnitTypeId
+    uint8_t structure_type = 0;  // Build: a StructureType
 };
 
 }  // namespace engine

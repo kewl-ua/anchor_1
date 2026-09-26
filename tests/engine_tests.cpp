@@ -733,6 +733,111 @@ void test_rear_troops_retrain_as_riflemen() {
     CHECK(sim.world().stock(0) == Stock{});
 }
 
+Stock stock_with(std::initializer_list<std::pair<Resource, int32_t>> amounts) {
+    Stock s{};
+    for (const auto& [r, amount] : amounts) s[static_cast<size_t>(r)] = amount;
+    return s;
+}
+
+Command build_at(std::vector<EntityId> builders, StructureType type, int32_t x, int32_t y) {
+    Command cmd = make_order(CommandType::Build, 0, std::move(builders), x, y);
+    cmd.structure_type = static_cast<uint8_t>(type);
+    return cmd;
+}
+
+// Ticks until the structure on `tile` is finished (or max_ticks).
+int build_until_done(Simulation& sim, TilePos tile, int max_ticks) {
+    int ticks = 0;
+    for (; ticks < max_ticks; ++ticks) {
+        const Structure* s = sim.world().structure_at(tile);
+        if (s && s->built) break;
+        sim.step();
+    }
+    return ticks;
+}
+
+// Rear troops put up an infantry barracks; then it hires riflemen (not tanks).
+void test_rear_troops_build_barracks() {
+    Simulation sim = economy_sim(stock_with({{Resource::Materials, 200},
+                                             {Resource::Personnel, 5},
+                                             {Resource::Food, 100},
+                                             {Resource::Ammo, 100}}),
+                                 false);
+    const std::vector<EntityId> crew = spawn_workers(sim, 2, 12, 12);
+    issue(sim, build_at(crew, StructureType::InfantryBarracks, 15, 12));
+    for (int i = 0; i < 3; ++i) sim.step();
+
+    const Structure* site = sim.world().structure_at({16, 13});
+    CHECK(site && !site->built && site->hp < structure_type(StructureType::InfantryBarracks).max_hp);
+    CHECK(stock_of(sim, Resource::Materials) == 50);  // paid up front
+    CHECK(!sim.world().map().passable({16, 13}, MoveClass::Foot));
+
+    build_until_done(sim, {16, 13}, 3000);
+    sim.step();  // the builders notice on their next update
+    const Structure* barracks = sim.world().structure_at({16, 13});
+    CHECK(barracks && barracks->built);
+    CHECK(barracks && barracks->hp == structure_type(StructureType::InfantryBarracks).max_hp);
+    for (EntityId id : crew) CHECK(sim.world().find_unit(id)->order == Order::Idle);
+
+    const EntityId id = barracks->id;
+    Command hire{.type = CommandType::Train, .player = 0, .target_unit = id,
+                 .unit_type = static_cast<uint8_t>(UnitTypeId::Rifleman)};
+    issue(sim, hire);
+    hire.unit_type = static_cast<uint8_t>(UnitTypeId::Tank);  // not in this barracks
+    issue(sim, hire);
+    for (Tick i = 0; i < unit_type(UnitTypeId::Rifleman).train_time + 5; ++i) sim.step();
+    int riflemen = 0;
+    for (const Unit& u : sim.world().units()) riflemen += u.type == UnitTypeId::Rifleman ? 1 : 0;
+    CHECK(riflemen == 1);
+    CHECK(sim.world().find_structure(id)->queue.empty());
+}
+
+// Two rear troops build twice as fast as one.
+void test_more_builders_build_faster() {
+    auto time_with = [](int builders) {
+        Simulation sim = economy_sim(stock_with({{Resource::Materials, 100}}), false);
+        issue(sim, build_at(spawn_workers(sim, builders, 14, 14), StructureType::Warehouse, 16, 14));
+        return build_until_done(sim, {16, 14}, 4000);
+    };
+    const int one = time_with(1);
+    const int two = time_with(2);
+    CHECK(one < 4000);
+    CHECK(two * 10 < one * 7);
+}
+
+void test_building_placement_rules() {
+    Simulation sim = economy_sim(stock_with({{Resource::Materials, 1000}}));
+    const World& w = sim.world();
+    CHECK(w.can_place(StructureType::InfantryBarracks, {20, 5}));
+    CHECK(!w.can_place(StructureType::InfantryBarracks, {11, 8}));  // into the forest
+    CHECK(!w.can_place(StructureType::InfantryBarracks, {4, 8}));   // over the headquarters
+    CHECK(!w.can_place(StructureType::InfantryBarracks, {38, 21})); // off the map
+    CHECK(!w.can_place(StructureType::House, {20, 5}));             // not something you build
+
+    // No materials, no foundation.
+    Simulation broke = economy_sim({});
+    issue(broke, build_at(spawn_workers(broke, 1, 18, 5), StructureType::Warehouse, 20, 5));
+    for (int i = 0; i < 5; ++i) broke.step();
+    CHECK(broke.world().structure_at({20, 5}) == nullptr);
+}
+
+// A warehouse by the woodline takes in materials: no more walking to the far headquarters.
+void test_warehouse_takes_in_materials() {
+    Simulation sim = economy_sim(stock_with({{Resource::Materials, 75}}));
+    const std::vector<EntityId> crew = spawn_workers(sim, 2, 15, 12);
+    issue(sim, build_at(crew, StructureType::Warehouse, 15, 9));
+    build_until_done(sim, {15, 9}, 2000);
+    issue(sim, gather_at(crew, 13, 10));
+
+    Fixed westmost = Fixed::from_int(100);
+    for (int i = 0; i < 1500; ++i) {
+        sim.step();
+        for (EntityId id : crew) westmost = min(westmost, sim.world().find_unit(id)->pos.x);
+    }
+    CHECK(stock_of(sim, Resource::Materials) >= 30);
+    CHECK(westmost > Fixed::from_int(10));  // the headquarters is at x = 5..7
+}
+
 // New men arrive on schedule, but only while the headquarters stands.
 void test_personnel_reinforcements() {
     Simulation sim = economy_sim({});
@@ -860,6 +965,10 @@ int main() {
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_personnel_reinforcements();
+    test_rear_troops_build_barracks();
+    test_more_builders_build_faster();
+    test_building_placement_rules();
+    test_warehouse_takes_in_materials();
     test_vehicle_drives_around_forest();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();

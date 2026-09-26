@@ -69,6 +69,21 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
     return structures_.back().id;
 }
 
+bool World::can_place(StructureType type, TilePos origin) const {
+    const StructureDef& def = structure_type(type);
+    if (!def.buildable) return false;
+    for (int32_t dy = 0; dy < def.height; ++dy) {
+        for (int32_t dx = 0; dx < def.width; ++dx) {
+            const TilePos t{origin.x + dx, origin.y + dy};
+            if (!map_.contains(t) || structure_id_at(t) != 0) return false;
+            const Terrain terrain = map_.terrain(t);
+            // Open ground: fields, village yards, ruins. Not in a forest, not on a road through it.
+            if (terrain != Terrain::Grass && terrain != Terrain::Urban && terrain != Terrain::Ruins) return false;
+        }
+    }
+    return true;
+}
+
 // --- Orders ------------------------------------------------------------------
 
 void World::apply_gather(const Command& cmd) {
@@ -89,9 +104,48 @@ void World::apply_gather(const Command& cmd) {
     }
 }
 
+void World::apply_build(const Command& cmd) {
+    std::vector<Unit*> builders = owned_workers(cmd, [this](EntityId id) { return find_unit_mut(id); });
+    if (builders.empty()) return;
+
+    EntityId site = cmd.target_unit;
+    if (site != 0) {
+        // Help finish one of our own building sites.
+        const Structure* s = find_structure(site);
+        if (!s || s->owner != cmd.player || s->built) return;
+    } else {
+        // Lay a new foundation: paid up front, like in AoE II.
+        if (cmd.structure_type >= kStructureTypeCount) return;
+        const auto type = static_cast<StructureType>(cmd.structure_type);
+        const StructureDef& def = structure_type(type);
+        const TilePos origin = tile_of(cmd.target);
+        Stock& stock = stock_[cmd.player % kMaxPlayers];
+        if (!can_place(type, origin) || !can_afford(stock, def.cost)) return;
+        pay(stock, def.cost);
+        site = place_structure(type, cmd.player, origin, def.width, def.height);
+        Structure* s = find_structure_mut(site);
+        s->built = false;
+        s->hp = 1;
+    }
+
+    const Structure* s = find_structure(site);
+    const TilePos goal = map_.clamp_tile(tile_of(s->center));
+    for (Unit* u : builders) {
+        leave_structure(*u);
+        u->order = Order::Build;
+        u->order_target = site;
+        u->order_goal = goal;
+        u->order_path = field_to(goal, MoveClass::Foot);
+        u->chase_path.reset();
+        u->speed_cap = Fixed{};
+        u->engaged = 0;
+        u->work = 0;
+    }
+}
+
 void World::apply_train(const Command& cmd) {
     Structure* s = find_structure_mut(cmd.target_unit);
-    if (!s || s->owner != cmd.player || cmd.unit_type >= kUnitTypeCount) return;
+    if (!s || !s->built || s->owner != cmd.player || cmd.unit_type >= kUnitTypeCount) return;
     const auto type = static_cast<UnitTypeId>(cmd.unit_type);
     if (!can_train(s->type, type) || s->queue.size() >= kMaxQueue) return;
     Stock& stock = stock_[cmd.player % kMaxPlayers];
@@ -140,7 +194,7 @@ void World::update_gathering(Unit& u) {
     const bool nothing_left = !is_resource_terrain(map_.terrain(u.gather_tile)) || map_.resource(u.gather_tile) <= 0;
 
     if (u.carrying >= kCarryCapacity || (nothing_left && u.carrying > 0)) {
-        const Structure* hq = nearest_headquarters(u.owner, u.pos);
+        const Structure* hq = nearest_drop_off(u.owner, u.pos);
         if (!hq) return finish();
         if (distance_sq_to(*hq, u.pos) <= square_raw(kDoorReach)) {
             stock_[u.owner % kMaxPlayers][static_cast<size_t>(Resource::Materials)] += u.carrying;
@@ -208,10 +262,36 @@ void World::update_retrain(Unit& u) {
     }
 }
 
+// Rear troops at a building site add their work until it stands. Its health
+// grows with the work, so a half-built barracks is also half as tough.
+void World::update_building(Unit& u) {
+    Structure* s = find_structure_mut(u.order_target);
+    if (!s || s->built) {
+        u.order = Order::Idle;
+        u.order_path.reset();
+        return;
+    }
+    if (distance_sq_to(*s, u.pos) <= square_raw(kDoorReach)) {
+        const StructureDef& def = structure_type(s->type);
+        u.facing = s->center - u.pos;
+        const int32_t before = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
+        ++s->build_progress;
+        const int32_t after = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
+        s->hp = std::min(def.max_hp, s->hp + after - before);
+        if (s->build_progress >= def.build_time) s->built = true;
+        return;
+    }
+    if (navigate(u, s->center, u.order_path, u.order_goal, false) == Step::Blocked &&
+        distance_sq_to(*s, u.pos) > square_raw(kDoorReach)) {
+        u.order = Order::Idle;
+        u.order_path.reset();
+    }
+}
+
 // Every building works on the front of its queue; the unit walks out of the door.
 void World::update_production() {
     for (Structure& s : structures_) {
-        if (s.queue.empty()) continue;
+        if (s.queue.empty() || !s.built) continue;
         const UnitTypeId type = s.queue.front();
         if (++s.progress < unit_type(type).train_time) continue;
         s.progress = 0;
@@ -241,6 +321,21 @@ const Structure* World::nearest_headquarters(PlayerId owner, FixedVec2 from) con
     for (const Structure& s : structures_) {
         if (s.type != StructureType::Headquarters || s.owner != owner) continue;
         const uint64_t d = (s.center - from).length_sq_raw();
+        if (!best || d < best_sq) {
+            best = &s;
+            best_sq = d;
+        }
+    }
+    return best;
+}
+
+const Structure* World::nearest_drop_off(PlayerId owner, FixedVec2 from) const {
+    const Structure* best = nullptr;
+    uint64_t best_sq = 0;
+    for (const Structure& s : structures_) {
+        if (s.owner != owner || !s.built) continue;
+        if (s.type != StructureType::Headquarters && s.type != StructureType::Warehouse) continue;
+        const uint64_t d = distance_sq_to(s, from);
         if (!best || d < best_sq) {
             best = &s;
             best_sq = d;

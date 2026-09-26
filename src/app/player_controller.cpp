@@ -36,6 +36,16 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsKeyPressed(KEY_A) && !selection_.empty()) targeting_ = Targeting::AttackMove;
     if (IsKeyPressed(KEY_G) && !selection_.empty()) targeting_ = Targeting::AttackGround;
     if (IsKeyPressed(KEY_ESCAPE) || selection_.empty()) targeting_ = Targeting::None;
+    if (IsKeyPressed(KEY_ESCAPE) || !has_workers(world)) placing_.reset();
+
+    // Command panel hotkeys: 1, 2, 3 build (rear troops); Q, W, E hire (a building).
+    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR};
+    constexpr KeyboardKey kHireKeys[] = {KEY_Q, KEY_W, KEY_E, KEY_T};
+    for (size_t i = 0; i < 4; ++i) {
+        if (IsKeyPressed(kBuildKeys[i]) && selected_structure_ == 0) press_button(lockstep, world, i);
+        if (IsKeyPressed(kHireKeys[i]) && selected_structure_ != 0) press_button(lockstep, world, i);
+    }
+    update_placement(world, camera, mouse);
 
     // Orders can target the minimap too, like in AoE II.
     const std::optional<Vector2> minimap_ground = hud.minimap_to_ground(mouse);
@@ -43,7 +53,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         const std::optional<Vector2> target =
             over_hud ? minimap_ground : std::optional<Vector2>(ground_under(world, camera, mouse));
-        if (targeting() && target) {
+        if (const std::optional<size_t> button = hud.button_at(mouse)) {
+            press_button(lockstep, world, *button);
+        } else if (placement_ && !over_hud) {
+            if (placement_->valid) {
+                order_build(lockstep, *placement_);
+                if (!shift) placing_.reset();  // shift: lay several foundations
+            }
+        } else if (targeting() && target) {
             if (targeting_ == Targeting::AttackMove) order_attack_move(lockstep, renderer, *target);
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
             if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more clicks
@@ -62,8 +79,9 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     }
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
-        if (targeting()) {
-            targeting_ = Targeting::None;  // right click cancels, like in most RTS games
+        if (placing_ || targeting()) {
+            placing_.reset();  // right click cancels, like in most RTS games
+            targeting_ = Targeting::None;
         } else if (over_hud) {
             if (minimap_ground) order_move(lockstep, renderer, *minimap_ground);
         } else if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
@@ -72,19 +90,21 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             const Vector2 ground = ground_under(world, camera, mouse);
             const engine::TilePos tile{static_cast<int32_t>(std::floor(ground.x)),
                                        static_cast<int32_t>(std::floor(ground.y))};
-            const engine::Structure* house = world.structure_at(tile);
+            const engine::Structure* structure = world.structure_at(tile);
             const engine::Terrain terrain = world.map().contains(tile) ? world.map().terrain(tile) : engine::Terrain::Grass;
             const bool resource = (terrain == engine::Terrain::Forest || terrain == engine::Terrain::Rock) &&
                                   world.map().resource(tile) > 0;
             if (resource && has_workers(world)) {
                 // Rear troops go to work; anyone else selected just goes there.
                 order_gather(lockstep, world, renderer, ground);
-            } else if (house && house->type == engine::StructureType::House) {
+            } else if (structure && structure->owner == player_ && !structure->built && has_workers(world)) {
+                order_help_build(lockstep, structure->id);
+            } else if (structure && structure->type == engine::StructureType::House) {
                 // Our infantry moves in; a house the enemy holds gets shelled.
-                if (house->owner == engine::kNoOwner || house->owner == player_) {
-                    order_garrison(lockstep, house->id);
+                if (structure->owner == engine::kNoOwner || structure->owner == player_) {
+                    order_garrison(lockstep, structure->id);
                 } else {
-                    order_attack_ground(lockstep, renderer, render::to_vector2(house->center));
+                    order_attack_ground(lockstep, renderer, render::to_vector2(structure->center));
                 }
             } else {
                 order_move(lockstep, renderer, ground);
@@ -94,7 +114,36 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsKeyPressed(KEY_S)) order_stop(lockstep);
     if (IsKeyPressed(KEY_F2)) select_army(world);
     if (IsKeyPressed(KEY_R) && has_workers(world)) order_retrain(lockstep);
-    if (IsKeyPressed(KEY_Q)) order_train(lockstep, world, engine::UnitTypeId::Worker);
+}
+
+// The same buttons the HUD shows: a building's hiring roster, or the rear
+// troops' building list.
+void PlayerController::press_button(net::Lockstep& lockstep, const engine::World& world, size_t index) {
+    if (const engine::Structure* s = world.find_structure(selected_structure_)) {
+        const engine::StructureDef& def = engine::structure_type(s->type);
+        if (s->built && index < def.roster_size) order_train(lockstep, world, def.roster[index]);
+        return;
+    }
+    if (has_workers(world) && index < std::size(engine::kBuildable)) {
+        placing_ = engine::kBuildable[index];
+        targeting_ = Targeting::None;
+    }
+}
+
+// The foundation follows the cursor, centred on it.
+void PlayerController::update_placement(const engine::World& world, const render::RtsCamera& camera,
+                                        Vector2 mouse) {
+    if (!placing_) {
+        placement_.reset();
+        return;
+    }
+    const engine::StructureDef& def = engine::structure_type(*placing_);
+    const Vector2 ground = ground_under(world, camera, mouse);
+    const engine::TilePos origin{
+        static_cast<int32_t>(std::floor(ground.x - static_cast<float>(def.width) * 0.5f + 0.5f)),
+        static_cast<int32_t>(std::floor(ground.y - static_cast<float>(def.height) * 0.5f + 0.5f))};
+    const bool affordable = engine::can_afford(world.stock(player_), def.cost);
+    placement_ = Placement{*placing_, origin, affordable && world.can_place(*placing_, origin)};
 }
 
 void PlayerController::select_army(const engine::World& world) {
@@ -196,6 +245,23 @@ void PlayerController::order_garrison(net::Lockstep& lockstep, engine::EntityId 
     cmd.type = engine::CommandType::Garrison;
     cmd.units = selection_;
     cmd.target_unit = structure;
+    lockstep.submit(std::move(cmd));
+}
+
+void PlayerController::order_build(net::Lockstep& lockstep, const Placement& placement) {
+    engine::Command cmd;
+    cmd.type = engine::CommandType::Build;
+    cmd.units = selection_;
+    cmd.target = engine::tile_center(placement.origin);
+    cmd.structure_type = static_cast<uint8_t>(placement.type);
+    lockstep.submit(std::move(cmd));
+}
+
+void PlayerController::order_help_build(net::Lockstep& lockstep, engine::EntityId site) {
+    engine::Command cmd;
+    cmd.type = engine::CommandType::Build;
+    cmd.units = selection_;
+    cmd.target_unit = site;
     lockstep.submit(std::move(cmd));
 }
 

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <iterator>
 #include <vector>
 
 #include "engine/simulation.h"
@@ -13,7 +15,7 @@ namespace {
 
 constexpr float kTopBarHeight = 28.0f;
 constexpr float kPanelWidth = 620.0f;
-constexpr float kPanelHeight = 112.0f;
+constexpr float kPanelHeight = 140.0f;
 constexpr float kPadding = 12.0f;
 constexpr int kFontSize = 18;
 constexpr int kSmallFontSize = 16;
@@ -184,6 +186,12 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
         draw_text(TextFormat("%.*s", static_cast<int>(state.targeting.size()), state.targeting.data()), m.x + 14,
                   m.y + 8, kSmallFontSize, theme::kDanger);
     }
+    if (!state.placing.empty()) {
+        const Vector2 m = GetMousePosition();
+        draw_text(TextFormat("%.*s: LMB to place, Shift for more, RMB cancels", static_cast<int>(state.placing.size()),
+                             state.placing.data()),
+                  m.x + 16, m.y + 16, kSmallFontSize, theme::kText);
+    }
 
     const Layout l = layout();
     draw_top_bar(world, state, l.top_bar);
@@ -281,19 +289,61 @@ void Hud::draw_bottom_panel(const engine::World& world, const HudState& state, R
     }
 }
 
-void Hud::draw_structure_card(const engine::World& /*world*/, const engine::Structure& s, Rectangle area) const {
+Rectangle Hud::button_rect(size_t slot) {
+    const Layout l = layout();
+    const Rectangle inner{l.bottom_panel.x + kPadding, l.bottom_panel.y + kPadding, l.bottom_panel.width - 2 * kPadding,
+                          l.bottom_panel.height - 2 * kPadding};
+    constexpr float kGap = 6.0f;
+    constexpr float kHeight = 34.0f;
+    const float width = (inner.width - kGap * static_cast<float>(kButtonSlots - 1)) / static_cast<float>(kButtonSlots);
+    return {inner.x + static_cast<float>(slot) * (width + kGap), inner.y + inner.height - kHeight, width, kHeight};
+}
+
+std::optional<size_t> Hud::button_at(Vector2 p) const {
+    for (size_t slot = 0; slot < kButtonSlots; ++slot) {
+        if (CheckCollisionPointRec(p, button_rect(slot))) return slot;
+    }
+    return std::nullopt;
+}
+
+void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::Stock& cost,
+                      const engine::Stock& stock) const {
+    static constexpr const char* kShortNames[] = {"men", "food", "mat.", "ammo", "fuel"};
+    const Rectangle r = button_rect(slot);
+    const bool affordable = engine::can_afford(stock, cost);
+    const bool hover = CheckCollisionPointRec(GetMousePosition(), r);
+    DrawRectangleRec(r, hover ? Color{52, 60, 54, 255} : Color{32, 36, 34, 255});
+    DrawRectangleLinesEx(r, 1.0f, theme::kPanelBorder);
+    draw_text(TextFormat("%c  %s", hotkey, name), r.x + 6, r.y + 4, 14, affordable ? theme::kText : theme::kTextDim);
+
+    char price[96] = {};
+    size_t used = 0;
+    for (size_t i = 0; i < engine::kResourceCount && used < sizeof(price); ++i) {
+        if (cost[i] == 0) continue;
+        used += static_cast<size_t>(std::snprintf(price + used, sizeof(price) - used, "%d %s  ", cost[i], kShortNames[i]));
+    }
+    draw_text(price, r.x + 6, r.y + 21, 10, affordable ? theme::kTextDim : theme::kDanger);
+}
+
+void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
     const engine::StructureDef& def = engine::structure_type(s.type);
     draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(s.owner));
-    draw_text(TextFormat("HP %d / %d", s.hp, def.max_hp), area.x + 180, area.y + 2, kSmallFontSize, theme::kText);
+    draw_text(TextFormat("HP %d / %d", s.hp, def.max_hp), area.x + 220, area.y + 2, kSmallFontSize, theme::kText);
     const float frac = static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
-    DrawRectangleRec({area.x + 300, area.y + 6, 120, 6}, {0, 0, 0, 170});
-    DrawRectangleRec({area.x + 300, area.y + 6, 120 * frac, 6}, {200, 200, 190, 255});
+    DrawRectangleRec({area.x + 340, area.y + 6, 120, 6}, {0, 0, 0, 170});
+    DrawRectangleRec({area.x + 340, area.y + 6, 120 * frac, 6}, {200, 200, 190, 255});
 
     const float line2 = area.y + kFontSize + 10;
-    if (s.type != engine::StructureType::Headquarters) return;
+    if (!s.built) {
+        const float done = static_cast<float>(s.build_progress) / static_cast<float>(def.build_time);
+        draw_text(TextFormat("Under construction: %d%%   (RMB with rear troops to help)", static_cast<int>(done * 100)),
+                  area.x, line2, kSmallFontSize, theme::kWarning);
+        DrawRectangleRec({area.x, line2 + 24, 300, 6}, {0, 0, 0, 170});
+        DrawRectangleRec({area.x, line2 + 24, 300 * done, 6}, {230, 200, 60, 255});
+        return;
+    }
 
     // The hiring queue: the front one with its progress.
-    const engine::UnitTypeDef& worker = engine::unit_type(engine::UnitTypeId::Worker);
     constexpr float kIconW = 34.0f;
     constexpr float kIconH = 28.0f;
     for (size_t i = 0; i < s.queue.size(); ++i) {
@@ -308,15 +358,20 @@ void Hud::draw_structure_card(const engine::World& /*world*/, const engine::Stru
             DrawRectangleRec({x + 3, line2 + kIconH - 7, (kIconW - 6) * done, 3}, {90, 210, 90, 255});
         }
     }
-    const float hints = line2 + kIconH + 8;
-    draw_text(TextFormat("Q: hire a %s (%d men, %d food)   queue %d/%d", worker.name,
-                         worker.cost[static_cast<size_t>(engine::Resource::Personnel)],
-                         worker.cost[static_cast<size_t>(engine::Resource::Food)], static_cast<int>(s.queue.size()),
-                         static_cast<int>(engine::kMaxQueue)),
-              area.x, hints, kSmallFontSize, theme::kTextDim);
+    if (def.roster_size > 0) {
+        draw_text(TextFormat("queue %d/%d", static_cast<int>(s.queue.size()), static_cast<int>(engine::kMaxQueue)),
+                  area.x + 5 * (kIconW + 4) + 8, line2 + 6, kSmallFontSize, theme::kTextDim);
+    }
     if (!s.garrison.empty()) {
-        draw_text(TextFormat("%d at drill", static_cast<int>(s.garrison.size())), area.x + 420, line2 + 6,
+        draw_text(TextFormat("%d at drill", static_cast<int>(s.garrison.size())), area.x + 360, line2 + 6,
                   kSmallFontSize, theme::kTextDim);
+    }
+
+    static constexpr char kHireKeys[] = {'Q', 'W', 'E'};
+    const engine::Stock& stock = world.stock(s.owner);
+    for (size_t i = 0; i < std::min<size_t>(def.roster_size, kButtonSlots); ++i) {
+        const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
+        draw_button(i, kHireKeys[i], unit.name, unit.cost, stock);
     }
 }
 
@@ -325,7 +380,8 @@ void Hud::draw_help(Rectangle area) const {
         "LMB: select / drag box    Shift+LMB: add to selection    F2: select army",
         "RMB: move / attack / infantry into a house    S: stop    F10: quit",
         "A + LMB: attack-move    G + LMB: fire at ground    Space: jump to selection",
-        "Arrows / edge / MMB drag: pan    Wheel: zoom    Minimap: LMB camera, RMB send",
+        "Rear troops: RMB forest/rock to gather, 1-3 build, R retrain",
+        "Buildings: click to select, Q/W/E hire    Minimap: LMB camera, RMB send",
     };
     constexpr int kHelpFontSize = 14;
     float y = area.y;
@@ -338,6 +394,22 @@ void Hud::draw_help(Rectangle area) const {
 void Hud::draw_selection(const engine::World& world, const HudState& state, Rectangle area) const {
     const int count = static_cast<int>(state.selection.size());
 
+    // Rear troops in the selection get the building buttons.
+    bool workers = false;
+    for (engine::EntityId id : state.selection) {
+        const engine::Unit* u = world.find_unit(id);
+        workers = workers || (u && engine::unit_type(u->type).worker);
+    }
+    if (workers) {
+        static constexpr char kBuildKeys[] = {'1', '2', '3'};
+        const engine::Stock& stock = world.stock(state.local_player);
+        for (size_t i = 0; i < std::min(std::size(engine::kBuildable), kButtonSlots); ++i) {
+            const engine::StructureDef& def = engine::structure_type(engine::kBuildable[i]);
+            draw_button(i, kBuildKeys[i], def.name, def.cost, stock);
+        }
+    }
+    const float bottom = workers ? button_rect(0).y - 4 : area.y + area.height;
+
     if (count == 1) {
         if (const engine::Unit* u = world.find_unit(state.selection.front())) draw_unit_card(world, *u, area);
         return;
@@ -345,13 +417,13 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
 
     draw_text(TextFormat("Selected: %d", count), area.x, area.y, kFontSize, theme::kText);
 
-    // One icon per unit, as many as fit.
+    // One icon per unit, as many as fit above the buttons.
     constexpr float kIconW = 34.0f;
     constexpr float kIconH = 28.0f;
     constexpr float kGap = 4.0f;
     const int per_row = std::max(1, static_cast<int>((area.width + kGap) / (kIconW + kGap)));
     const float top = area.y + kFontSize + 10;
-    const int max_rows = std::max(1, static_cast<int>((area.y + area.height - top + kGap) / (kIconH + kGap)));
+    const int max_rows = std::max(1, static_cast<int>((bottom - top + kGap) / (kIconH + kGap)));
     const int shown = std::min(count, per_row * max_rows);
 
     for (int i = 0; i < shown; ++i) {
@@ -378,14 +450,14 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     draw_hp_bar(u, {area.x + 300, area.y + 6, 120, 6});
 
     static constexpr const char* kDamageNames[] = {"bullet", "explosive", "anti-tank"};
-    const float line2 = area.y + kFontSize + 10;
+    const float line2 = area.y + kFontSize + 6;
     const float range = static_cast<float>(weapon.range.raw) / engine::Fixed::kOneRaw;
     draw_text(TextFormat("%s: %d %s, range %.1f, every %.1f s", weapon.name, weapon.damage,
                          kDamageNames[static_cast<int>(weapon.damage_type)], range,
                          static_cast<float>(weapon.reload) / engine::kTicksPerSecond),
               area.x, line2, kSmallFontSize, theme::kTextDim);
     draw_text(TextFormat("Armor: bullet %d, explosive %d, anti-tank %d", def.armor[0], def.armor[1], def.armor[2]),
-              area.x, line2 + kSmallFontSize + 6, kSmallFontSize, theme::kTextDim);
+              area.x, line2 + kSmallFontSize + 4, kSmallFontSize, theme::kTextDim);
 
     static constexpr const char* kOrderNames[] = {"Idle",         "Moving",           "Attacking",
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
@@ -405,7 +477,7 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     if (def.worker && u.carrying > 0) state = TextFormat("%s, carrying %d materials", state, u.carrying);
     draw_text(TextFormat("%s   %s, elevation %d", state, engine::terrain_def(world.map().terrain_at(u.pos)).name,
                          world.map().elevation_at(u.pos)),
-              area.x, line2 + 2 * (kSmallFontSize + 6), kSmallFontSize, theme::kTextDim);
+              area.x, line2 + 2 * (kSmallFontSize + 4), kSmallFontSize, theme::kTextDim);
 }
 
 void Hud::draw_hp_bar(const engine::Unit& u, Rectangle area) const {

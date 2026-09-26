@@ -80,6 +80,30 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return Vector2{(b2.x + w2.x) * 0.5f, (b2.y + w2.y) * 0.5f};
     }
 
+    if (options.scene == "build") {
+        // Three rear troops put up an infantry barracks in front of the
+        // headquarters, two a warehouse towards the woodline.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const engine::TilePos b = engine::tile_of(base);
+        const int32_t fwd = me == 0 ? 1 : -1;
+        std::vector<engine::EntityId> workers;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner == me && engine::unit_type(u.type).worker) workers.push_back(u.id);
+        }
+        if (workers.size() < 5) return std::nullopt;
+        const engine::TilePos barracks{b.x + 4 * fwd - 1, b.y - 6 * fwd - 1};
+        const engine::TilePos warehouse{b.x - 10 * fwd, b.y + 6 * fwd};
+        game.submit({.type = engine::CommandType::Build,
+                     .units = {workers[0], workers[1], workers[2]},
+                     .target = engine::tile_center(barracks),
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::InfantryBarracks)});
+        game.submit({.type = engine::CommandType::Build,
+                     .units = {workers[3], workers[4]},
+                     .target = engine::tile_center(warehouse),
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::Warehouse)});
+        return render::to_vector2(base);
+    }
+
     if (options.scene != "garrison") {
         // Attack-move into the enemy base. Offline the enemy waits at home;
         // online both armies meet halfway.
@@ -253,6 +277,14 @@ int main(int argc, char** argv) {
                 smoke_ordered = true;
             }
             game->update(GetFrameTime());
+            if (smoke && options->scene == "build") {
+                // Show the barracks' card on the command panel.
+                for (const engine::Structure& s : game->world().structures()) {
+                    if (s.type == engine::StructureType::InfantryBarracks && s.owner == game->local_player()) {
+                        game->select_structure(s.id);
+                    }
+                }
+            }
             if (smoke && smoke_look) {
                 game->center_camera_on(*smoke_look);
             } else if (smoke) {

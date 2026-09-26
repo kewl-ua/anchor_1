@@ -12,6 +12,13 @@
 
 namespace render {
 
+// A building the player is about to place: drawn green where it fits, red where not.
+struct BuildGhost {
+    engine::StructureType type;
+    engine::TilePos origin;
+    bool valid;
+};
+
 // Draws the game world in isometric view. Reads the engine state, never
 // changes it. Owns purely visual state: order markers, explosions, wrecks.
 //
@@ -29,7 +36,8 @@ public:
     // alpha in [0, 1]: progress from the last tick towards the next one.
     // `selection` must be sorted.
     void draw(const engine::World& world, const RtsCamera& camera, float alpha,
-              std::span<const engine::EntityId> selection, engine::EntityId selected_structure = 0) const;
+              std::span<const engine::EntityId> selection, engine::EntityId selected_structure = 0,
+              const BuildGhost* ghost = nullptr) const;
 
 private:
     struct Ping {

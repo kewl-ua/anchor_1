@@ -134,12 +134,24 @@ const UnitTypeDef& unit_type(UnitTypeId id) { return kUnitTypes[static_cast<size
 namespace {
 
 // Armor is {Bullet, Explosive, AntiTank}; bullets are ignored anyway.
+// Costs are {Personnel, Food, Materials, Ammo, Fuel}; build times are for one
+// rear trooper (two build twice as fast).
 constexpr StructureDef kStructureTypes[] = {
     // A small house: ~8 tank shells or ~20 RPG rockets bring it down.
     {.name = "House", .max_hp = 600, .armor = {0, 0, 50}, .capacity = 6},
     // Solid: blowing a bridge takes a real effort (sappers will do it faster).
-    {.name = "Bridge", .max_hp = 1500, .armor = {0, 10, 60}, .capacity = 0},
-    {.name = "Headquarters", .max_hp = 2500, .armor = {0, 20, 80}, .capacity = 0},
+    {.name = "Bridge", .max_hp = 1500, .armor = {0, 10, 60}},
+    {.name = "Headquarters", .max_hp = 2500, .armor = {0, 20, 80},
+     .roster = {UnitTypeId::Worker}, .roster_size = 1},
+    {.name = "Infantry barracks", .max_hp = 1500, .armor = {0, 10, 60},
+     .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 150, 0, 0}, .build_time = seconds(30),
+     .roster = {UnitTypeId::Rifleman, UnitTypeId::MachineGunner, UnitTypeId::Grenadier}, .roster_size = 3},
+    {.name = "Armor barracks", .max_hp = 2200, .armor = {0, 15, 70},
+     .buildable = true, .width = 4, .height = 4, .cost = {0, 0, 250, 0, 50}, .build_time = seconds(45),
+     .roster = {UnitTypeId::Tank, UnitTypeId::Ifv}, .roster_size = 2},
+    // Put one next to a woodline or a quarry to cut the walk, like an AoE II lumber camp.
+    {.name = "Warehouse", .max_hp = 800, .armor = {0, 5, 40},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 75, 0, 0}, .build_time = seconds(20)},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

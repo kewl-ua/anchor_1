@@ -76,7 +76,8 @@ constexpr int32_t kBaseClearingPct = 6;
 constexpr int32_t kArmyForwardTiles = 10;  // the army stands this far in front of the headquarters
 constexpr int32_t kHeadquartersSize = 3;
 constexpr int kStartingWorkers = 5;
-constexpr Stock kStartingStock = {10, 300, 150, 150, 150};  // Personnel, Food, Materials, Ammo, Fuel
+// Personnel, Food, Materials, Ammo, Fuel: enough for a barracks and a warehouse.
+constexpr Stock kStartingStock = {10, 300, 300, 150, 150};
 
 // Paints terrain on a tile and on its mirror image through the map center,
 // so the map is fair by construction.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -12,6 +13,13 @@
 #include "render/world_renderer.h"
 
 namespace app {
+
+// A building being placed: where it would go and whether it fits there.
+struct Placement {
+    engine::StructureType type;
+    engine::TilePos origin;
+    bool valid;
+};
 
 // Turns the local player's mouse and keyboard into selection changes and
 // engine commands. Selection is client-side only: it never enters the
@@ -35,11 +43,20 @@ public:
                       Vector2 ground);
     void order_retrain(net::Lockstep& lockstep);
     void order_train(net::Lockstep& lockstep, const engine::World& world, engine::UnitTypeId type);
+    void order_build(net::Lockstep& lockstep, const Placement& placement);
+    void order_help_build(net::Lockstep& lockstep, engine::EntityId site);
     void order_stop(net::Lockstep& lockstep);
+
+    // The building following the cursor, if the player is placing one.
+    const std::optional<Placement>& placement() const { return placement_; }
 
     std::span<const engine::EntityId> selection() const { return selection_; }
     // A selected building of ours (the headquarters), 0 if none.
     engine::EntityId selected_structure() const { return selected_structure_; }
+    void select_structure(engine::EntityId id) {
+        selection_.clear();
+        selected_structure_ = id;
+    }
     bool dragging() const;
     Rectangle drag_rect() const;  // screen space
     // A hotkey was pressed and the next left click picks the order's target
@@ -59,6 +76,9 @@ private:
     void order_to_point(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground,
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
+    // Buttons of the command panel (and their hotkeys) for the current selection.
+    void press_button(net::Lockstep& lockstep, const engine::World& world, size_t index);
+    void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);
 
     enum class Targeting { None, AttackMove, AttackGround };
 
@@ -68,6 +88,8 @@ private:
     bool pressing_ = false;
     Vector2 press_pos_{};
     Targeting targeting_ = Targeting::None;
+    std::optional<engine::StructureType> placing_;
+    std::optional<Placement> placement_;
 };
 
 }  // namespace app

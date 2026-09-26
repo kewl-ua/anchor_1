@@ -92,7 +92,10 @@ void Game::update(float dt) {
 }
 
 void Game::draw(hud::NetStatus net) const {
-    renderer_.draw(sim_.world(), camera_, alpha_, controller_.selection(), controller_.selected_structure());
+    std::optional<render::BuildGhost> ghost;
+    if (const auto& p = controller_.placement()) ghost = render::BuildGhost{p->type, p->origin, p->valid};
+    renderer_.draw(sim_.world(), camera_, alpha_, controller_.selection(), controller_.selected_structure(),
+                   ghost ? &*ghost : nullptr);
 
     net.input_delay = lockstep_.input_delay();
     net.waiting = stall_time_ >= kStallNoticeSeconds;
@@ -111,6 +114,7 @@ void Game::draw(hud::NetStatus net) const {
         .dragging = controller_.dragging(),
         .drag_rect = controller_.drag_rect(),
         .targeting = controller_.targeting_label(),
+        .placing = controller_.placement() ? engine::structure_type(controller_.placement()->type).name : "",
         .view_ground = {ground_at({0, 0}), ground_at({w, 0}), ground_at({w, h}), ground_at({0, h})},
         .net = net,
     });

@@ -30,6 +30,7 @@ struct HudState {
     bool dragging = false;
     Rectangle drag_rect{};  // screen space
     std::string_view targeting;  // label of the order being aimed ("Attack-move"...), empty if none
+    std::string_view placing;    // name of the building being placed, empty if none
     // Ground points under the screen corners (top-left, top-right,
     // bottom-right, bottom-left), for the camera frame on the minimap.
     std::array<Vector2, 4> view_ground{};
@@ -54,6 +55,10 @@ public:
     bool captures_point(Vector2 screen_pos) const;
     // Ground point under a screen point, if that point is on the minimap.
     std::optional<Vector2> minimap_to_ground(Vector2 screen_pos) const;
+    // Which command-panel button slot is under the point: a building's
+    // hiring roster, or the rear troops' building list.
+    std::optional<size_t> button_at(Vector2 screen_pos) const;
+    static constexpr size_t kButtonSlots = 3;
 
 private:
     struct Layout {
@@ -71,6 +76,10 @@ private:
     void draw_selection(const engine::World& world, const HudState& state, Rectangle area) const;
     void draw_unit_card(const engine::World& world, const engine::Unit& u, Rectangle area) const;
     void draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const;
+    // One command button: hotkey + name on top, price below; dim if unaffordable.
+    void draw_button(size_t slot, char hotkey, const char* name, const engine::Stock& cost,
+                     const engine::Stock& stock) const;
+    static Rectangle button_rect(size_t slot);
     void draw_hp_bar(const engine::Unit& u, Rectangle area) const;
     void draw_minimap(const engine::World& world, const HudState& state, const Layout& l) const;
 

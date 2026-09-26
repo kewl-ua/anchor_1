@@ -130,7 +130,7 @@ Command make_move(std::vector<EntityId> units, int32_t x, int32_t y) {
 
 bool same_command(const Command& a, const Command& b) {
     return a.type == b.type && a.units == b.units && a.target == b.target && a.target_unit == b.target_unit &&
-           a.unit_type == b.unit_type;
+           a.unit_type == b.unit_type && a.structure_type == b.structure_type;
 }
 
 // --- Protocol ----------------------------------------------------------------
@@ -173,6 +173,11 @@ TickInput sample_input() {
     retrain.type = CommandType::Retrain;
     retrain.units = {14, 15};
     input.commands.push_back(retrain);
+    Command build = make_move({16}, 50, 51);
+    build.type = CommandType::Build;
+    build.target_unit = 99;
+    build.structure_type = 3;
+    input.commands.push_back(build);
     return input;
 }
 

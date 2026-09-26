@@ -289,6 +289,7 @@ void World::apply(const Command& cmd) {
         case CommandType::Gather: apply_gather(cmd); break;
         case CommandType::Train: apply_train(cmd); break;
         case CommandType::Retrain: apply_retrain(cmd); break;
+        case CommandType::Build: apply_build(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -470,6 +471,10 @@ void World::update_unit(Unit& u) {
 
         case Order::Retrain:
             update_retrain(u);
+            break;
+
+        case Order::Build:
+            update_building(u);
             break;
     }
 }
@@ -1001,6 +1006,8 @@ uint64_t World::checksum() const {
         for (EntityId id : s.garrison) mix(id);
         for (UnitTypeId t : s.queue) mix(static_cast<uint8_t>(t));
         mix(s.progress);
+        mix(s.built ? 1 : 0);
+        mix(s.build_progress);
     }
     for (const Stock& st : stock_) {
         for (int32_t amount : st) mix(static_cast<uint32_t>(amount));

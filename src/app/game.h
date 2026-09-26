@@ -39,6 +39,7 @@ public:
 
     // Development helpers for --smoke-test.
     void submit(engine::Command cmd) { lockstep_.submit(std::move(cmd)); }
+    void select_structure(engine::EntityId id) { controller_.select_structure(id); }
     void set_tick_limit(engine::Tick limit) { tick_limit_ = limit; }
     void set_time_scale(float scale) { time_scale_ = scale; }
     void select_army_and_attack_move(Vector2 ground);

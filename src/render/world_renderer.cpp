@@ -257,39 +257,97 @@ Rectangle footprint(const engine::Structure& s, float inset) {
             static_cast<float>(x1 - x0 + 1) - 2 * inset, static_cast<float>(y1 - y0 + 1) - 2 * inset};
 }
 
-// A player's headquarters: a two-storey block with a flat roof and a flag.
-void draw_headquarters(const engine::TileMap& map, const engine::Structure& s) {
-    constexpr float kWall = 24.0f;
+// How each kind of player building looks (placeholders until sprites).
+struct BuildingStyle {
+    float wall;  // height, pixels
+    Color walls;
+    Color roof;
+    int window_rows;
+    bool big_doors;  // a tank hangar
+};
+
+BuildingStyle style_of(engine::StructureType type) {
+    switch (type) {
+        case engine::StructureType::InfantryBarracks: return {16.0f, {150, 146, 118, 255}, {92, 104, 76, 255}, 1, false};
+        case engine::StructureType::ArmorBarracks: return {22.0f, {128, 132, 124, 255}, {86, 92, 84, 255}, 0, true};
+        case engine::StructureType::Warehouse: return {13.0f, {142, 112, 80, 255}, {110, 84, 60, 255}, 0, true};
+        default: return {24.0f, {168, 164, 150, 255}, {142, 140, 128, 255}, 2, false};  // headquarters
+    }
+}
+
+// A player's building: a block with a flat roof and a flag. While under
+// construction it rises with the work done, inside a frame of scaffolding.
+void draw_building(const engine::TileMap& map, const engine::Structure& s) {
+    const engine::StructureDef& def = engine::structure_type(s.type);
+    const BuildingStyle style = style_of(s.type);
+    const float done = s.built ? 1.0f
+                               : std::max(0.08f, static_cast<float>(s.build_progress) / static_cast<float>(def.build_time));
+    const float wall = style.wall * done;
+
     const Rectangle r = footprint(s, 0.1f);
     const Vector2 ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
     Vector2 base[4];
     Vector2 top[4];
     for (int i = 0; i < 4; ++i) {
         base[i] = on_terrain(map, ground[i]);
-        top[i] = {base[i].x, base[i].y - kWall};
+        top[i] = {base[i].x, base[i].y - wall};
     }
-    const float damage = 1.0f - static_cast<float>(s.hp) / static_cast<float>(engine::structure_type(s.type).max_hp);
-    const Color wall = shade({168, 164, 150, 255}, 1.0f - 0.4f * damage);
-    fill_quad(base[1], base[2], top[2], top[1], wall);
-    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));
-    fill_quad(top[0], top[1], top[2], top[3], shade(wall, 0.85f));
-    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(wall, 0.5f));
+    const float damage = 1.0f - static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
+    const float soot = s.built ? 1.0f - 0.4f * damage : 1.0f;
+    const Color walls = shade(style.walls, soot);
+    fill_quad(base[1], base[2], top[2], top[1], walls);
+    fill_quad(base[2], base[3], top[3], top[2], shade(walls, 0.72f));
+    fill_quad(top[0], top[1], top[2], top[3], shade(style.roof, soot));
+    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(walls, 0.5f));
 
-    // Rows of windows on the two visible walls.
+    if (!s.built) {
+        // Scaffolding up to the full height.
+        const Color pole{120, 96, 64, 255};
+        for (int i = 0; i < 4; ++i) {
+            const Vector2 full{base[i].x, base[i].y - style.wall};
+            DrawLineEx(base[i], full, 1.5f, pole);
+            DrawLineEx(full, {base[(i + 1) % 4].x, base[(i + 1) % 4].y - style.wall}, 1.0f, pole);
+        }
+        return;
+    }
+
     for (int side = 1; side <= 2; ++side) {
         const Vector2 a = base[side];
         const Vector2 b = base[(side + 1) % 4];
-        for (int i = 1; i <= 4; ++i) {
-            const float t = static_cast<float>(i) / 5.0f;
-            const Vector2 p{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
-            DrawRectangleRec({p.x - 2.0f, p.y - kWall * 0.75f, 4.0f, 5.0f}, {60, 66, 72, 255});
-            DrawRectangleRec({p.x - 2.0f, p.y - kWall * 0.4f, 4.0f, 5.0f}, {60, 66, 72, 255});
+        // Rows of windows...
+        for (int row = 0; row < style.window_rows; ++row) {
+            for (int i = 1; i <= 4; ++i) {
+                const float t = static_cast<float>(i) / 5.0f;
+                const Vector2 p{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+                const float lift = style.wall * (row == 0 ? 0.4f : 0.75f);
+                DrawRectangleRec({p.x - 2.0f, p.y - lift, 4.0f, 5.0f}, {60, 66, 72, 255});
+            }
+        }
+        // ...or wide gates.
+        if (style.big_doors && side == 1) {
+            const Vector2 d0{a.x + (b.x - a.x) * 0.3f, a.y + (b.y - a.y) * 0.3f};
+            const Vector2 d1{a.x + (b.x - a.x) * 0.7f, a.y + (b.y - a.y) * 0.7f};
+            fill_quad(d0, d1, {d1.x, d1.y - style.wall * 0.7f}, {d0.x, d0.y - style.wall * 0.7f}, {48, 50, 48, 255});
         }
     }
 
     const Vector2 pole = top[0];
     DrawLineEx(pole, {pole.x, pole.y - 22.0f}, 2.0f, {50, 50, 50, 255});
     DrawRectangleRec({pole.x, pole.y - 22.0f, 14.0f, 9.0f}, theme::player_color(s.owner));
+}
+
+// The foundation that follows the cursor while placing a building.
+void draw_ghost(const engine::TileMap& map, const BuildGhost& ghost) {
+    const engine::StructureDef& def = engine::structure_type(ghost.type);
+    const auto x = static_cast<float>(ghost.origin.x);
+    const auto y = static_cast<float>(ghost.origin.y);
+    const auto w = static_cast<float>(def.width);
+    const auto h = static_cast<float>(def.height);
+    const Vector2 c[4] = {on_terrain(map, {x, y}), on_terrain(map, {x + w, y}), on_terrain(map, {x + w, y + h}),
+                          on_terrain(map, {x, y + h})};
+    const Color color = ghost.valid ? theme::kSelection : theme::kDanger;
+    fill_quad(c[0], c[1], c[2], c[3], ColorAlpha(color, 0.3f));
+    for (int i = 0; i < 4; ++i) DrawLineEx(c[i], c[(i + 1) % 4], 2.0f, color);
 }
 
 // Grey boulders of a stone outcrop, fewer as it is quarried away.
@@ -345,7 +403,8 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
 }
 
 void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, float alpha,
-                         std::span<const engine::EntityId> selection, engine::EntityId selected_structure) const {
+                         std::span<const engine::EntityId> selection, engine::EntityId selected_structure,
+                         const BuildGhost* ghost) const {
     const engine::TileMap& map = world.map();
     const Rectangle view = camera.visible_world_rect();
     auto is_selected = [&](engine::EntityId id) {
@@ -365,6 +424,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     draw_pings(map);
 
+    if (ghost) draw_ghost(map, *ghost);
     if (const engine::Structure* s = world.find_structure(selected_structure)) {
         const Rectangle r = footprint(*s, -0.15f);
         const Vector2 corners[4] = {on_terrain(map, {r.x, r.y}), on_terrain(map, {r.x + r.width, r.y}),
@@ -430,7 +490,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
     });
     for (const engine::Structure& s : world.structures()) {
-        if (s.type != engine::StructureType::Headquarters) continue;
+        if (s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
         const Vector2 c = to_vector2(s.center);
         if (!CheckCollisionPointRec(on_terrain(map, c), {view.x - 150, view.y - 150, view.width + 300, view.height + 300})) {
             continue;
@@ -445,7 +505,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         } else if (d.projectile) {
             draw_projectile(*d.projectile, alpha);
         } else if (d.building) {
-            draw_headquarters(map, *d.building);
+            draw_building(map, *d.building);
         } else if (d.ruins) {
             draw_ruins(map, d.house_x, d.house_y);
         } else if (d.rock) {
