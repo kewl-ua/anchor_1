@@ -234,11 +234,11 @@ void World::update_garrisoned(Unit& u) {
     const Unit* target = find_enemy_in_sight(u);
     if (!target) return;
     const UnitTypeDef& def = def_of(u);
-    const Fixed reach = def.weapon.range + def.radius + def_of(*target).radius;
+    const Fixed reach = weapon_of(u).range + def.radius + def_of(*target).radius;
     const FixedVec2 to_target = target->pos - u.pos;
     if (to_target.length_sq_raw() > square_raw(reach)) return;
     if (to_target.x.raw != 0 || to_target.y.raw != 0) u.facing = to_target;
-    if (u.cooldown == 0) try_fire(u, target->pos, target);
+    if (u.cooldown == 0) try_fire(u, target->pos, target, weapon_of(u));
 }
 
 void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
@@ -287,6 +287,7 @@ void World::apply(const Command& cmd) {
         case CommandType::Build: apply_build(cmd); break;
         case CommandType::Haul: apply_haul(cmd); break;
         case CommandType::Observe: apply_observe(cmd); break;
+        case CommandType::Ability: apply_ability(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -492,6 +493,10 @@ void World::update_unit(Unit& u) {
 
         case Order::Observe:
             break;  // an observation post stays put and quiet
+
+        case Order::Ability:
+            update_ability(u);
+            break;
     }
 }
 
@@ -523,7 +528,7 @@ const Unit* World::find_enemy_in_sight(Unit& u) {
 void World::engage(Unit& u, const Unit& target) {
     u.engaged = target.id;
     const UnitTypeDef& def = def_of(u);
-    const Fixed reach = def.weapon.range + def.radius + def_of(target).radius;
+    const Fixed reach = weapon_of(u).range + def.radius + def_of(target).radius;
     const FixedVec2 to_target = target.pos - u.pos;
 
     // Out of range, or in range but a hill or house hides the target: move in.
@@ -534,14 +539,14 @@ void World::engage(Unit& u, const Unit& target) {
         return;
     }
     if (to_target.x.raw != 0 || to_target.y.raw != 0) u.facing = to_target;
-    if (u.cooldown == 0 && !try_fire(u, target.pos, &target)) {
+    if (u.cooldown == 0 && !try_fire(u, target.pos, &target, weapon_of(u))) {
         navigate(u, target.pos, u.chase_path, tile_of(target.pos), false);
     }
 }
 
 void World::engage_ground(Unit& u) {
     const UnitTypeDef& def = def_of(u);
-    const Fixed reach = def.weapon.range + def.radius;
+    const Fixed reach = weapon_of(u).range + def.radius;
     const FixedVec2 to_point = u.order_point - u.pos;
 
     if (to_point.length_sq_raw() > square_raw(reach)) {
@@ -549,7 +554,7 @@ void World::engage_ground(Unit& u) {
         return;
     }
     if (to_point.x.raw != 0 || to_point.y.raw != 0) u.facing = to_point;
-    if (u.cooldown == 0 && !try_fire(u, u.order_point, nullptr)) {
+    if (u.cooldown == 0 && !try_fire(u, u.order_point, nullptr, weapon_of(u))) {
         navigate(u, u.order_point, u.order_path, u.order_goal, false);
     }
 }
@@ -743,7 +748,7 @@ bool World::own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed 
     return false;
 }
 
-bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target) {
+bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon) {
     // Someone in a house is shot at through the house: aim at the windows.
     Fixed aim_height = map_.surface_height(aim) + kGroundAim;
     if (target) aim_height = map_.surface_height(aim) + (target->inside ? kWindowHeight : center_height(*target));
@@ -758,15 +763,15 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target) {
         if (aimed == 0 || structure_id_at(tile_of(line.point(stop))) != aimed) return false;
     }
     if (own_troops_in_line(shooter, line, start)) return true;  // hold fire, the line itself is fine
-    fire(shooter, aim, aim_height);
+    fire(shooter, aim, aim_height, weapon);
     return true;
 }
 
 // --- Combat ------------------------------------------------------------------
 
-void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height) {
-    const WeaponDef& weapon = def_of(shooter).weapon;
-    shooter.cooldown = weapon.reload;
+void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon) {
+    // A skill's own gun (a coaxial machine gun) doesn't reload the main one.
+    if (weapon.reload > 0) shooter.cooldown = weapon.reload;
 
     // A miss lands somewhere near the aim point, on the ground.
     if (rng_.next_below(100) >= weapon.accuracy) {
@@ -811,6 +816,7 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height) {
     p.target = line.point(end);
     p.origin_height = line.from_height;
     p.target_height = line.height(end);
+    p.weapon = weapon;
     shooter.last_shot_at = p.target;
     projectiles_.push_back(p);
 }
@@ -818,7 +824,7 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height) {
 void World::move_projectiles() {
     for (Projectile& p : projectiles_) {
         p.prev_pos = p.pos;
-        const Fixed speed = unit_type(p.shooter_type).weapon.projectile_speed;
+        const Fixed speed = p.weapon.projectile_speed;
         const FixedVec2 to_target = p.target - p.pos;
         const bool arrived = to_target.length() <= speed;
         p.pos = arrived ? p.target : p.pos + to_target * (speed / to_target.length());
@@ -827,7 +833,7 @@ void World::move_projectiles() {
         // there all along) takes the hit.
         const FireLine line{p.origin, p.origin_height, p.target, p.target_height};
         const Fixed total = (p.target - p.origin).length();
-        if (total.raw > 0) {
+        if (total.raw > 0 && !p.lobbed) {
             const Fixed start = min(Fixed::from_int(1), kMuzzleClearance / total);
             const Fixed t0 = max(start, (p.prev_pos - p.origin).length() / total);
             const Fixed t1 = arrived ? Fixed::from_int(1) : (p.pos - p.origin).length() / total;
@@ -847,8 +853,8 @@ void World::move_projectiles() {
 }
 
 void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
-    recent_impacts_.push_back({tick_, at, p.shooter_type});
-    const WeaponDef& weapon = unit_type(p.shooter_type).weapon;
+    const WeaponDef& weapon = p.weapon;
+    recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
 
     if (weapon.splash_radius.raw > 0) {
         // Explosions don't care whose units they hit (except the gun that
@@ -1015,6 +1021,11 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(u.carrying_type));
         mix(u.work);
         mix(u.seen_by);
+        mix(u.ammo);
+        for (Tick t : u.ability_ready) mix(t);
+        mix(static_cast<uint8_t>(u.order_ability));
+        mix_vec(u.order_point2);
+        mix(static_cast<uint32_t>(u.shots_left));
     }
     for (const Structure& s : structures_) {
         mix(s.id);
@@ -1045,6 +1056,11 @@ uint64_t World::checksum() const {
         mix_vec(p.target);
         mix_fixed(p.origin_height);
         mix_fixed(p.target_height);
+        mix(static_cast<uint32_t>(p.weapon.damage));
+        mix(static_cast<uint8_t>(p.weapon.damage_type));
+        mix_fixed(p.weapon.projectile_speed);
+        mix_fixed(p.weapon.splash_radius);
+        mix(p.lobbed ? 1 : 0);
     }
     return hash;
 }

@@ -63,7 +63,8 @@ private:
 bool has_target_point(engine::CommandType type) {
     return type == engine::CommandType::Move || type == engine::CommandType::AttackMove ||
            type == engine::CommandType::AttackGround || type == engine::CommandType::Gather ||
-           type == engine::CommandType::Build || type == engine::CommandType::Observe;
+           type == engine::CommandType::Build || type == engine::CommandType::Observe ||
+           type == engine::CommandType::Ability;
 }
 
 bool has_target_unit(engine::CommandType type) {
@@ -82,12 +83,17 @@ void write_command(Writer& w, const engine::Command& cmd) {
     if (has_target_unit(cmd.type)) w.u32(cmd.target_unit);
     if (cmd.type == engine::CommandType::Train) w.u8(cmd.unit_type);
     if (cmd.type == engine::CommandType::Build) w.u8(cmd.structure_type);
+    if (cmd.type == engine::CommandType::Ability) {
+        w.u8(cmd.ability);
+        w.i32(cmd.target_end.x.raw);
+        w.i32(cmd.target_end.y.raw);
+    }
 }
 
 std::optional<engine::Command> read_command(Reader& r) {
     engine::Command cmd;
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(engine::CommandType::Observe)) return std::nullopt;
+    if (type > static_cast<uint8_t>(engine::CommandType::Ability)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
 
     const uint16_t count = r.u16();
@@ -102,6 +108,11 @@ std::optional<engine::Command> read_command(Reader& r) {
     if (has_target_unit(cmd.type)) cmd.target_unit = r.u32();
     if (cmd.type == engine::CommandType::Train) cmd.unit_type = r.u8();
     if (cmd.type == engine::CommandType::Build) cmd.structure_type = r.u8();
+    if (cmd.type == engine::CommandType::Ability) {
+        cmd.ability = r.u8();
+        cmd.target_end.x = engine::Fixed::from_raw(r.i32());
+        cmd.target_end.y = engine::Fixed::from_raw(r.i32());
+    }
     if (!r.ok()) return std::nullopt;
     return cmd;
 }

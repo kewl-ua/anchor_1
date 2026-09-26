@@ -695,6 +695,134 @@ void test_crossed_sectors_find_men_in_cover() {
     CHECK(found(true));
 }
 
+// --- Skills ------------------------------------------------------------------
+
+Command use_ability(PlayerId player, std::vector<EntityId> units, AbilityId ability, int32_t x, int32_t y) {
+    Command cmd = make_order(CommandType::Ability, player, std::move(units), x, y);
+    cmd.ability = static_cast<uint8_t>(ability);
+    return cmd;
+}
+
+// Switching to armor-piercing takes a reload, then hits armor much harder.
+void test_tank_switches_rounds() {
+    auto first_hit = [](bool armor_piercing) {
+        Simulation sim(3, TileMap(30, 20));
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+        const EntityId target = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(11, 10));
+        if (armor_piercing) sim.schedule(0, use_ability(0, {gun}, AbilityId::SwitchAmmo, 0, 0));
+        sim.schedule(0, make_move(1, {target}, 11, 10));  // stays put, holds its fire for a while
+        sim.step();
+        if (armor_piercing) {
+            const Unit* u = sim.world().find_unit(gun);
+            CHECK(u->ammo == 1);
+            CHECK(u->cooldown + 1 >= unit_type(UnitTypeId::Tank).alt_weapon.reload);  // reloading
+        }
+        int32_t prev = hp_of(sim, target);
+        for (int i = 0; i < 300; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < prev) return prev - hp_of(sim, target);
+            prev = hp_of(sim, target);
+        }
+        return 0;
+    };
+    const int32_t he = first_hit(false);
+    const int32_t ap = first_hit(true);
+    CHECK(he > 0);
+    CHECK(ap >= 2 * he);  // 110 against 55 through a tank's armor
+
+    // Switching empties the breech: a full reload before the next shot.
+    Simulation alone(1, TileMap(20, 20));
+    const EntityId tank = alone.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 5));
+    alone.schedule(0, use_ability(0, {tank}, AbilityId::SwitchAmmo, 0, 0));
+    alone.step();
+    CHECK(alone.world().find_unit(tank)->cooldown + 1 >= unit_type(UnitTypeId::Tank).alt_weapon.reload);
+}
+
+// One wide-bursting shell: several men around the spot are hurt, then the
+// skill cools down and the tank stands by.
+void test_area_shot() {
+    int wide = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        Simulation sim(seed, TileMap(30, 20));
+        const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(4, 10));
+        std::vector<EntityId> men;
+        for (const TilePos& t : {TilePos{10, 10}, TilePos{11, 10}, TilePos{10, 11}, TilePos{9, 10}}) {
+            men.push_back(sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(t.x, t.y)));
+        }
+        sim.schedule(0, make_move(1, men, 10, 10));  // bunched up, not shooting yet
+        sim.schedule(0, use_ability(0, {tank}, AbilityId::AreaShot, 10, 10));
+        for (int i = 0; i < 30; ++i) sim.step();
+        int hurt = 0;
+        for (EntityId id : men) hurt += hp_of(sim, id) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+        wide += hurt >= 2 ? 1 : 0;
+        const Unit* t = sim.world().find_unit(tank);
+        CHECK(t->order != Order::Ability);
+        CHECK(t->ability_ready[0] > sim.world().tick());  // cooling down
+    }
+    CHECK(wide >= 6);
+}
+
+// A machine-gun sweep along a tree line hits men hidden in it, nobody aimed at.
+void test_mg_sweep_hits_along_the_front() {
+    int hurt = 0;
+    for (uint64_t seed = 1; seed <= 5; ++seed) {
+        TileMap map(30, 20);
+        for (int y = 4; y <= 16; ++y) {
+            for (int x = 8; x <= 11; ++x) map.set_terrain(x, y, Terrain::Forest);
+        }
+        Simulation sim(seed, map);
+        const EntityId ifv = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(3, 10));
+        // Our own men, standing still: the sweep spares nobody, and none of
+        // them is on the line straight ahead.
+        std::vector<EntityId> men;
+        for (int y = 6; y <= 14; y += 2) {
+            men.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(17, 2 * y + 1)));
+        }
+        sim.schedule(0, use_ability(0, {ifv}, AbilityId::MgSweep, 15, 10));
+        for (int i = 0; i < 60; ++i) sim.step();
+        for (EntityId id : men) hurt += hp_of(sim, id) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+        CHECK(sim.world().find_unit(ifv)->order != Order::Ability);
+    }
+    CHECK(hurt >= 6);
+}
+
+// A lobbed grenade flies over the heads of our men in front and comes down
+// behind a ridge that stops direct fire.
+void test_grenade_goes_over_cover() {
+    int hits = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        TileMap map(30, 20);
+        for (int y = 0; y < 20; ++y) map.set_elevation(8, y, 3);
+        Simulation sim(seed, map);
+        const EntityId ifv = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(5, 10));
+        const EntityId ours = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(15, 20));
+        const EntityId hidden = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(10, 10));
+        sim.schedule(0, make_move(1, {hidden}, 10, 10));
+        sim.schedule(0, use_ability(0, {ifv}, AbilityId::LobGrenade, 10, 10));
+        for (int i = 0; i < 40; ++i) sim.step();
+        hits += hp_of(sim, hidden) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+        CHECK(hp_of(sim, ours) == unit_type(UnitTypeId::Rifleman).max_hp);
+    }
+    CHECK(hits >= 5);
+}
+
+// Skills belong to unit types, and wait out their cooldown.
+void test_skills_need_the_unit_and_the_time() {
+    Simulation sim(1, TileMap(30, 20));
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(5, 10));
+    const EntityId ifv = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(5, 12));
+    sim.schedule(0, use_ability(0, {rifle}, AbilityId::LobGrenade, 8, 10));  // not his
+    sim.schedule(0, use_ability(0, {ifv}, AbilityId::LobGrenade, 8, 12));
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(sim.world().find_unit(rifle)->order == Order::Idle);
+    CHECK(sim.world().find_unit(rifle)->last_shot_tick == kNeverFired);
+    const Tick ready = sim.world().find_unit(ifv)->ability_ready[1];
+    CHECK(ready > sim.world().tick());
+    issue(sim, use_ability(0, {ifv}, AbilityId::LobGrenade, 8, 12));  // too soon
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(ifv)->ability_ready[1] == ready);
+}
+
 // --- Structures --------------------------------------------------------------
 
 // A 2x2 house at tiles (10..11, 10..11) and a river at x = 20 with a
@@ -1273,6 +1401,11 @@ int main() {
     test_attack_orders_need_the_target_in_sight();
     test_observation_post_watches_its_sector();
     test_crossed_sectors_find_men_in_cover();
+    test_tank_switches_rounds();
+    test_area_shot();
+    test_mg_sweep_hits_along_the_front();
+    test_grenade_goes_over_cover();
+    test_skills_need_the_unit_and_the_time();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

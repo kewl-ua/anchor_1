@@ -112,6 +112,7 @@ void Game::draw(hud::NetStatus net) const {
         .local_player = lockstep_.local_player(),
         .selection = controller_.selection(),
         .selected_structure = controller_.selected_structure(),
+        .commands = controller_.command_buttons(),
         .dragging = controller_.dragging(),
         .drag_rect = controller_.drag_rect(),
         .targeting = controller_.targeting_label(),

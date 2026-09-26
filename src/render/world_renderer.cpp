@@ -213,7 +213,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     // actually burst, which may be a tree or a soldier in the way.
     for (const engine::Impact& impact : world.recent_impacts()) {
         if (impact.tick < impacts_seen_until_ || !in_view(world, to_vector2(impact.pos))) continue;
-        const float splash = to_float(engine::unit_type(impact.shooter_type).weapon.splash_radius);
+        const float splash = to_float(impact.splash);
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
     }
     impacts_seen_until_ = world.tick();
@@ -1020,14 +1020,19 @@ void WorldRenderer::draw_projectile(const engine::Projectile& p, float alpha) co
     const Vector2 target = to_vector2(p.target);
     const float total = std::hypot(target.x - origin.x, target.y - origin.y);
     const float t = total > 0.0f ? std::hypot(ground.x - origin.x, ground.y - origin.y) / total : 1.0f;
-    const float height = to_float(p.origin_height) + (to_float(p.target_height) - to_float(p.origin_height)) * t;
+    float height = to_float(p.origin_height) + (to_float(p.target_height) - to_float(p.origin_height)) * t;
+    if (p.lobbed) height += 4.0f * t * (1.0f - t) * std::max(1.0f, total * 0.3f);  // an arc
     const Vector2 pos = iso::project(ground, height);
 
     Vector2 dir = iso_offset(to_vector2(p.target - p.origin));
     const float len = std::hypot(dir.x, dir.y);
     dir = len > 0.0f ? Vector2{dir.x / len, dir.y / len} : Vector2{1.0f, 0.0f};
 
-    switch (engine::unit_type(p.shooter_type).weapon.damage_type) {
+    if (p.lobbed) {  // a grenade tumbling through the air
+        DrawCircleV(pos, 2.5f, {60, 64, 50, 255});
+        return;
+    }
+    switch (p.weapon.damage_type) {
         case engine::DamageType::AntiTank:  // rocket with a smoke trail
             DrawLineEx({pos.x - dir.x * 14.0f, pos.y - dir.y * 14.0f}, pos, 2.5f, {180, 180, 170, 150});
             DrawCircleV(pos, 2.5f, {255, 150, 40, 255});
@@ -1056,7 +1061,8 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
                                           def.vehicle ? 8.0f : 9.0f);
 
         DrawCircleV(muzzle, def.vehicle ? 4.0f : 2.0f, {255, 230, 140, 220});
-        if (def.weapon.projectile_speed.raw == 0) {  // instant hit: draw the tracer
+        const bool sweep = u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MgSweep;
+        if (engine::weapon_of(u).projectile_speed.raw == 0 || sweep) {  // instant hit: draw the tracer
             DrawLineV(muzzle, on_terrain(map, to_vector2(u.last_shot_at), 6.0f), {255, 235, 160, 140});
         }
     }

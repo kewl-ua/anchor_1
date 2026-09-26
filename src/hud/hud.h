@@ -23,11 +23,30 @@ struct NetStatus {
     std::string_view message;  // e.g. "Opponent disconnected"
 };
 
+// One cell of the command grid. The app fills the grid for whatever is
+// selected; the HUD only draws it.
+struct CommandButton {
+    const char* label = nullptr;    // nullptr: an empty cell
+    const char* tooltip = nullptr;  // the full name, shown on hover
+    engine::Stock cost{};           // shown on the button; red if we can't afford it
+    bool enabled = true;            // dimmed when it can't be used now
+    bool active = false;            // lit: being aimed, or switched on
+    float cooldown = 0.0f;          // share of the cooldown still to wait, 0..1
+};
+
+// The AoE II grid: a hotkey belongs to a cell, whatever the cell holds.
+inline constexpr size_t kGridColumns = 5;
+inline constexpr size_t kGridRows = 3;
+inline constexpr size_t kGridSlots = kGridColumns * kGridRows;
+inline constexpr std::array<char, kGridSlots> kGridKeys = {'Q', 'W', 'E', 'R', 'T', 'A', 'S', 'D',
+                                                           'F', 'G', 'Z', 'X', 'C', 'V', 'B'};
+
 // Client-side state the HUD displays that is not part of the game state.
 struct HudState {
     engine::PlayerId local_player = 0;
     std::span<const engine::EntityId> selection;  // sorted
     engine::EntityId selected_structure = 0;      // one of our buildings, instead of units
+    std::span<const CommandButton> commands;      // kGridSlots cells, or empty
     bool dragging = false;
     Rectangle drag_rect{};  // screen space
     std::string_view targeting;  // label of the order being aimed ("Attack-move"...), empty if none
@@ -57,16 +76,15 @@ public:
     bool captures_point(Vector2 screen_pos) const;
     // Ground point under a screen point, if that point is on the minimap.
     std::optional<Vector2> minimap_to_ground(Vector2 screen_pos) const;
-    // Which command-panel button slot is under the point: a building's
-    // hiring roster, or the rear troops' building list.
+    // Which cell of the command grid is under the point.
     std::optional<size_t> button_at(Vector2 screen_pos) const;
-    static constexpr size_t kButtonColumns = 4;
-    static constexpr size_t kButtonSlots = 2 * kButtonColumns;
 
 private:
     struct Layout {
         Rectangle top_bar;
         Rectangle bottom_panel;
+        Rectangle grid;  // the command grid, left in the bottom panel
+        Rectangle info;  // what is selected, right of the grid
         Rectangle minimap_panel;
         Rectangle minimap;  // the diamond's bounding box inside the panel
     };
@@ -74,14 +92,13 @@ private:
 
     void draw_top_bar(const engine::World& world, const HudState& state, Rectangle area) const;
     void draw_banner(const NetStatus& net) const;
-    void draw_bottom_panel(const engine::World& world, const HudState& state, Rectangle area) const;
+    void draw_bottom_panel(const engine::World& world, const HudState& state, const Layout& l) const;
     void draw_help(Rectangle area) const;
     void draw_selection(const engine::World& world, const HudState& state, Rectangle area) const;
     void draw_unit_card(const engine::World& world, const engine::Unit& u, Rectangle area) const;
     void draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const;
-    // One command button: hotkey + name on top, price below; dim if unaffordable.
-    void draw_button(size_t slot, char hotkey, const char* name, const engine::Stock& cost,
-                     const engine::Stock& stock) const;
+    void draw_grid(const HudState& state, const engine::Stock& stock) const;
+    void draw_tooltip(const CommandButton& b, const engine::Stock& stock) const;
     static Rectangle button_rect(size_t slot);
     void draw_hp_bar(const engine::Unit& u, Rectangle area) const;
     void draw_minimap(const engine::World& world, const HudState& state, const Layout& l) const;

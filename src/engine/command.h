@@ -27,6 +27,7 @@ enum class CommandType : uint8_t {
                    // finish one (target_unit)
     Haul,          // supply trucks: run between the station and the depots
     Observe,       // scouts: hold an observation post watching the sector towards `target`
+    Ability,       // use a skill (`ability`) at `target` (a line: to `target_end`)
 };
 
 // The only way anything outside the engine can change the game state.
@@ -39,6 +40,8 @@ struct Command {
     EntityId target_unit = 0;    // Attack: a unit; Garrison, Train, Build: a structure
     uint8_t unit_type = 0;       // Train: a UnitTypeId
     uint8_t structure_type = 0;  // Build: a StructureType
+    uint8_t ability = 0;         // Ability: an AbilityId
+    FixedVec2 target_end{};      // Ability along a line: its other end
 };
 
 }  // namespace engine

@@ -143,6 +143,39 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return Vector2{sum.x / n, sum.y / n};
     }
 
+    if (options.scene == "skills") {
+        // The tanks load armor-piercing and put a wide burst ahead; the IFV
+        // sweeps the front with its machine gun. The tanks stay selected.
+        std::vector<engine::EntityId> tanks;
+        std::vector<engine::EntityId> ifvs;
+        Vector2 sum{0, 0};
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me) continue;
+            if (u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+            if (u.type == engine::UnitTypeId::Ifv) ifvs.push_back(u.id);
+            if (u.type == engine::UnitTypeId::Tank || u.type == engine::UnitTypeId::Ifv) {
+                sum.x += render::to_vector2(u.pos).x;
+                sum.y += render::to_vector2(u.pos).y;
+            }
+        }
+        if (tanks.empty() || ifvs.empty()) return std::nullopt;
+        const auto n = static_cast<float>(tanks.size() + ifvs.size());
+        const Vector2 center{sum.x / n, sum.y / n};
+        const int32_t fwd = me == 0 ? 1 : -1;
+        auto ahead = [&](float d) {
+            return render::to_fixed_vec2({center.x + d * static_cast<float>(fwd), center.y - d * static_cast<float>(fwd)});
+        };
+        auto skill = [&](const std::vector<engine::EntityId>& units, engine::AbilityId id, engine::FixedVec2 at) {
+            game.submit({.type = engine::CommandType::Ability, .units = units, .target = at,
+                         .ability = static_cast<uint8_t>(id)});
+        };
+        skill(tanks, engine::AbilityId::SwitchAmmo, {});
+        skill(tanks, engine::AbilityId::AreaShot, ahead(4.0f));
+        skill(ifvs, engine::AbilityId::MgSweep, ahead(6.0f));
+        game.select_units(tanks);
+        return center;
+    }
+
     if (options.scene == "build") {
         // Three rear troops put up an infantry barracks in front of the
         // headquarters, two a warehouse towards the woodline.

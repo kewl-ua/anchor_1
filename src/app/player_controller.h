@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <span>
 #include <utility>
@@ -73,6 +74,8 @@ public:
     // point ("A": attack-move, "G": fire at ground). Empty when not targeting.
     const char* targeting_label() const;
     bool targeting() const { return targeting_ != Targeting::None; }
+    // The command grid for the current selection, for the HUD to draw.
+    std::span<const hud::CommandButton> command_buttons() const { return buttons_; }
 
 private:
     void prune_selection(const engine::World& world);
@@ -87,14 +90,24 @@ private:
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
     bool has_trucks(const engine::World& world) const;
-    bool has_scouts(const engine::World& world) const;
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);
-    // Buttons of the command panel (and their hotkeys) for the current selection.
-    void press_button(net::Lockstep& lockstep, const engine::World& world, size_t index);
     void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);
 
-    enum class Targeting { None, AttackMove, AttackGround, Observe };
+    // The command grid. Each cell holds an action; its hotkey is the cell's.
+    enum class Action : uint8_t { None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability };
+    struct Cell {
+        Action action = Action::None;
+        uint8_t param = 0;  // the unit, building or skill
+    };
+    void rebuild_grid(const engine::World& world);
+    void press_cell(net::Lockstep& lockstep, const engine::World& world, size_t slot);
+    // The unit type the grid is for: the most numerous one selected.
+    std::optional<engine::UnitTypeId> leading_type(const engine::World& world) const;
+    void order_ability(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                       engine::AbilityId ability, Vector2 target, Vector2 end);
+
+    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability };
 
     engine::PlayerId player_;
     std::vector<engine::EntityId> selection_;  // sorted, unique
@@ -102,8 +115,12 @@ private:
     bool pressing_ = false;
     Vector2 press_pos_{};
     Targeting targeting_ = Targeting::None;
+    engine::AbilityId aiming_ = engine::AbilityId::AreaShot;  // Targeting::Ability
     std::optional<engine::StructureType> placing_;
     std::optional<Placement> placement_;
+    bool build_menu_ = false;  // rear troops: the grid shows what they can build
+    std::array<hud::CommandButton, hud::kGridSlots> buttons_{};
+    std::array<Cell, hud::kGridSlots> cells_{};
 };
 
 }  // namespace app

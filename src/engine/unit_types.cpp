@@ -87,11 +87,17 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .sight = tiles(8),
         .mass = 30,
         .vehicle = true,
-        .weapon = {.name = "125mm cannon", .damage = 75, .damage_type = DamageType::Explosive,
+        .weapon = {.name = "125mm HE shell", .damage = 75, .damage_type = DamageType::Explosive,
                    .range = tiles(7), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
                    .splash_radius = tiles(1, 2), .accuracy = 80, .miss_spread = tiles(1)},
         .cost = {3, 0, 150, 100, 100},
         .train_time = seconds(40),
+        // Armor-piercing: a fast, hard-hitting round without a burst.
+        .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
+                       .range = tiles(7), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
+                       .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1)},
+        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo},
+        .ability_count = 2,
     },
     {
         .name = "IFV",
@@ -108,6 +114,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
                    .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1)},
         .cost = {3, 0, 100, 60, 80},
         .train_time = seconds(30),
+        .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade},
+        .ability_count = 2,
     },
     {
         .name = "Rear trooper",
@@ -169,6 +177,35 @@ static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 }  // namespace
 
 const UnitTypeDef& unit_type(UnitTypeId id) { return kUnitTypes[static_cast<size_t>(id)]; }
+
+namespace {
+
+constexpr AbilityDef kAbilities[] = {
+    {.name = "Area shot: one HE-FRAG shell with a wide burst", .label = "Area shot", .target = AbilityTarget::Point,
+     .range = tiles(7), .cooldown = seconds(20),
+     .weapon = {.name = "125mm HE-FRAG shell", .damage = 75, .damage_type = DamageType::Explosive,
+                .range = tiles(7), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
+                .splash_radius = tiles(5, 4), .accuracy = 85, .miss_spread = tiles(1)}},
+    {.name = "Switch rounds: HE / armor-piercing (reloads the gun)", .label = "HE / AP",
+     .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
+    // Fired along the front, not aimed at anyone: whoever is in the way gets it.
+    {.name = "Machine gun along the front", .label = "MG sweep", .target = AbilityTarget::Direction,
+     .range = tiles(8), .cooldown = seconds(12),
+     .weapon = {.name = "Coaxial machine gun", .damage = 5, .damage_type = DamageType::Bullet, .range = tiles(8),
+                .reload = 0, .projectile_speed = kInstantHit, .splash_radius = kNoSplash, .accuracy = 100,
+                .miss_spread = tiles(0)}},
+    // Lobbed: flies over cover and comes down among the men in it.
+    {.name = "Grenade launcher at an area", .label = "Grenade", .target = AbilityTarget::Point,
+     .range = tiles(6), .cooldown = seconds(10),
+     .weapon = {.name = "30mm grenade", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(6),
+                .reload = 0, .projectile_speed = tiles_per_second(10), .splash_radius = tiles(1),
+                .accuracy = 75, .miss_spread = tiles(1)}},
+};
+static_assert(std::size(kAbilities) == kAbilityCount);
+
+}  // namespace
+
+const AbilityDef& ability_def(AbilityId id) { return kAbilities[static_cast<size_t>(id)]; }
 
 namespace {
 

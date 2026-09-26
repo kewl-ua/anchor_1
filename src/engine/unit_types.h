@@ -34,6 +34,36 @@ struct WeaponDef {
     Fixed miss_spread;
 };
 
+// Skills, used with a command-grid button. Each unit type lists its own.
+enum class AbilityId : uint8_t {
+    AreaShot,    // tank: one HE-FRAG shell with a wide burst at a point
+    SwitchAmmo,  // tank: HE <-> armor-piercing; the gun has to be reloaded
+    MgSweep,     // IFV: a machine-gun burst along the front in a direction, not at a target
+    LobGrenade,  // IFV: grenade launcher at an area, over cover
+    Count,
+};
+inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
+inline constexpr size_t kMaxAbilities = 4;
+
+// How a skill is aimed.
+enum class AbilityTarget : uint8_t {
+    Instant,    // no aiming: the button does it
+    Point,      // a point on the ground; the unit walks into range first
+    Direction,  // a direction from the unit, given as a point
+    Line,       // from one point to another (a trench)
+};
+
+struct AbilityDef {
+    const char* name;   // full, for tooltips
+    const char* label;  // short, for the button
+    AbilityTarget target;
+    Fixed range;    // Point: how close the unit must come; Direction: how far it reaches
+    Tick cooldown;  // after use
+    WeaponDef weapon{};  // what it fires, if anything
+};
+
+const AbilityDef& ability_def(AbilityId id);
+
 struct UnitTypeDef {
     const char* name;
     const char* short_name;  // for compact UI
@@ -54,6 +84,10 @@ struct UnitTypeDef {
     bool stealthy = false;  // hard to spot in cover (scouts)
     // Reach of an observation post's sector (scouts); 0 = can't hold one.
     Fixed sector_range{};
+    // A second kind of round, switched to with AbilityId::SwitchAmmo (damage 0 = none).
+    WeaponDef alt_weapon{};
+    std::array<AbilityId, kMaxAbilities> abilities{};
+    uint8_t ability_count = 0;
 };
 
 enum class UnitTypeId : uint8_t {
@@ -74,6 +108,14 @@ const UnitTypeDef& unit_type(UnitTypeId id);
 inline MoveClass move_class(const UnitTypeDef& def) { return def.vehicle ? MoveClass::Vehicle : MoveClass::Foot; }
 // Trucks carry no weapon: they never pick fights.
 inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
+
+// Where a skill sits in the unit's list (its button), or -1 if it hasn't got it.
+inline int ability_slot(const UnitTypeDef& def, AbilityId id) {
+    for (uint8_t i = 0; i < def.ability_count; ++i) {
+        if (def.abilities[i] == id) return i;
+    }
+    return -1;
+}
 
 // Damage multipliers for shooting down from / up at a higher tile (AoE II values).
 inline constexpr int32_t kHighGroundPercent = 125;

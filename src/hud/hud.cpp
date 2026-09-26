@@ -14,11 +14,15 @@ namespace hud {
 namespace {
 
 constexpr float kTopBarHeight = 28.0f;
-constexpr float kPanelWidth = 620.0f;
+constexpr float kPanelWidth = 840.0f;
 constexpr float kPanelHeight = 140.0f;
 constexpr float kPadding = 12.0f;
 constexpr int kFontSize = 18;
 constexpr int kSmallFontSize = 16;
+constexpr int kCardFontSize = 14;  // the lines of a unit or building card
+// The command grid on the left of the bottom panel.
+constexpr float kGridWidth = 376.0f;
+constexpr float kGridGap = 4.0f;
 
 // The minimap is a 2:1 diamond, like the map itself in isometric view.
 constexpr int kMinimapWidth = 260;
@@ -62,6 +66,18 @@ int fitting_font(const char* text, int size, float width) {
     return size;
 }
 
+// "150 mat. 50 fuel", or empty if it's free.
+void format_price(char (&out)[96], const engine::Stock& cost, bool long_names) {
+    static constexpr const char* kShortNames[] = {"men", "food", "mat.", "ammo", "fuel"};
+    out[0] = 0;
+    size_t used = 0;
+    for (size_t i = 0; i < engine::kResourceCount && used < sizeof(out); ++i) {
+        if (cost[i] == 0) continue;
+        const char* name = long_names ? engine::resource_name(static_cast<engine::Resource>(i)) : kShortNames[i];
+        used += static_cast<size_t>(std::snprintf(out + used, sizeof(out) - used, "%d %s  ", cost[i], name));
+    }
+}
+
 }  // namespace
 
 Hud::~Hud() {
@@ -78,13 +94,20 @@ Hud::Layout Hud::layout() {
     const Rectangle minimap{minimap_panel.x + kMinimapPadding, minimap_panel.y + kMinimapPadding, kMinimapWidth,
                             kMinimapHeight};
 
-    // The command panel is centered in the space left of the minimap.
+    // The command panel is centered in the space left of the minimap: the
+    // command grid on its left, the card of what is selected on its right.
     const float free_w = minimap_panel.x - 2 * kPadding;
     const float panel_w = std::max(0.0f, std::min(kPanelWidth, free_w));
     const Rectangle bottom_panel{kPadding + (free_w - panel_w) * 0.5f, h - kPanelHeight - kPadding, panel_w,
                                  kPanelHeight};
+    const Rectangle inner{bottom_panel.x + kPadding, bottom_panel.y + kPadding, bottom_panel.width - 2 * kPadding,
+                          bottom_panel.height - 2 * kPadding};
+    const float grid_w = std::min(kGridWidth, inner.width * 0.5f);
+    const Rectangle grid{inner.x, inner.y, grid_w, inner.height};
+    const Rectangle info{inner.x + grid_w + kPadding, inner.y, std::max(0.0f, inner.width - grid_w - kPadding),
+                         inner.height};
 
-    return {{0, 0, w, kTopBarHeight}, bottom_panel, minimap_panel, minimap};
+    return {{0, 0, w, kTopBarHeight}, bottom_panel, grid, info, minimap_panel, minimap};
 }
 
 bool Hud::captures_point(Vector2 p) const {
@@ -233,7 +256,7 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
     const Layout l = layout();
     draw_top_bar(world, state, l.top_bar);
     draw_banner(state.net);
-    draw_bottom_panel(world, state, l.bottom_panel);
+    draw_bottom_panel(world, state, l);
     draw_minimap(world, state, l);
 }
 
@@ -318,82 +341,113 @@ void draw_lobby_screen(std::string_view status) {
     centered("F10: quit", h * 0.5f + 40.0f, kSmallFontSize, theme::kTextDim);
 }
 
-void Hud::draw_bottom_panel(const engine::World& world, const HudState& state, Rectangle area) const {
-    draw_panel(area);
-    const Rectangle inner{area.x + kPadding, area.y + kPadding, area.width - 2 * kPadding,
-                          area.height - 2 * kPadding};
-    if (const engine::Structure* s = world.find_structure(state.selected_structure)) {
-        draw_structure_card(world, *s, inner);
-    } else if (state.selection.empty()) {
-        draw_help(inner);
-    } else {
-        draw_selection(world, state, inner);
+void Hud::draw_bottom_panel(const engine::World& world, const HudState& state, const Layout& l) const {
+    draw_panel(l.bottom_panel);
+    const engine::Structure* s = world.find_structure(state.selected_structure);
+    if (!s && state.selection.empty()) {
+        // Nothing selected: the controls, across the whole panel.
+        draw_help({l.bottom_panel.x + kPadding, l.bottom_panel.y + kPadding, l.bottom_panel.width - 2 * kPadding,
+                   l.bottom_panel.height - 2 * kPadding});
+        return;
     }
+    if (s) {
+        draw_structure_card(world, *s, l.info);
+    } else {
+        draw_selection(world, state, l.info);
+    }
+    draw_grid(state, world.stock(state.local_player));
 }
 
 Rectangle Hud::button_rect(size_t slot) {
-    const Layout l = layout();
-    const Rectangle inner{l.bottom_panel.x + kPadding, l.bottom_panel.y + kPadding, l.bottom_panel.width - 2 * kPadding,
-                          l.bottom_panel.height - 2 * kPadding};
-    // Two rows at the bottom of the panel, like the AoE II command grid.
-    constexpr float kGap = 4.0f;
-    constexpr float kHeight = 28.0f;
-    const float width =
-        (inner.width - kGap * static_cast<float>(kButtonColumns - 1)) / static_cast<float>(kButtonColumns);
-    const float top = inner.y + inner.height - 2 * kHeight - kGap;
-    const auto row = static_cast<float>(slot / kButtonColumns);
-    const auto column = static_cast<float>(slot % kButtonColumns);
-    return {inner.x + column * (width + kGap), top + row * (kHeight + kGap), width, kHeight};
+    const Rectangle grid = layout().grid;
+    const float w = (grid.width - kGridGap * static_cast<float>(kGridColumns - 1)) / static_cast<float>(kGridColumns);
+    const float h = (grid.height - kGridGap * static_cast<float>(kGridRows - 1)) / static_cast<float>(kGridRows);
+    const auto row = static_cast<float>(slot / kGridColumns);
+    const auto column = static_cast<float>(slot % kGridColumns);
+    return {grid.x + column * (w + kGridGap), grid.y + row * (h + kGridGap), w, h};
 }
 
 std::optional<size_t> Hud::button_at(Vector2 p) const {
-    for (size_t slot = 0; slot < kButtonSlots; ++slot) {
+    for (size_t slot = 0; slot < kGridSlots; ++slot) {
         if (CheckCollisionPointRec(p, button_rect(slot))) return slot;
     }
     return std::nullopt;
 }
 
-void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::Stock& cost,
-                      const engine::Stock& stock) const {
-    static constexpr const char* kShortNames[] = {"men", "food", "mat.", "ammo", "fuel"};
-    const Rectangle r = button_rect(slot);
-    const bool affordable = engine::can_afford(stock, cost);
-    const bool hover = CheckCollisionPointRec(GetMousePosition(), r);
-    DrawRectangleRec(r, hover ? Color{52, 60, 54, 255} : Color{32, 36, 34, 255});
-    DrawRectangleLinesEx(r, 1.0f, theme::kPanelBorder);
-    // Name on top, hotkey in the corner, price below.
-    const char* key = TextFormat("%c", hotkey);
-    const auto key_w = static_cast<float>(MeasureText(key, 10));
-    draw_text(key, r.x + r.width - key_w - 5, r.y + 3, 10, theme::kWarning);
-    draw_text(name, r.x + 5, r.y + 3, fitting_font(name, 12, r.width - key_w - 14),
-              affordable ? theme::kText : theme::kTextDim);
+// The grid: every cell with its hotkey in the corner; a cell cooling down
+// darkens from the top and clears as it gets ready.
+void Hud::draw_grid(const HudState& state, const engine::Stock& stock) const {
+    const Vector2 mouse = GetMousePosition();
+    const CommandButton* hovered = nullptr;
+    for (size_t slot = 0; slot < kGridSlots; ++slot) {
+        const Rectangle r = button_rect(slot);
+        const CommandButton* b = slot < state.commands.size() && state.commands[slot].label ? &state.commands[slot]
+                                                                                             : nullptr;
+        if (!b) {
+            DrawRectangleLinesEx(r, 1.0f, ColorAlpha(theme::kPanelBorder, 0.35f));
+            continue;
+        }
+        const bool affordable = engine::can_afford(stock, b->cost);
+        const bool usable = b->enabled && affordable && b->cooldown <= 0.0f;
+        const bool hover = CheckCollisionPointRec(mouse, r);
+        if (hover) hovered = b;
+        DrawRectangleRec(r, hover ? Color{52, 60, 54, 255} : Color{32, 36, 34, 255});
+        if (b->cooldown > 0.0f) DrawRectangleRec({r.x, r.y, r.width, r.height * b->cooldown}, {0, 0, 0, 150});
+        DrawRectangleLinesEx(r, b->active ? 2.0f : 1.0f, b->active ? theme::kSelection : theme::kPanelBorder);
 
-    char price[96] = {};
-    size_t used = 0;
-    for (size_t i = 0; i < engine::kResourceCount && used < sizeof(price); ++i) {
-        if (cost[i] == 0) continue;
-        used += static_cast<size_t>(std::snprintf(price + used, sizeof(price) - used, "%d %s  ", cost[i], kShortNames[i]));
+        const char key[2] = {kGridKeys[slot], 0};
+        const auto key_w = static_cast<float>(MeasureText(key, 10));
+        draw_text(key, r.x + r.width - key_w - 4, r.y + 3, 10, theme::kWarning);
+        draw_text(b->label, r.x + 4, r.y + 4, fitting_font(b->label, 12, r.width - key_w - 12),
+                  usable ? theme::kText : theme::kTextDim);
+        char price[96];
+        format_price(price, b->cost, false);
+        if (price[0]) {
+            draw_text(price, r.x + 4, r.y + r.height - 13, fitting_font(price, 10, r.width - 6),
+                      affordable ? theme::kTextDim : theme::kDanger);
+        }
     }
-    draw_text(price, r.x + 5, r.y + 16, 10, affordable ? theme::kTextDim : theme::kDanger);
+    if (hovered) draw_tooltip(*hovered, stock);
+}
+
+void Hud::draw_tooltip(const CommandButton& b, const engine::Stock& stock) const {
+    const char* title = b.tooltip ? b.tooltip : b.label;
+    char price[96];
+    format_price(price, b.cost, true);
+    const float title_w = static_cast<float>(MeasureText(title, kCardFontSize));
+    const float price_w = price[0] ? static_cast<float>(MeasureText(price, 12)) : 0.0f;
+    const float w = std::max(title_w, price_w) + 2 * 8;
+    const float h = price[0] ? 44.0f : 28.0f;
+    const Layout l = layout();
+    const float x = std::clamp(GetMousePosition().x - w * 0.5f, 4.0f, static_cast<float>(GetScreenWidth()) - w - 4);
+    const Rectangle r{x, l.bottom_panel.y - h - 6, w, h};
+    draw_panel(r);
+    draw_text(title, r.x + 8, r.y + 7, kCardFontSize, theme::kText);
+    if (price[0]) {
+        draw_text(price, r.x + 8, r.y + 26, 12, engine::can_afford(stock, b.cost) ? theme::kTextDim : theme::kDanger);
+    }
 }
 
 void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
     const engine::StructureDef& def = engine::structure_type(s.type);
     draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(s.owner));
     const char* hp = TextFormat("HP %d / %d", s.hp, def.max_hp);
-    draw_text(hp, area.x + 220, area.y + 2, kSmallFontSize, theme::kText);
-    const float bar_x = area.x + 220 + static_cast<float>(MeasureText(hp, kSmallFontSize)) + 14;
+    const float hp_x = area.x + area.width - 90 - 10 - static_cast<float>(MeasureText(hp, kCardFontSize));
+    draw_text(hp, hp_x, area.y + 3, kCardFontSize, theme::kText);
     const float frac = static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
-    DrawRectangleRec({bar_x, area.y + 6, 120, 6}, {0, 0, 0, 170});
-    DrawRectangleRec({bar_x, area.y + 6, 120 * frac, 6}, {200, 200, 190, 255});
+    DrawRectangleRec({area.x + area.width - 90, area.y + 7, 90, 6}, {0, 0, 0, 170});
+    DrawRectangleRec({area.x + area.width - 90, area.y + 7, 90 * frac, 6}, {200, 200, 190, 255});
 
     const float line2 = area.y + kFontSize + 10;
+    const float line3 = line2 + kCardFontSize + 6;
+    const float line4 = line3 + kCardFontSize + 6;
     if (!s.built) {
         const float done = static_cast<float>(s.build_progress) / static_cast<float>(def.build_time);
-        draw_text(TextFormat("Under construction: %d%%   (RMB with rear troops to help)", static_cast<int>(done * 100)),
-                  area.x, line2, kSmallFontSize, theme::kWarning);
-        DrawRectangleRec({area.x, line2 + 24, 300, 6}, {0, 0, 0, 170});
-        DrawRectangleRec({area.x, line2 + 24, 300 * done, 6}, {230, 200, 60, 255});
+        draw_text(TextFormat("Under construction: %d%%", static_cast<int>(done * 100)), area.x, line2, kCardFontSize,
+                  theme::kWarning);
+        draw_text("RMB with rear troops to help", area.x, line3, kCardFontSize, theme::kTextDim);
+        DrawRectangleRec({area.x, line4 + 4, area.width, 6}, {0, 0, 0, 170});
+        DrawRectangleRec({area.x, line4 + 4, area.width * done, 6}, {230, 200, 60, 255});
         return;
     }
 
@@ -402,34 +456,30 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                           cargo[static_cast<size_t>(engine::Resource::Ammo)],
                           cargo[static_cast<size_t>(engine::Resource::Fuel)]);
     };
-    const float line3 = line2 + kSmallFontSize + 6;
     switch (s.type) {
         case engine::StructureType::Station:
             draw_text(TextFormat("Next train in %ds: +%d men, %s", seconds_until(world, s.next_train),
                                  engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)],
                                  freight(engine::kTrainCargo)),
-                      area.x, line2, kSmallFontSize, theme::kTextDim);
-            draw_text(TextFormat("Waiting for trucks: %s", freight(s.cargo)), area.x, line3, kSmallFontSize,
+                      area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text(TextFormat("Waiting for trucks: %s", freight(s.cargo)), area.x, line3, kCardFontSize,
                       theme::kText);
-            draw_text("Supply trucks (hired at the headquarters) take it to the depots.", area.x,
-                      line3 + kSmallFontSize + 6, 14, theme::kTextDim);
+            draw_text("Trucks (hired at the headquarters) take it to the depots.", area.x, line4, kCardFontSize,
+                      theme::kTextDim);
             return;
         case engine::StructureType::Warehouse:
-            draw_text("Takes food from supply trucks and materials from rear troops.", area.x, line2, kSmallFontSize,
+            draw_text("Takes food from trucks, materials from rear troops.", area.x, line2, kCardFontSize,
                       theme::kTextDim);
-            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kSmallFontSize,
-                      theme::kTextDim);
+            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
             return;
         case engine::StructureType::AmmoDepot:
-            draw_text("Takes ammunition from supply trucks.", area.x, line2, kSmallFontSize, theme::kTextDim);
-            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kSmallFontSize,
-                      theme::kTextDim);
+            draw_text("Takes ammunition from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
             return;
         case engine::StructureType::FuelDepot:
-            draw_text("Takes fuel from supply trucks.", area.x, line2, kSmallFontSize, theme::kTextDim);
-            draw_text(TextFormat("Burns if destroyed: a fireball, and %d%% of the fuel is lost.",
-                                 engine::kFuelDepotLossPercent),
-                      area.x, line3, kSmallFontSize, theme::kWarning);
+            draw_text("Takes fuel from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text(TextFormat("Burns if destroyed: %d%% of the fuel is lost.", engine::kFuelDepotLossPercent),
+                      area.x, line3, kCardFontSize, theme::kWarning);
             return;
         default: break;
     }
@@ -451,58 +501,31 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
     }
     if (def.roster_size > 0) {
         draw_text(TextFormat("queue %d/%d", static_cast<int>(s.queue.size()), static_cast<int>(engine::kMaxQueue)),
-                  area.x + 5 * (kIconW + 4) + 8, line2 + 6, kSmallFontSize, theme::kTextDim);
+                  area.x + 5 * (kIconW + 4) + 8, line2 + 7, kCardFontSize, theme::kTextDim);
     }
     if (!s.garrison.empty()) {
-        draw_text(TextFormat("%d at drill", static_cast<int>(s.garrison.size())), area.x + 360, line2 + 6,
-                  kSmallFontSize, theme::kTextDim);
-    }
-
-    static constexpr char kHireKeys[] = {'Q', 'W', 'E', 'T'};
-    static_assert(std::size(kHireKeys) >= engine::kMaxRoster);
-    const engine::Stock& stock = world.stock(s.owner);
-    for (size_t i = 0; i < std::min<size_t>(def.roster_size, kButtonSlots); ++i) {
-        const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
-        draw_button(i, kHireKeys[i], unit.name, unit.cost, stock);
+        draw_text(TextFormat("%d at drill", static_cast<int>(s.garrison.size())), area.x, line2 + kIconH + 10,
+                  kCardFontSize, theme::kTextDim);
     }
 }
 
 void Hud::draw_help(Rectangle area) const {
     const char* lines[] = {
-        "LMB: select / drag box    Shift+LMB: add    F2: army    Space: jump to selection",
-        "RMB: move / attack / infantry into a house    S: stop    F10: quit",
-        "A + LMB: attack-move    G + LMB: fire at ground    O + LMB: scouts' sector",
-        "Rear troops: RMB forest/rock to gather, 1-6 build, R retrain",
-        "Buildings: click, Q/W/E hire    Trucks: RMB station/depot    Minimap: LMB/RMB",
+        "LMB: select / drag box    Shift+LMB: add    F2: army    Space: jump to selection    F10: quit",
+        "RMB: move / attack / infantry into a house / trucks to a depot / rear troops to work",
+        "Command grid: the hotkey is the cell, as in AoE II:   Q W E R T  /  A S D F G  /  Z X C V B",
+        "A: attack-move    S: stop    G: fire at ground    Esc or RMB: cancel aiming",
+        "Buildings: click one to hire    Minimap: LMB moves the camera, RMB sends the selection",
     };
-    constexpr int kHelpFontSize = 14;
     float y = area.y;
     for (const char* line : lines) {
-        draw_text(line, area.x, y, kHelpFontSize, theme::kTextDim);
-        y += kHelpFontSize + 7;
+        draw_text(line, area.x, y, kCardFontSize, theme::kTextDim);
+        y += kCardFontSize + 7;
     }
 }
 
 void Hud::draw_selection(const engine::World& world, const HudState& state, Rectangle area) const {
     const int count = static_cast<int>(state.selection.size());
-
-    // Rear troops in the selection get the building buttons.
-    bool workers = false;
-    for (engine::EntityId id : state.selection) {
-        const engine::Unit* u = world.find_unit(id);
-        workers = workers || (u && engine::unit_type(u->type).worker);
-    }
-    if (workers) {
-        static constexpr char kBuildKeys[] = {'1', '2', '3', '4', '5', '6'};
-        static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
-        const engine::Stock& stock = world.stock(state.local_player);
-        for (size_t i = 0; i < std::min(std::size(engine::kBuildable), kButtonSlots); ++i) {
-            const engine::StructureDef& def = engine::structure_type(engine::kBuildable[i]);
-            draw_button(i, kBuildKeys[i], def.name, def.cost, stock);
-        }
-    }
-    const float bottom = workers ? button_rect(0).y - 4 : area.y + area.height;
-
     if (count == 1) {
         if (const engine::Unit* u = world.find_unit(state.selection.front())) draw_unit_card(world, *u, area);
         return;
@@ -510,13 +533,13 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
 
     draw_text(TextFormat("Selected: %d", count), area.x, area.y, kFontSize, theme::kText);
 
-    // One icon per unit, as many as fit above the buttons.
+    // One icon per unit, as many as fit.
     constexpr float kIconW = 34.0f;
     constexpr float kIconH = 28.0f;
     constexpr float kGap = 4.0f;
     const int per_row = std::max(1, static_cast<int>((area.width + kGap) / (kIconW + kGap)));
     const float top = area.y + kFontSize + 10;
-    const int max_rows = std::max(1, static_cast<int>((bottom - top + kGap) / (kIconH + kGap)));
+    const int max_rows = std::max(1, static_cast<int>((area.y + area.height - top + kGap) / (kIconH + kGap)));
     const int shown = std::min(count, per_row * max_rows);
 
     for (int i = 0; i < shown; ++i) {
@@ -536,33 +559,37 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
 
 void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rectangle area) const {
     const engine::UnitTypeDef& def = engine::unit_type(u.type);
-    const engine::WeaponDef& weapon = def.weapon;
+    const engine::WeaponDef& weapon = engine::weapon_of(u);
 
     draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(u.owner));
-    draw_text(TextFormat("HP %d / %d", u.hp, def.max_hp), area.x + 180, area.y + 2, kSmallFontSize, theme::kText);
-    draw_hp_bar(u, {area.x + 300, area.y + 6, 120, 6});
+    const char* hp = TextFormat("HP %d / %d", u.hp, def.max_hp);
+    draw_text(hp, area.x + area.width - 90 - 10 - static_cast<float>(MeasureText(hp, kCardFontSize)), area.y + 3,
+              kCardFontSize, theme::kText);
+    draw_hp_bar(u, {area.x + area.width - 90, area.y + 7, 90, 6});
 
     static constexpr const char* kDamageNames[] = {"bullet", "explosive", "anti-tank"};
-    const float line2 = area.y + kFontSize + 6;
+    const float line2 = area.y + kFontSize + 8;
+    const float step = kCardFontSize + 6;
     const float range = static_cast<float>(weapon.range.raw) / engine::Fixed::kOneRaw;
     const char* armament = "Unarmed";
     if (engine::is_armed(def)) {
-        armament = TextFormat("%s: %d %s, range %.1f, every %.1f s", weapon.name, weapon.damage,
-                              kDamageNames[static_cast<int>(weapon.damage_type)], range,
+        armament = TextFormat("%s%s: %d %s, range %.0f, every %.1f s", def.alt_weapon.damage > 0 ? "Loaded: " : "",
+                              weapon.name, weapon.damage, kDamageNames[static_cast<int>(weapon.damage_type)], range,
                               static_cast<float>(weapon.reload) / engine::kTicksPerSecond);
     } else if (u.type == engine::UnitTypeId::Truck) {
         armament = TextFormat("Unarmed. Carries %d from the station to the depots.", engine::kTruckCapacity);
     }
-    draw_text(armament, area.x, line2, kSmallFontSize, theme::kTextDim);
+    draw_text(armament, area.x, line2, fitting_font(armament, kCardFontSize, area.width), theme::kTextDim);
     draw_text(TextFormat("Armor: bullet %d, explosive %d, anti-tank %d", def.armor[0], def.armor[1], def.armor[2]),
-              area.x, line2 + kSmallFontSize + 4, kSmallFontSize, theme::kTextDim);
+              area.x, line2 + step, kCardFontSize, theme::kTextDim);
 
     static constexpr const char* kOrderNames[] = {"Idle",          "Moving",           "Attacking",
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
                                                   "Gathering",     "Retraining",       "Building",
-                                                  "Supply run",    "Observing (holding fire)"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Observe) + 1);
+                                                  "Supply run",    "Observing, holding fire", "Using a skill"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Ability) + 1);
     const char* state = kOrderNames[static_cast<int>(u.order)];
+    if (u.order == engine::Order::Ability) state = engine::ability_def(u.order_ability).label;
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
     if (const engine::Structure* s = world.find_structure(u.inside)) {
         if (s->type == engine::StructureType::House) {
@@ -581,9 +608,10 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
             state = "Supply run, empty";
         }
     }
-    draw_text(TextFormat("%s   %s, elevation %d", state, engine::terrain_def(world.map().terrain_at(u.pos)).name,
-                         world.map().elevation_at(u.pos)),
-              area.x, line2 + 2 * (kSmallFontSize + 4), kSmallFontSize, theme::kTextDim);
+    const char* where = TextFormat("%s   %s, elevation %d", state,
+                                   engine::terrain_def(world.map().terrain_at(u.pos)).name,
+                                   world.map().elevation_at(u.pos));
+    draw_text(where, area.x, line2 + 2 * step, fitting_font(where, kCardFontSize, area.width), theme::kTextDim);
 }
 
 void Hud::draw_hp_bar(const engine::Unit& u, Rectangle area) const {

@@ -33,21 +33,24 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     const bool over_hud = hud.captures_point(mouse);
     const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 
-    if (IsKeyPressed(KEY_A) && !selection_.empty()) targeting_ = Targeting::AttackMove;
-    if (IsKeyPressed(KEY_G) && !selection_.empty()) targeting_ = Targeting::AttackGround;
-    if (IsKeyPressed(KEY_O) && has_scouts(world)) targeting_ = Targeting::Observe;
-    if (IsKeyPressed(KEY_ESCAPE) || selection_.empty()) targeting_ = Targeting::None;
-    if (IsKeyPressed(KEY_ESCAPE) || !has_workers(world)) placing_.reset();
-
-    // Command panel hotkeys: 1-6 build (rear troops); Q, W, E, T hire (a building).
-    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX};
-    constexpr KeyboardKey kHireKeys[] = {KEY_Q, KEY_W, KEY_E, KEY_T};
-    static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
-    for (size_t i = 0; i < std::size(kBuildKeys); ++i) {
-        if (IsKeyPressed(kBuildKeys[i]) && selected_structure_ == 0) press_button(lockstep, world, i);
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        targeting_ = Targeting::None;
+        placing_.reset();
+        build_menu_ = false;
     }
-    for (size_t i = 0; i < std::size(kHireKeys); ++i) {
-        if (IsKeyPressed(kHireKeys[i]) && selected_structure_ != 0) press_button(lockstep, world, i);
+    if (selection_.empty()) targeting_ = Targeting::None;
+    if (!has_workers(world)) {
+        placing_.reset();
+        build_menu_ = false;
+    }
+
+    // The grid's hotkeys: a key presses whatever its cell holds.
+    rebuild_grid(world);
+    for (size_t slot = 0; slot < hud::kGridSlots; ++slot) {
+        if (IsKeyPressed(static_cast<KeyboardKey>(hud::kGridKeys[slot]))) {
+            press_cell(lockstep, world, slot);
+            rebuild_grid(world);
+        }
     }
     update_placement(world, camera, mouse);
 
@@ -57,17 +60,22 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         const std::optional<Vector2> target =
             over_hud ? minimap_ground : std::optional<Vector2>(ground_under(world, camera, mouse));
-        if (const std::optional<size_t> button = hud.button_at(mouse)) {
-            press_button(lockstep, world, *button);
+        const bool grid_shown = selected_structure_ != 0 || !selection_.empty();
+        if (const std::optional<size_t> button = hud.button_at(mouse); button && grid_shown) {
+            press_cell(lockstep, world, *button);
         } else if (placement_ && !over_hud) {
             if (placement_->valid) {
                 order_build(lockstep, *placement_);
-                if (!shift) placing_.reset();  // shift: lay several foundations
+                if (!shift) {  // shift: lay several foundations
+                    placing_.reset();
+                    build_menu_ = false;
+                }
             }
         } else if (targeting() && target) {
             if (targeting_ == Targeting::AttackMove) order_attack_move(lockstep, renderer, *target);
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
             if (targeting_ == Targeting::Observe) order_to_point(lockstep, renderer, *target, engine::CommandType::Observe);
+            if (targeting_ == Targeting::Ability) order_ability(lockstep, world, renderer, aiming_, *target, *target);
             if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more clicks
         } else if (!over_hud) {
             pressing_ = true;
@@ -120,23 +128,202 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             }
         }
     }
-    if (IsKeyPressed(KEY_S)) order_stop(lockstep);
     if (IsKeyPressed(KEY_F2)) select_army(world);
-    if (IsKeyPressed(KEY_R) && has_workers(world)) order_retrain(lockstep);
+    rebuild_grid(world);  // what the HUD shows this frame
 }
 
-// The same buttons the HUD shows: a building's hiring roster, or the rear
-// troops' building list.
-void PlayerController::press_button(net::Lockstep& lockstep, const engine::World& world, size_t index) {
+namespace {
+
+// Short names that fit a grid cell; the tooltip has the full one.
+const char* unit_label(engine::UnitTypeId type) {
+    switch (type) {
+        case engine::UnitTypeId::Rifleman: return "Rifleman";
+        case engine::UnitTypeId::MachineGunner: return "MG crew";
+        case engine::UnitTypeId::Grenadier: return "RPG";
+        case engine::UnitTypeId::Tank: return "Tank";
+        case engine::UnitTypeId::Ifv: return "IFV";
+        case engine::UnitTypeId::Worker: return "Rear troop";
+        case engine::UnitTypeId::Truck: return "Truck";
+        case engine::UnitTypeId::Scout: return "Scout";
+        case engine::UnitTypeId::Count: break;
+    }
+    return "?";
+}
+
+const char* building_label(engine::StructureType type) {
+    switch (type) {
+        case engine::StructureType::InfantryBarracks: return "Infantry";
+        case engine::StructureType::ArmorBarracks: return "Armor";
+        case engine::StructureType::ReconBarracks: return "Recon";
+        case engine::StructureType::Warehouse: return "Warehouse";
+        case engine::StructureType::AmmoDepot: return "Ammo";
+        case engine::StructureType::FuelDepot: return "Fuel";
+        default: return engine::structure_type(type).name;
+    }
+}
+
+}  // namespace
+
+std::optional<engine::UnitTypeId> PlayerController::leading_type(const engine::World& world) const {
+    std::array<int, engine::kUnitTypeCount> count{};
+    for (engine::EntityId id : selection_) {
+        if (const engine::Unit* u = world.find_unit(id)) ++count[static_cast<size_t>(u->type)];
+    }
+    const auto best = std::max_element(count.begin(), count.end());  // ties: the first type
+    if (*best == 0) return std::nullopt;
+    return static_cast<engine::UnitTypeId>(best - count.begin());
+}
+
+// Row 1 (Q W E R T): what this kind of unit or building does. Row 2
+// (A S D F G): orders every unit knows. Row 3 (Z X C V B): more of row 1.
+void PlayerController::rebuild_grid(const engine::World& world) {
+    buttons_ = {};
+    cells_ = {};
+    auto put = [&](size_t slot, Action action, uint8_t param, const char* label, const char* tooltip,
+                   engine::Stock cost = {}) -> hud::CommandButton& {
+        cells_[slot] = {action, param};
+        buttons_[slot] = {.label = label, .tooltip = tooltip, .cost = cost};
+        return buttons_[slot];
+    };
+
     if (const engine::Structure* s = world.find_structure(selected_structure_)) {
+        if (s->owner != player_ || !s->built) return;
         const engine::StructureDef& def = engine::structure_type(s->type);
-        if (s->built && index < def.roster_size) order_train(lockstep, world, def.roster[index]);
+        for (uint8_t i = 0; i < def.roster_size; ++i) {
+            const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
+            put(i, Action::Hire, static_cast<uint8_t>(def.roster[i]), unit_label(def.roster[i]), unit.name, unit.cost)
+                .enabled = s->queue.size() < engine::kMaxQueue;
+        }
         return;
     }
-    if (has_workers(world) && index < std::size(engine::kBuildable)) {
-        placing_ = engine::kBuildable[index];
-        targeting_ = Targeting::None;
+    const std::optional<engine::UnitTypeId> lead = leading_type(world);
+    if (!lead) return;
+    const engine::UnitTypeDef& def = engine::unit_type(*lead);
+
+    if (def.worker && build_menu_) {
+        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 10, 11, 12, 13};
+        static_assert(std::size(kBuildSlots) >= std::size(engine::kBuildable));
+        for (size_t i = 0; i < std::size(engine::kBuildable); ++i) {
+            const engine::StructureDef& b = engine::structure_type(engine::kBuildable[i]);
+            put(kBuildSlots[i], Action::Build, static_cast<uint8_t>(engine::kBuildable[i]),
+                building_label(engine::kBuildable[i]), b.name, b.cost)
+                .active = placing_ == engine::kBuildable[i];
+        }
+        put(14, Action::Back, 0, "Back", "Back (Esc)");
+        return;
     }
+
+    if (def.worker) {
+        put(0, Action::BuildMenu, 0, "Build", "Build: barracks, warehouses, depots");
+        engine::Stock retrain{};
+        retrain[static_cast<size_t>(engine::Resource::Ammo)] = 20;
+        put(1, Action::Retrain, 0, "Retrain", "Retrain as riflemen at the headquarters", retrain);
+    }
+    if (*lead == engine::UnitTypeId::Truck) put(0, Action::Haul, 0, "Supply run", "Back on the supply run");
+    if (def.sector_range.raw > 0) {
+        put(0, Action::Observe, 0, "Observe", "Observation post: watch a sector, holding fire").active =
+            targeting_ == Targeting::Observe;
+    }
+    for (uint8_t i = 0; i < def.ability_count; ++i) {
+        const engine::AbilityId id = def.abilities[i];
+        const engine::AbilityDef& ability = engine::ability_def(id);
+        // Ready as soon as one of them is; a switch shows what is loaded.
+        float cooldown = 1.0f;
+        bool alt_loaded = false;
+        for (engine::EntityId unit_id : selection_) {
+            const engine::Unit* u = world.find_unit(unit_id);
+            if (!u || u->type != *lead) continue;
+            alt_loaded = u->ammo == 1;
+            const engine::Tick ready = u->ability_ready[i];
+            const float left = ready > world.tick() && ability.cooldown > 0
+                                   ? static_cast<float>(ready - world.tick()) / static_cast<float>(ability.cooldown)
+                                   : 0.0f;
+            cooldown = std::min(cooldown, left);
+        }
+        const char* label = ability.label;
+        if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
+        hud::CommandButton& b = put(i, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
+        b.cooldown = cooldown;
+        b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);
+    }
+
+    const bool armed = std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::is_armed(engine::unit_type(u->type));
+    });
+    if (armed) {
+        put(5, Action::AttackMove, 0, "Attack", "Attack-move: go there, fighting on the way").active =
+            targeting_ == Targeting::AttackMove;
+    }
+    put(6, Action::Stop, 0, "Stop", "Stop");
+    if (armed) {
+        put(9, Action::FireAt, 0, "Fire at", "Fire at a spot, seen or not (a tree line, a house)").active =
+            targeting_ == Targeting::AttackGround;
+    }
+}
+
+void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& world, size_t slot) {
+    if (slot >= hud::kGridSlots) return;
+    const Cell cell = cells_[slot];
+    const hud::CommandButton& b = buttons_[slot];
+    if (cell.action == Action::None || !b.enabled || b.cooldown > 0.0f) return;
+    if (!engine::can_afford(world.stock(player_), b.cost)) return;
+    switch (cell.action) {
+        case Action::AttackMove: targeting_ = Targeting::AttackMove; break;
+        case Action::FireAt: targeting_ = Targeting::AttackGround; break;
+        case Action::Observe: targeting_ = Targeting::Observe; break;
+        case Action::Stop: order_stop(lockstep); break;
+        case Action::Retrain: order_retrain(lockstep); break;
+        case Action::BuildMenu: build_menu_ = true; break;
+        case Action::Back: build_menu_ = false; break;
+        case Action::Build:
+            placing_ = static_cast<engine::StructureType>(cell.param);
+            targeting_ = Targeting::None;
+            break;
+        case Action::Hire: order_train(lockstep, world, static_cast<engine::UnitTypeId>(cell.param)); break;
+        case Action::Haul: {
+            engine::Command haul{.type = engine::CommandType::Haul};
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (u && u->type == engine::UnitTypeId::Truck) haul.units.push_back(id);
+            }
+            if (!haul.units.empty()) lockstep.submit(std::move(haul));
+            break;
+        }
+        case Action::Ability: {
+            const auto id = static_cast<engine::AbilityId>(cell.param);
+            if (engine::ability_def(id).target == engine::AbilityTarget::Instant) {
+                engine::Command cmd{.type = engine::CommandType::Ability, .ability = cell.param};
+                for (engine::EntityId unit_id : selection_) {
+                    const engine::Unit* u = world.find_unit(unit_id);
+                    if (u && engine::ability_slot(engine::unit_type(u->type), id) >= 0) cmd.units.push_back(unit_id);
+                }
+                if (!cmd.units.empty()) lockstep.submit(std::move(cmd));
+            } else {
+                targeting_ = Targeting::Ability;
+                aiming_ = id;
+            }
+            break;
+        }
+        case Action::None: break;
+    }
+}
+
+void PlayerController::order_ability(net::Lockstep& lockstep, const engine::World& world,
+                                     render::WorldRenderer& renderer, engine::AbilityId ability, Vector2 target,
+                                     Vector2 end) {
+    engine::Command cmd;
+    cmd.type = engine::CommandType::Ability;
+    cmd.ability = static_cast<uint8_t>(ability);
+    cmd.target = render::to_fixed_vec2(target);
+    cmd.target_end = render::to_fixed_vec2(end);
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (u && engine::ability_slot(engine::unit_type(u->type), ability) >= 0) cmd.units.push_back(id);
+    }
+    if (cmd.units.empty()) return;
+    lockstep.submit(std::move(cmd));
+    renderer.add_order_ping(target, true);
 }
 
 // The foundation follows the cursor, centred on it.
@@ -169,13 +356,6 @@ bool PlayerController::has_trucks(const engine::World& world) const {
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
         return u && u->type == engine::UnitTypeId::Truck;
-    });
-}
-
-bool PlayerController::has_scouts(const engine::World& world) const {
-    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
-        const engine::Unit* u = world.find_unit(id);
-        return u && engine::unit_type(u->type).sector_range.raw > 0;
     });
 }
 
@@ -273,6 +453,7 @@ const char* PlayerController::targeting_label() const {
         case Targeting::AttackMove: return "Attack-move";
         case Targeting::AttackGround: return "Fire at ground";
         case Targeting::Observe: return "Observation sector";
+        case Targeting::Ability: return engine::ability_def(aiming_).name;
         case Targeting::None: break;
     }
     return "";

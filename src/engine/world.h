@@ -32,6 +32,7 @@ enum class Order : uint8_t {
     Build,         // walk to structure order_target and build it until it's done
     Haul,          // supply truck: load at the station, unload at the depot, repeat
     Observe,       // scout: an observation post watching the sector towards order_point, holding fire
+    Ability,       // using the skill order_ability at order_point (to order_point2)
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -89,6 +90,13 @@ struct Unit {
 
     // Bit per player: who currently sees this unit (updated with the fog of war).
     uint8_t seen_by = 0;
+
+    // Skills.
+    uint8_t ammo = 0;                                  // 0: the main round, 1: the other one (a tank's AP)
+    std::array<Tick, kMaxAbilities> ability_ready{};  // tick from which each skill can be used again
+    AbilityId order_ability = AbilityId::AreaShot;     // Order::Ability
+    FixedVec2 order_point2{};                          // the other end of a line
+    int32_t shots_left = 0;                            // a burst in progress
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -106,6 +114,8 @@ struct Projectile {
     FixedVec2 target{};    // where it lands: the aim point, or the tree/house/hill in the way
     Fixed origin_height{};  // flight heights at both ends, in elevation levels
     Fixed target_height{};
+    WeaponDef weapon{};     // what was fired
+    bool lobbed = false;    // arcs over everything and only comes down at the target
 };
 
 // Where a projectile went off, kept for a few seconds so the renderer (and
@@ -114,7 +124,14 @@ struct Impact {
     Tick tick = 0;
     FixedVec2 pos{};
     UnitTypeId shooter_type = UnitTypeId::Rifleman;
+    Fixed splash{};  // radius of the burst, tiles
 };
+
+// The round a unit's gun is loaded with: the main one, or the alternative.
+inline const WeaponDef& weapon_of(const Unit& u) {
+    const UnitTypeDef& def = unit_type(u.type);
+    return u.ammo == 1 && def.alt_weapon.damage > 0 ? def.alt_weapon : def.weapon;
+}
 
 // The complete game state.
 //
@@ -219,6 +236,13 @@ private:
     void apply_build(const Command& cmd);
     void apply_haul(const Command& cmd);
     void apply_observe(const Command& cmd);
+
+    // Skills (world_skills.cpp).
+    void apply_ability(const Command& cmd);
+    void update_ability(Unit& u);
+    void finish_ability(Unit& u);
+    // A lobbed shot: arcs over everything, comes down at the aim point.
+    void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
     void update_building(Unit& u);
@@ -276,8 +300,8 @@ private:
                               EntityId own_structure, Fixed& stop);
     const Unit* first_unit_on(const FireLine& line, Fixed t0, Fixed t1, EntityId ignore, Fixed& hit) const;
     bool own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed start) const;
-    bool try_fire(Unit& shooter, FixedVec2 aim, const Unit* target);
-    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height);
+    bool try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon);
+    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon);
 
     // Movement. `formation` limits the speed to the group's slowest unit.
     std::shared_ptr<const FlowField> field_to(TilePos goal, MoveClass cls);
