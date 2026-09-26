@@ -77,6 +77,7 @@ endfunction()
 add_library(engine STATIC
     src/engine/world.cpp
     src/engine/world_economy.cpp
+    src/engine/world_vision.cpp
     src/engine/pathfinding.cpp
     src/engine/simulation.cpp
     src/engine/scenario.cpp

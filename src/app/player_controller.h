@@ -87,13 +87,14 @@ private:
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
     bool has_trucks(const engine::World& world) const;
+    bool has_scouts(const engine::World& world) const;
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);
     // Buttons of the command panel (and their hotkeys) for the current selection.
     void press_button(net::Lockstep& lockstep, const engine::World& world, size_t index);
     void update_placement(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse);
 
-    enum class Targeting { None, AttackMove, AttackGround };
+    enum class Targeting { None, AttackMove, AttackGround, Observe };
 
     engine::PlayerId player_;
     std::vector<engine::EntityId> selection_;  // sorted, unique

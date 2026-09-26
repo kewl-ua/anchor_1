@@ -26,6 +26,7 @@ enum class CommandType : uint8_t {
     Build,         // rear troops: put up a building (structure_type at target) or help
                    // finish one (target_unit)
     Haul,          // supply trucks: run between the station and the depots
+    Observe,       // scouts: hold an observation post watching the sector towards `target`
 };
 
 // The only way anything outside the engine can change the game state.

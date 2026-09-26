@@ -93,50 +93,74 @@ bool Hud::captures_point(Vector2 p) const {
            CheckCollisionPointRec(p, l.minimap_panel);
 }
 
-void Hud::update(const engine::World& world) {
+void Hud::update(const engine::World& world, engine::PlayerId viewer, bool reveal) {
     const engine::TileMap& map = world.map();
-    if (minimap_texture_.id != 0 && map.width() == map_width_ && map.height() == map_height_ &&
-        map.revision() == map_revision_) {
+    const size_t pixels = static_cast<size_t>(kMinimapWidth * kMinimapHeight);
+    if (minimap_texture_.id == 0 || map.width() != map_width_ || map.height() != map_height_) {
+        map_width_ = map.width();
+        map_height_ = map.height();
+        if (minimap_texture_.id != 0) UnloadTexture(minimap_texture_);
+        Image image = GenImageColor(kMinimapWidth, kMinimapHeight, BLANK);
+        minimap_texture_ = LoadTextureFromImage(image);
+        UnloadImage(image);
+
+        // Tile under every minimap pixel, (-1, -1) outside the map.
+        pixel_tile_.assign(pixels, {-1, -1});
+        for (int py = 0; py < kMinimapHeight; ++py) {
+            for (int px = 0; px < kMinimapWidth; ++px) {
+                const Vector2 g = minimap_pixel_to_ground({px + 0.5f, py + 0.5f}, static_cast<float>(map_width_),
+                                                          static_cast<float>(map_height_));
+                const engine::TilePos t{static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))};
+                if (map.contains(t)) pixel_tile_[static_cast<size_t>(py * kMinimapWidth + px)] = t;
+            }
+        }
+        // Higher ground lighter; borders between elevation levels are drawn
+        // as contour lines, so the heights worth fighting over stand out.
+        auto level = [&](int px, int py) {
+            const engine::TilePos t = pixel_tile_[static_cast<size_t>(py * kMinimapWidth + px)];
+            return map.contains(t) ? map.elevation(t.x, t.y) : -1;
+        };
+        pixel_light_.assign(pixels, 1.0f);
+        for (int py = 0; py < kMinimapHeight; ++py) {
+            for (int px = 0; px < kMinimapWidth; ++px) {
+                const int l = level(px, py);
+                const bool contour = (px > 0 && level(px - 1, py) >= 0 && level(px - 1, py) != l) ||
+                                     (py > 0 && level(px, py - 1) >= 0 && level(px, py - 1) != l);
+                pixel_light_[static_cast<size_t>(py * kMinimapWidth + px)] =
+                    contour ? 0.6f : 0.85f + 0.12f * static_cast<float>(l);
+            }
+        }
+        seen_terrain_.assign(static_cast<size_t>(map_width_ * map_height_), engine::Terrain::Grass);
+        map_revision_ = map.revision() + 1;  // force the first paint
+    }
+    if (map.revision() == map_revision_ && world.vision_revision() == vision_revision_ && reveal == painted_reveal_) {
         return;
     }
-    map_width_ = map.width();
-    map_height_ = map.height();
     map_revision_ = map.revision();
-    if (minimap_texture_.id != 0) UnloadTexture(minimap_texture_);
+    vision_revision_ = world.vision_revision();
+    painted_reveal_ = reveal;
 
-    // Tile under every minimap pixel, (-1, -1) outside the map.
-    std::vector<engine::TilePos> tile(static_cast<size_t>(kMinimapWidth * kMinimapHeight), {-1, -1});
-    auto at = [&](int px, int py) -> engine::TilePos& { return tile[static_cast<size_t>(py * kMinimapWidth + px)]; };
-    for (int py = 0; py < kMinimapHeight; ++py) {
-        for (int px = 0; px < kMinimapWidth; ++px) {
-            const Vector2 g = minimap_pixel_to_ground({px + 0.5f, py + 0.5f}, static_cast<float>(map_width_),
-                                                      static_cast<float>(map_height_));
-            const engine::TilePos t{static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))};
-            if (map.contains(t)) at(px, py) = t;
+    // The ground as we last saw it: the fog hides what changed since.
+    for (int ty = 0; ty < map_height_; ++ty) {
+        for (int tx = 0; tx < map_width_; ++tx) {
+            if (reveal || world.visible(viewer, {tx, ty})) {
+                seen_terrain_[static_cast<size_t>(ty * map_width_ + tx)] = map.terrain(tx, ty);
+            }
         }
     }
-    auto level = [&](int px, int py) {
-        const engine::TilePos t = at(px, py);
-        return map.contains(t) ? map.elevation(t.x, t.y) : -1;
-    };
-
-    // Terrain colors, higher ground lighter; borders between elevation levels
-    // are drawn as contour lines, so the heights worth fighting over stand out.
-    Image image = GenImageColor(kMinimapWidth, kMinimapHeight, BLANK);
-    for (int py = 0; py < kMinimapHeight; ++py) {
-        for (int px = 0; px < kMinimapWidth; ++px) {
-            const engine::TilePos t = at(px, py);
-            if (!map.contains(t)) continue;
-            const int l = level(px, py);
-            const bool contour = (px > 0 && level(px - 1, py) >= 0 && level(px - 1, py) != l) ||
-                                 (py > 0 && level(px, py - 1) >= 0 && level(px, py - 1) != l);
-            const Color base = theme::terrain_color(map.terrain(t));
-            const Color c = contour ? shade(base, 0.6f) : shade(base, 0.85f + 0.12f * static_cast<float>(l));
-            ImageDrawPixel(&image, px, py, c);
+    std::vector<Color> colors(pixels, BLANK);
+    for (size_t i = 0; i < pixels; ++i) {
+        const engine::TilePos t = pixel_tile_[i];
+        if (!map.contains(t)) continue;
+        if (!reveal && !world.explored(viewer, t)) {
+            colors[i] = {10, 11, 12, 255};  // never seen
+            continue;
         }
+        const float fog = reveal || world.visible(viewer, t) ? 1.0f : 0.5f;
+        const Color base = theme::terrain_color(seen_terrain_[static_cast<size_t>(t.y * map_width_ + t.x)]);
+        colors[i] = shade(base, pixel_light_[i] * fog);
     }
-    minimap_texture_ = LoadTextureFromImage(image);
-    UnloadImage(image);
+    UpdateTexture(minimap_texture_, colors.data());
 }
 
 Vector2 Hud::ground_to_minimap(Vector2 ground, Rectangle minimap) const {
@@ -170,6 +194,7 @@ void Hud::draw_minimap(const engine::World& world, const HudState& state, const 
     for (int i = 0; i < 4; ++i) DrawLineV(corners[i], corners[(i + 1) % 4], theme::kPanelBorder);
 
     for (const engine::Unit& u : world.units()) {
+        if (!state.reveal && !world.sees(state.local_player, u)) continue;
         const Vector2 p = ground_to_minimap({to_float(u.pos.x), to_float(u.pos.y)}, l.minimap);
         const float size = engine::unit_type(u.type).vehicle ? 3.0f : 2.0f;
         DrawRectangleV({p.x - size * 0.5f, p.y - size * 0.5f}, {size, size}, theme::player_color(u.owner));
@@ -310,10 +335,15 @@ Rectangle Hud::button_rect(size_t slot) {
     const Layout l = layout();
     const Rectangle inner{l.bottom_panel.x + kPadding, l.bottom_panel.y + kPadding, l.bottom_panel.width - 2 * kPadding,
                           l.bottom_panel.height - 2 * kPadding};
-    constexpr float kGap = 6.0f;
-    constexpr float kHeight = 34.0f;
-    const float width = (inner.width - kGap * static_cast<float>(kButtonSlots - 1)) / static_cast<float>(kButtonSlots);
-    return {inner.x + static_cast<float>(slot) * (width + kGap), inner.y + inner.height - kHeight, width, kHeight};
+    // Two rows at the bottom of the panel, like the AoE II command grid.
+    constexpr float kGap = 4.0f;
+    constexpr float kHeight = 28.0f;
+    const float width =
+        (inner.width - kGap * static_cast<float>(kButtonColumns - 1)) / static_cast<float>(kButtonColumns);
+    const float top = inner.y + inner.height - 2 * kHeight - kGap;
+    const auto row = static_cast<float>(slot / kButtonColumns);
+    const auto column = static_cast<float>(slot % kButtonColumns);
+    return {inner.x + column * (width + kGap), top + row * (kHeight + kGap), width, kHeight};
 }
 
 std::optional<size_t> Hud::button_at(Vector2 p) const {
@@ -331,8 +361,12 @@ void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::
     const bool hover = CheckCollisionPointRec(GetMousePosition(), r);
     DrawRectangleRec(r, hover ? Color{52, 60, 54, 255} : Color{32, 36, 34, 255});
     DrawRectangleLinesEx(r, 1.0f, theme::kPanelBorder);
-    const char* label = TextFormat("%c  %s", hotkey, name);
-    draw_text(label, r.x + 6, r.y + 4, fitting_font(label, 14, r.width - 10), affordable ? theme::kText : theme::kTextDim);
+    // Name on top, hotkey in the corner, price below.
+    const char* key = TextFormat("%c", hotkey);
+    const auto key_w = static_cast<float>(MeasureText(key, 10));
+    draw_text(key, r.x + r.width - key_w - 5, r.y + 3, 10, theme::kWarning);
+    draw_text(name, r.x + 5, r.y + 3, fitting_font(name, 12, r.width - key_w - 14),
+              affordable ? theme::kText : theme::kTextDim);
 
     char price[96] = {};
     size_t used = 0;
@@ -340,7 +374,7 @@ void Hud::draw_button(size_t slot, char hotkey, const char* name, const engine::
         if (cost[i] == 0) continue;
         used += static_cast<size_t>(std::snprintf(price + used, sizeof(price) - used, "%d %s  ", cost[i], kShortNames[i]));
     }
-    draw_text(price, r.x + 6, r.y + 21, 10, affordable ? theme::kTextDim : theme::kDanger);
+    draw_text(price, r.x + 5, r.y + 16, 10, affordable ? theme::kTextDim : theme::kDanger);
 }
 
 void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
@@ -435,10 +469,10 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
 
 void Hud::draw_help(Rectangle area) const {
     const char* lines[] = {
-        "LMB: select / drag box    Shift+LMB: add to selection    F2: select army",
+        "LMB: select / drag box    Shift+LMB: add    F2: army    Space: jump to selection",
         "RMB: move / attack / infantry into a house    S: stop    F10: quit",
-        "A + LMB: attack-move    G + LMB: fire at ground    Space: jump to selection",
-        "Rear troops: RMB forest/rock to gather, 1-5 build, R retrain",
+        "A + LMB: attack-move    G + LMB: fire at ground    O + LMB: scouts' sector",
+        "Rear troops: RMB forest/rock to gather, 1-6 build, R retrain",
         "Buildings: click, Q/W/E hire    Trucks: RMB station/depot    Minimap: LMB/RMB",
     };
     constexpr int kHelpFontSize = 14;
@@ -459,7 +493,7 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
         workers = workers || (u && engine::unit_type(u->type).worker);
     }
     if (workers) {
-        static constexpr char kBuildKeys[] = {'1', '2', '3', '4', '5'};
+        static constexpr char kBuildKeys[] = {'1', '2', '3', '4', '5', '6'};
         static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
         const engine::Stock& stock = world.stock(state.local_player);
         for (size_t i = 0; i < std::min(std::size(engine::kBuildable), kButtonSlots); ++i) {
@@ -526,8 +560,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     static constexpr const char* kOrderNames[] = {"Idle",          "Moving",           "Attacking",
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
                                                   "Gathering",     "Retraining",       "Building",
-                                                  "Supply run"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Haul) + 1);
+                                                  "Supply run",    "Observing (holding fire)"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Observe) + 1);
     const char* state = kOrderNames[static_cast<int>(u.order)];
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
     if (const engine::Structure* s = world.find_structure(u.inside)) {

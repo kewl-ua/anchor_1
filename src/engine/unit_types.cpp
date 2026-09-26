@@ -25,6 +25,8 @@ constexpr Fixed kNoSplash{};
 //   tank          kills anything, but reloads slowly and its shells can be dodged at range
 //   IFV           fast, light armor, autocannon great against infantry
 //   rear trooper  gathers, builds and unloads; can be retrained as a rifleman
+//   scout         makes out men in cover from farther away, hard to spot himself; as an
+//                 observation post watches a sector far out
 // Costs are {Personnel, Food, Materials, Ammo, Fuel}. Men are the scarce one.
 constexpr UnitTypeDef kUnitTypes[] = {
     {
@@ -141,6 +143,26 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .cost = {1, 0, 50, 0, 30},
         .train_time = seconds(15),
     },
+    {
+        // Eyes, not firepower: a carbine for self-defence, binoculars for the rest.
+        .name = "Scout",
+        .short_name = "SCT",
+        .max_hp = 35,
+        .armor = {0, 0, 45},
+        .speed = tiles_per_second(6, 5),
+        .radius = tiles(1, 5),
+        .sight = tiles(9),
+        .mass = 1,
+        .vehicle = false,
+        .weapon = {.name = "Carbine", .damage = 5, .damage_type = DamageType::Bullet,
+                   .range = tiles(5), .reload = seconds(5, 4), .projectile_speed = kInstantHit,
+                   .splash_radius = kNoSplash, .accuracy = 65, .miss_spread = tiles(1)},
+        .cost = {1, 25, 0, 15, 0},
+        .train_time = seconds(15),
+        .detection = tiles(4),
+        .stealthy = true,
+        .sector_range = tiles(15),
+    },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -176,6 +198,9 @@ constexpr StructureDef kStructureTypes[] = {
     // Flimsy, and it goes up in flames with the fuel inside.
     {.name = "Fuel depot", .max_hp = 450, .armor = {0, 0, 10},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 100, 0, 0}, .build_time = seconds(25)},
+    {.name = "Recon barracks", .max_hp = 1000, .armor = {0, 10, 60},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 100, 0, 0}, .build_time = seconds(25),
+     .roster = {UnitTypeId::Scout}, .roster_size = 1},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

@@ -282,22 +282,22 @@ void test_armor_lets_through_at_least_one() {
     CHECK(prev < unit_type(UnitTypeId::Tank).max_hp);
 }
 
-// An explicit attack order hunts the target down even from out of sight.
+Command attack_order(PlayerId player, std::vector<EntityId> units, EntityId target) {
+    return {.type = CommandType::Attack, .player = player, .units = std::move(units), .target_unit = target};
+}
+
+// An explicit attack order hunts the target down, even when it runs.
 void test_attack_order_kills_target() {
     Simulation sim(2, TileMap(40, 40));
-    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 5));
-    const EntityId victim = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(25, 25));
-    Command attack;
-    attack.type = CommandType::Attack;
-    attack.player = 0;
-    attack.units = {tank};
-    attack.target_unit = victim;
-    issue(sim, attack);
+    const EntityId ifv = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(5, 5));
+    const EntityId victim = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(10, 5));
+    sim.schedule(0, make_move(1, {victim}, 35, 35));  // flees, ignoring the IFV
+    issue(sim, attack_order(0, {ifv}, victim));
 
     for (int i = 0; i < 1000 && sim.world().find_unit(victim); ++i) sim.step();
     CHECK(sim.world().find_unit(victim) == nullptr);
-    sim.step();  // the tank notices on its next update
-    const Unit* t = sim.world().find_unit(tank);
+    sim.step();  // the IFV notices on its next update
+    const Unit* t = sim.world().find_unit(ifv);
     CHECK(t && t->order == Order::Idle);
 }
 
@@ -490,6 +490,209 @@ void test_forest_stops_some_bullets() {
     CHECK(forest_shots > 50);
     CHECK(stopped * 100 >= forest_shots * 15);
     CHECK(stopped * 100 <= forest_shots * 70);
+}
+
+// --- Fog of war --------------------------------------------------------------
+
+bool seen(const Simulation& sim, PlayerId player, EntityId id) {
+    const Unit* u = sim.world().find_unit(id);
+    return u && sim.world().sees(player, *u);
+}
+
+// Only what our troops can see is visible; what they once saw stays explored.
+void test_fog_of_war() {
+    Simulation sim(1, TileMap(40, 40));
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(5, 5));
+    const EntityId enemy = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(30, 30));
+    sim.step();
+    const World& w = sim.world();
+    CHECK(w.visible(0, {5, 5}) && w.visible(0, {12, 5}));  // sight 7
+    CHECK(!w.visible(0, {13, 5}));
+    CHECK(!w.visible(0, {30, 30}) && !w.explored(0, {30, 30}));
+    CHECK(!seen(sim, 0, enemy));
+    CHECK(seen(sim, 0, rifle));  // our own, always
+
+    issue(sim, make_move(0, {rifle}, 5, 30));
+    for (int i = 0; i < 600; ++i) sim.step();
+    CHECK(!w.visible(0, {5, 5}) && w.explored(0, {5, 5}));
+    CHECK(w.visible(0, {5, 30}));
+}
+
+// A plain with a plateau on x <= 5 and, optionally, a tree line at x = 8 or
+// a ridge there. We look from (4.5, 10.5).
+bool sees_tile(uint8_t plateau, Terrain at_8, uint8_t ridge, TilePos target) {
+    TileMap map(30, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x <= 5; ++x) map.set_elevation(x, y, plateau);
+        map.set_terrain(8, y, at_8);
+        if (ridge) map.set_elevation(8, y, ridge);
+    }
+    Simulation sim(1, map);
+    sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(9, 21));
+    sim.step();
+    return sim.world().visible(0, target);
+}
+
+// Tree lines and ridges hide what is behind them; from a height you see over
+// the trees, and farther.
+void test_sight_lines() {
+    CHECK(sees_tile(0, Terrain::Grass, 0, {11, 10}));
+    CHECK(!sees_tile(0, Terrain::Forest, 0, {11, 10}));  // behind the tree line
+    CHECK(!sees_tile(0, Terrain::Grass, 2, {11, 10}));   // behind the ridge
+    CHECK(sees_tile(3, Terrain::Forest, 0, {11, 10}));   // over the trees from above
+    CHECK(sees_tile(0, Terrain::Forest, 0, {8, 10}));    // the edge of the trees itself
+    CHECK(!sees_tile(0, Terrain::Grass, 0, {13, 10}));   // 9 tiles: too far on the plain...
+    CHECK(sees_tile(3, Terrain::Grass, 0, {13, 10}));    // ...but not from the plateau
+}
+
+// A forest block on x = 12..15; a man at its edge on (12.5, 10.5) watched
+// from `distance` tiles to the west, out in the open. Is he seen at the first
+// look (or, moving, at the next one)?
+bool seen_in_cover(UnitTypeId watcher, Fixed distance, UnitTypeId hider, bool hider_moves) {
+    TileMap map(40, 20);
+    for (int y = 3; y <= 17; ++y) {
+        for (int x = 12; x <= 15; ++x) map.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation sim(1, map);
+    const FixedVec2 spot = at_half(25, 21);
+    const EntityId hidden = sim.world_for_setup().spawn_unit(1, hider, spot);
+    sim.world_for_setup().spawn_unit(0, watcher, {spot.x - distance, spot.y});
+    if (hider_moves) sim.schedule(0, make_move(1, {hidden}, 12, 16));
+    const Tick ticks = hider_moves ? kVisionInterval + 1 : 1;
+    for (Tick i = 0; i < ticks; ++i) sim.step();
+    CHECK(sim.world().visible(0, {12, 10}));  // the edge of the forest is in view either way
+    return seen(sim, 0, hidden);
+}
+
+void test_cover_hides_until_spotted() {
+    CHECK(seen_in_cover(UnitTypeId::Rifleman, Fixed::from_int(2), UnitTypeId::Rifleman, false));
+    CHECK(!seen_in_cover(UnitTypeId::Rifleman, Fixed::from_int(3), UnitTypeId::Rifleman, false));
+    CHECK(seen_in_cover(UnitTypeId::Scout, Fixed::from_int(4), UnitTypeId::Rifleman, false));  // a trained eye
+    CHECK(seen_in_cover(UnitTypeId::Rifleman, Fixed::from_int(3), UnitTypeId::Rifleman, true));  // movement shows
+    CHECK(!seen_in_cover(UnitTypeId::Rifleman, Fixed::from_ratio(3, 2), UnitTypeId::Scout, false));  // hard to spot
+}
+
+// A hidden rifleman gives himself away by firing, and disappears again after.
+void test_firing_gives_away_a_hidden_shooter() {
+    TileMap map(40, 20);
+    for (int y = 3; y <= 17; ++y) {
+        for (int x = 12; x <= 15; ++x) map.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation sim(1, map);
+    const EntityId hider = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at_half(25, 21));
+    // Headquarters 8 tiles off watch the forest edge; they don't go after him.
+    sim.world_for_setup().place_structure(StructureType::Headquarters, 0, {3, 9}, 3, 3);
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(sim.world().visible(0, {12, 10}) && !seen(sim, 0, hider));
+
+    issue(sim, fire_at(1, {hider}, 12, 14));
+    for (int i = 0; i < 20; ++i) sim.step();
+    CHECK(seen(sim, 0, hider));
+
+    issue(sim, {.type = CommandType::Stop, .player = 1, .units = {hider}});
+    for (Tick i = 0; i < kRevealTicks + 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!seen(sim, 0, hider));
+}
+
+// Nobody fires at what they can't see: a tank ignores a man walking through
+// the forest right in front of it, but not one walking across the field.
+void test_no_shooting_into_the_fog() {
+    auto tank_fires = [](bool forest) {
+        TileMap map(40, 20);
+        if (forest) {
+            for (int y = 3; y <= 17; ++y) {
+                for (int x = 12; x <= 15; ++x) map.set_terrain(x, y, Terrain::Forest);
+            }
+        }
+        Simulation sim(1, map);
+        const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at_half(15, 21));
+        const EntityId walker = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at_half(25, 21));
+        sim.schedule(0, make_move(1, {walker}, 13, 16));
+        for (int i = 0; i < 60; ++i) sim.step();
+        return sim.world().find_unit(tank)->last_shot_tick != kNeverFired;
+    };
+    CHECK(tank_fires(false));
+    CHECK(!tank_fires(true));
+}
+
+// Attack orders only go to targets in sight; one that ducks into cover is
+// sought where it was last seen.
+void test_attack_orders_need_the_target_in_sight() {
+    Simulation far(2, TileMap(60, 20));
+    const EntityId rifle = far.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(5, 10));
+    const EntityId distant = far.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(40, 10));
+    issue(far, attack_order(0, {rifle}, distant));
+    for (int i = 0; i < 10; ++i) far.step();
+    CHECK(far.world().find_unit(rifle)->order == Order::Idle);  // ignored: nobody sees it
+
+    TileMap map(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 14; x <= 25; ++x) map.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation sim(3, map);
+    const EntityId hunter = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(6, 10));
+    const EntityId victim = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(12, 10));
+    sim.schedule(0, make_move(1, {victim}, 16, 10));
+    issue(sim, attack_order(0, {hunter}, victim));
+    bool sought = false;
+    for (int i = 0; i < 600; ++i) {
+        sim.step();
+        const Unit* h = sim.world().find_unit(hunter);
+        sought = sought || (h && h->order == Order::AttackMove);
+    }
+    CHECK(sought);
+    CHECK(hp_of(sim, victim) < unit_type(UnitTypeId::Rifleman).max_hp);
+}
+
+Command observe(PlayerId player, std::vector<EntityId> scouts, int32_t x, int32_t y) {
+    return make_order(CommandType::Observe, player, std::move(scouts), x, y);
+}
+
+// An observation post sees far out, but only within its sector; it holds its
+// ground and its fire.
+void test_observation_post_watches_its_sector() {
+    Simulation sim(1, TileMap(60, 30));
+    const EntityId scout = sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at_half(11, 31));  // (5.5, 15.5)
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at_half(61, 55));
+    sim.schedule(0, observe(0, {scout, rifle}, 40, 15));
+    for (Tick i = 0; i <= kVisionInterval; ++i) sim.step();
+    const World& w = sim.world();
+    CHECK(w.find_unit(scout)->order == Order::Observe);
+    CHECK(w.find_unit(rifle)->order == Order::Idle);  // only scouts hold posts
+    CHECK(w.visible(0, {19, 15}));   // 14 tiles out, in the sector
+    CHECK(w.visible(0, {17, 20}));   // off to the side, still within 45 degrees
+    CHECK(!w.visible(0, {5, 29}));   // 14 tiles to the side: outside it
+    CHECK(!w.visible(0, {0, 5}));    // behind
+    CHECK(w.visible(0, {9, 12}));    // all around, close by
+
+    const EntityId enemy = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at_half(21, 31));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(hp_of(sim, enemy) == unit_type(UnitTypeId::Rifleman).max_hp);  // the post doesn't shoot
+
+    issue(sim, make_move(0, {scout}, 5, 25));
+    for (Tick i = 0; i < 3 * kVisionInterval; ++i) sim.step();
+    CHECK(!w.visible(0, {19, 15}));  // off the post, the sector is gone
+}
+
+// A man at a forest edge 7 tiles from our observation posts: one post alone
+// doesn't make him out, two crossing their sectors on him do.
+void test_crossed_sectors_find_men_in_cover() {
+    auto found = [](bool second_post) {
+        TileMap map(50, 30);
+        for (int y = 5; y <= 25; ++y) {
+            for (int x = 30; x <= 40; ++x) map.set_terrain(x, y, Terrain::Forest);
+        }
+        Simulation sim(1, map);
+        const EntityId hider = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at_half(61, 31));
+        std::vector<EntityId> posts{sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at_half(47, 27))};
+        if (second_post) posts.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at_half(47, 35)));
+        sim.schedule(0, observe(0, posts, 30, 15));
+        for (Tick i = 0; i <= 2 * kVisionInterval; ++i) sim.step();
+        CHECK(sim.world().visible(0, {30, 15}));  // the edge is in view either way
+        return seen(sim, 0, hider);
+    };
+    CHECK(!found(false));
+    CHECK(found(true));
 }
 
 // --- Structures --------------------------------------------------------------
@@ -1062,6 +1265,14 @@ int main() {
     test_shells_through_a_tree_line_hit_hidden_friends();
     test_fire_from_high_ground_passes_over_own_troops();
     test_forest_stops_some_bullets();
+    test_fog_of_war();
+    test_sight_lines();
+    test_cover_hides_until_spotted();
+    test_firing_gives_away_a_hidden_shooter();
+    test_no_shooting_into_the_fog();
+    test_attack_orders_need_the_target_in_sight();
+    test_observation_post_watches_its_sector();
+    test_crossed_sectors_find_men_in_cover();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

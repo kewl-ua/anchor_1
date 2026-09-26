@@ -24,6 +24,7 @@ enum class StructureType : uint8_t {
     Station,           // the railhead: trains unload here, trucks load
     AmmoDepot,         // trucks unload ammunition here
     FuelDepot,         // trucks unload fuel here; flimsy, and it burns
+    ReconBarracks,     // hires scouts
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -54,6 +55,7 @@ const StructureDef& structure_type(StructureType type);
 inline constexpr StructureType kBuildable[] = {
     StructureType::InfantryBarracks,
     StructureType::ArmorBarracks,
+    StructureType::ReconBarracks,
     StructureType::Warehouse,
     StructureType::AmmoDepot,
     StructureType::FuelDepot,

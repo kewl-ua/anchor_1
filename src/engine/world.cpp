@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "engine/heights.h"
+
 namespace engine {
 
 namespace {
@@ -21,18 +23,9 @@ constexpr int kLookAhead = 4;
 constexpr size_t kFieldCacheSweep = 256;
 
 // --- Line of fire ---
-// Heights in elevation levels. A shot flies in a straight line from the
-// muzzle to the aim point; the first hill, house, tree or body in its way
-// stops it. From high enough ground it passes over them.
-constexpr Fixed kInfantryTop = Fixed::from_ratio(1, 2);
-constexpr Fixed kInfantryMuzzle = Fixed::from_ratio(2, 5);
-constexpr Fixed kInfantryCenter = Fixed::from_ratio(3, 10);
-constexpr Fixed kVehicleTop = Fixed::from_ratio(4, 5);
-constexpr Fixed kVehicleMuzzle = Fixed::from_ratio(7, 10);
-constexpr Fixed kVehicleCenter = Fixed::from_ratio(1, 2);
-constexpr Fixed kGroundAim = Fixed::from_ratio(1, 10);  // shooting at a spot on the ground
-constexpr Fixed kTreeHeight = Fixed::from_ratio(3, 2);
-constexpr Fixed kHouseHeight = Fixed::from_ratio(6, 5);
+// A shot flies in a straight line from the muzzle to the aim point; the first
+// hill, house, tree or body in its way stops it (heights in heights.h). From
+// high enough ground it passes over them.
 // The first stretch in front of the muzzle is ignored (the shooter's own cover).
 constexpr Fixed kMuzzleClearance = Fixed::from_ratio(1, 2);
 // Chance per quarter tile of forest that the shot hits a trunk or branch:
@@ -40,14 +33,8 @@ constexpr Fixed kMuzzleClearance = Fixed::from_ratio(1, 2);
 constexpr int32_t kFoliagePercentBullet = 6;
 constexpr int32_t kFoliagePercentShell = 8;
 constexpr Tick kImpactHistory = 3 * kTicksPerSecond;
-// Garrisoned infantry fires from the windows, a floor up.
-constexpr Fixed kWindowHeight = Fixed::from_int(1);
 // How close to a house's walls a soldier must be to get in.
 constexpr Fixed kEnterDistance = Fixed::from_int(1);
-
-// Rocks and buildings stop shots below these heights.
-constexpr Fixed kRockHeight = Fixed::from_ratio(4, 5);
-constexpr Fixed kBuildingHeight = Fixed::from_ratio(3, 2);
 
 const UnitTypeDef& def_of(const Unit& u) { return unit_type(u.type); }
 MoveClass class_of(const Unit& u) { return move_class(def_of(u)); }
@@ -76,6 +63,13 @@ std::vector<Unit*> collect_owned(const Command& cmd, FindFn find) {
 World::World(uint64_t seed, TileMap map) : map_(std::move(map)), rng_(seed) {
     build_structures();
     init_resources();
+    // Hills don't move: the ground's corner heights are worked out once.
+    corner_heights_.resize(static_cast<size_t>((map_.width() + 1) * (map_.height() + 1)));
+    for (int32_t cy = 0; cy <= map_.height(); ++cy) {
+        for (int32_t cx = 0; cx <= map_.width(); ++cx) {
+            corner_heights_[static_cast<size_t>(cy * (map_.width() + 1) + cx)] = map_.corner_height(cx, cy);
+        }
+    }
 }
 
 EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
@@ -292,6 +286,7 @@ void World::apply(const Command& cmd) {
         case CommandType::Retrain: apply_retrain(cmd); break;
         case CommandType::Build: apply_build(cmd); break;
         case CommandType::Haul: apply_haul(cmd); break;
+        case CommandType::Observe: apply_observe(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -361,7 +356,8 @@ void World::apply_group_move(const Command& cmd, Order order) {
 
 void World::apply_attack(const Command& cmd) {
     const Unit* target = find_unit(cmd.target_unit);
-    if (!target || target->owner == cmd.player) return;
+    // Nobody can be ordered to hunt what the player doesn't see.
+    if (!target || target->owner == cmd.player || !sees(cmd.player, *target)) return;
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
         if (!is_armed(def_of(*u))) continue;  // a truck has nothing to attack with
         leave_structure(*u);
@@ -446,8 +442,16 @@ void World::update_unit(Unit& u) {
             break;
 
         case Order::Attack:
-            if (const Unit* target = find_unit(u.order_target)) {
+            if (const Unit* target = find_unit(u.order_target); target && sees(u.owner, *target)) {
                 engage(u, *target);
+            } else if (target) {
+                // Lost from view: go where it was last seen, ready to fight.
+                u.order = Order::AttackMove;
+                u.order_point = target->pos;
+                u.order_goal = map_.clamp_tile(tile_of(target->pos));
+                u.order_path.reset();
+                u.order_target = 0;
+                u.engaged = 0;
             } else {
                 finish_order();  // target is dead
                 u.engaged = 0;
@@ -485,23 +489,27 @@ void World::update_unit(Unit& u) {
         case Order::Haul:
             update_hauling(u);
             break;
+
+        case Order::Observe:
+            break;  // an observation post stays put and quiet
     }
 }
 
 // Keeps shooting the current enemy while it stays in sight, otherwise picks
 // the nearest one (ties go to the lower id, so every peer picks the same).
+// Only enemies the player sees count: nobody shoots into the fog.
 const Unit* World::find_enemy_in_sight(Unit& u) {
     const uint64_t sight_sq = square_raw(def_of(u).sight);
 
     if (const Unit* current = find_unit(u.engaged);
-        current && (current->pos - u.pos).length_sq_raw() <= sight_sq) {
+        current && sees(u.owner, *current) && (current->pos - u.pos).length_sq_raw() <= sight_sq) {
         return current;
     }
 
     const Unit* best = nullptr;
     uint64_t best_sq = 0;
     for (const Unit& other : units_) {
-        if (other.owner == u.owner) continue;
+        if (other.owner == u.owner || !sees(u.owner, other)) continue;
         const uint64_t d = (other.pos - u.pos).length_sq_raw();
         if (d <= sight_sq && (!best || d < best_sq)) {
             best = &other;
@@ -1006,6 +1014,7 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.carrying));
         mix(static_cast<uint8_t>(u.carrying_type));
         mix(u.work);
+        mix(u.seen_by);
     }
     for (const Structure& s : structures_) {
         mix(s.id);

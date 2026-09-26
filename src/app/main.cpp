@@ -33,12 +33,14 @@ struct Options {
     // `--look x,y`: during the smoke test, keep the camera on this ground
     // point (in tiles) instead of following the army.
     std::optional<Vector2> look;
+    // `--reveal`: no fog of war on screen (the game itself still plays by it).
+    bool reveal = false;
     // `--ticks n`: take the smoke screenshot at this tick.
     std::optional<engine::Tick> smoke_ticks;
     // `--scene garrison`: instead of attacking, the infantry moves into the
     // nearest house and the tanks shell the next one until it collapses.
-    // Also `economy`, `build` and `logistics` (depots by the station, supply
-    // trucks, the first train).
+    // Also `economy`, `build`, `logistics` (depots by the station, supply
+    // trucks, the first train) and `recon` (scouts' observation posts).
     std::string scene;
 };
 
@@ -117,6 +119,28 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const Vector2 a = render::to_vector2(world.station_of(me)->center);
         const Vector2 b = render::to_vector2(engine::tile_center(ammo));
         return Vector2{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
+    }
+
+    if (options.scene == "recon") {
+        // The two scouts take up observation posts watching towards the
+        // enemy; the sectors show while they are selected.
+        std::vector<engine::EntityId> scouts;
+        Vector2 sum{0, 0};
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me || u.type != engine::UnitTypeId::Scout) continue;
+            scouts.push_back(u.id);
+            sum.x += render::to_vector2(u.pos).x;
+            sum.y += render::to_vector2(u.pos).y;
+        }
+        if (scouts.empty()) return std::nullopt;
+        const engine::TilePos b = engine::tile_of(engine::demo_base_position(world.map().width(), me));
+        const int32_t fwd = me == 0 ? 1 : -1;
+        game.submit({.type = engine::CommandType::Observe,
+                     .units = scouts,
+                     .target = engine::tile_center({b.x + 30 * fwd, b.y - 30 * fwd})});
+        game.select_units(scouts);
+        const auto n = static_cast<float>(scouts.size());
+        return Vector2{sum.x / n, sum.y / n};
     }
 
     if (options.scene == "build") {
@@ -242,6 +266,8 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             opt.look = Vector2{static_cast<float>(x), static_cast<float>(y)};
+        } else if (arg == "--reveal") {
+            opt.reveal = true;
         } else if (arg == "--scene" && has_next) {
             opt.scene = argv[++i];
         } else if (arg == "--ticks" && has_next) {
@@ -262,7 +288,8 @@ void print_usage() {
         "  --host [port]    host a 1v1 game (default port %u)\n"
         "  --join address   join a hosted game, e.g. --join 192.168.1.5 or --join 1.2.3.4:7777\n"
         "  --map size       tiny 120, small 144, medium 168, normal 200 (default), large 220, giant 240,\n"
-        "                   or a number of tiles %d..%d; when joining, the host's size is used\n",
+        "                   or a number of tiles %d..%d; when joining, the host's size is used\n"
+        "  --reveal         no fog of war on screen (for development)\n",
         static_cast<unsigned>(net::kDefaultPort), engine::kMinMapSize, engine::kMaxMapSize);
 }
 
@@ -291,7 +318,10 @@ int main(int argc, char** argv) {
     std::unique_ptr<net::EnetSession> session;
     std::optional<app::Game> game;
     switch (options->mode) {
-        case Options::Mode::Offline: game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr); break;
+        case Options::Mode::Offline:
+            game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr);
+            game->set_reveal(options->reveal);
+            break;
         case Options::Mode::Host: session = net::EnetSession::host(options->port, seed, options->map_size); break;
         case Options::Mode::Join: session = net::EnetSession::join(options->address, options->port); break;
     }
@@ -304,6 +334,7 @@ int main(int argc, char** argv) {
             if (!game && session->state() == net::EnetSession::State::Ready) {
                 game.emplace(session->seed(), session->map_size(), session->local_player(), session->player_count(),
                              session.get());
+                game->set_reveal(options->reveal);
             }
         }
 

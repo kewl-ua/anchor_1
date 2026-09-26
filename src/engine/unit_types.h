@@ -49,6 +49,11 @@ struct UnitTypeDef {
     Stock cost{};  // Personnel, Food, Materials, Ammo, Fuel
     Tick train_time = 0;
     bool worker = false;  // rear troops: gather, build, unload
+    // How close an enemy hiding in cover must be for this unit to make him out.
+    Fixed detection = Fixed::from_int(2);
+    bool stealthy = false;  // hard to spot in cover (scouts)
+    // Reach of an observation post's sector (scouts); 0 = can't hold one.
+    Fixed sector_range{};
 };
 
 enum class UnitTypeId : uint8_t {
@@ -59,6 +64,7 @@ enum class UnitTypeId : uint8_t {
     Ifv,
     Worker,  // rear trooper
     Truck,   // supply truck: station -> depots
+    Scout,
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

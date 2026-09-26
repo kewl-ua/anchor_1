@@ -202,6 +202,7 @@ void spawn_army(World& world, PlayerId owner, int32_t cx, int32_t cy) {
     spawn_squad(world, owner, cx, cy, UnitTypeId::Grenadier, 2);
     spawn_squad(world, owner, cx, cy, UnitTypeId::Tank, 2);
     spawn_squad(world, owner, cx, cy, UnitTypeId::Ifv, 1);
+    spawn_squad(world, owner, cx, cy, UnitTypeId::Scout, 2);
 }
 
 }  // namespace

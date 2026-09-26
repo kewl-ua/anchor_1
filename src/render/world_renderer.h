@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <span>
 #include <unordered_map>
 #include <utility>
@@ -37,6 +38,10 @@ public:
     // Marker where the player ordered a move (green) or an attack-move (red).
     void add_order_ping(Vector2 ground, bool attack);
 
+    // Whose eyes the world is drawn through. `reveal` lifts the fog of war
+    // (development and replays; it changes nothing in the game).
+    void set_viewer(engine::PlayerId viewer, bool reveal);
+
     // Spawns effects for what happened since the last frame (impacts, deaths)
     // and ages them. Call once per frame after the simulation advanced.
     void update(const engine::World& world, float dt);
@@ -68,7 +73,15 @@ private:
         engine::StructureType type;
     };
 
-    void draw_terrain(const engine::TileMap& map, Rectangle view) const;
+    void draw_terrain(const engine::World& world, Rectangle view) const;
+    // Fog state of a tile for the viewer.
+    static constexpr int kUnexplored = 0;
+    static constexpr int kRemembered = 1;  // explored, not in view now
+    static constexpr int kInView = 2;
+    int fog(const engine::World& world, int tx, int ty) const;
+    bool in_view(const engine::World& world, Vector2 ground) const;
+    bool shows(const engine::World& world, const engine::Unit& u) const;
+    void remember(const engine::World& world);
     void draw_remains(const engine::TileMap& map) const;
     void draw_pings(const engine::TileMap& map) const;
     void draw_orders(const engine::World& world, const engine::Unit& u, float alpha) const;
@@ -99,6 +112,13 @@ private:
     // What was alive / standing last frame, to notice deaths and collapses.
     std::unordered_map<engine::EntityId, Remains> units_seen_;
     std::unordered_map<engine::EntityId, StructureSeen> structures_seen_;
+
+    engine::PlayerId viewer_ = 0;
+    bool reveal_ = false;
+    // The ground as the viewer last saw it, and others' buildings likewise.
+    std::vector<engine::Terrain> seen_terrain_;
+    std::map<engine::EntityId, engine::Structure> remembered_;
+    uint32_t remembered_revision_ = 0;
     // Each station's track, from its wall to the end of the line.
     std::vector<std::pair<engine::EntityId, std::vector<Vector2>>> rail_routes_;
     uint32_t routes_revision_ = 0;

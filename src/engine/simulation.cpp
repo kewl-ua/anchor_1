@@ -15,6 +15,8 @@ void Simulation::schedule(Tick tick, Command cmd) {
 }
 
 void Simulation::step() {
+    // Orders may only target what the player sees, so the fog comes first.
+    world_.begin_tick();
     if (auto it = pending_.find(world_.tick()); it != pending_.end()) {
         std::vector<Command>& commands = it->second;
         // Peers may receive commands in different orders; sorting by player

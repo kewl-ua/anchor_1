@@ -31,9 +31,23 @@ enum class Order : uint8_t {
     Retrain,       // walk into headquarters order_target, come out a rifleman
     Build,         // walk to structure order_target and build it until it's done
     Haul,          // supply truck: load at the station, unload at the depot, repeat
+    Observe,       // scout: an observation post watching the sector towards order_point, holding fire
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
+
+// Fog of war is worked out this often, not every tick.
+inline constexpr Tick kVisionInterval = kTicksPerSecond / 4;
+// A shot gives away a hidden shooter for this long.
+inline constexpr Tick kRevealTicks = 3 * kTicksPerSecond;
+// A target on the move is spotted from this much farther away (percent)...
+inline constexpr int32_t kSpotMovingPercent = 200;
+// ...and a stealthy one (a scout) only from this much closer.
+inline constexpr int32_t kSpotStealthyPercent = 50;
+// Observation posts watch a 90 degree sector. Every post whose sector covers
+// a man in cover makes him out from this many tiles farther: cross
+// observation from several posts finds what one alone would miss.
+inline constexpr Fixed kSectorDetection = Fixed::from_int(4);
 
 struct Unit {
     EntityId id = 0;
@@ -72,6 +86,9 @@ struct Unit {
     int32_t carrying = 0;   // materials in hand, or a truck's load
     Resource carrying_type = Resource::Materials;
     Tick work = 0;          // progress on the current bit of work (chopping, retraining, unloading)
+
+    // Bit per player: who currently sees this unit (updated with the fog of war).
+    uint8_t seen_by = 0;
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -140,6 +157,25 @@ public:
     // A player's railway station (the first one), if it still stands.
     const Structure* station_of(PlayerId player) const;
 
+    // Fog of war, updated every kVisionInterval ticks. A tile is visible when
+    // one of the player's units or buildings has a line of sight to it;
+    // explored once it ever was.
+    bool visible(PlayerId player, TilePos t) const { return fog_at(visible_, player, t); }
+    bool explored(PlayerId player, TilePos t) const { return fog_at(explored_, player, t); }
+    // Own units are always seen. Others when their tile is in view, unless
+    // they hide in cover (a forest, a house) and nobody is close enough to
+    // spot them and they haven't just given themselves away by firing.
+    bool sees(PlayerId player, const Unit& u) const {
+        return u.owner == player || (player < kMaxPlayers && ((u.seen_by >> player) & 1) != 0);
+    }
+    // A building is seen when any of its tiles is.
+    bool sees(PlayerId player, const Structure& s) const;
+    // Changes with every fog update, so cached images know to rebuild.
+    uint32_t vision_revision() const { return vision_revision_; }
+    // Called before each tick's commands: brings the fog of war up to date
+    // when it's due.
+    void begin_tick();
+
     // Hash of the whole state. Peers exchange it to detect desyncs early.
     uint64_t checksum() const;
 
@@ -182,6 +218,7 @@ private:
     void apply_retrain(const Command& cmd);
     void apply_build(const Command& cmd);
     void apply_haul(const Command& cmd);
+    void apply_observe(const Command& cmd);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
     void update_building(Unit& u);
@@ -211,6 +248,25 @@ private:
     const Unit* find_enemy_in_sight(Unit& u);
     void engage(Unit& u, const Unit& target);
     void engage_ground(Unit& u);
+
+    // Fog of war (world_vision.cpp).
+    void update_vision();
+    // Indices of the tiles an observer on `tile` sees, cached.
+    const std::vector<int32_t>& sight_from(TilePos tile, int32_t radius, Fixed eye, EntityId own_structure);
+    bool line_of_sight(FixedVec2 from, Fixed eye_height, TilePos target, EntityId own_structure) const;
+    bool spotted(PlayerId player, const Unit& target) const;
+    // An observation post's sector: who watches, from where, and the tiles
+    // in it that are in plain view (sorted).
+    struct Sector {
+        PlayerId owner;
+        FixedVec2 from;
+        std::vector<int32_t> tiles;
+    };
+    Fixed ground_at(FixedVec2 p) const;  // TileMap::surface_height, from cached corners
+    bool fog_at(const std::array<std::vector<uint8_t>, kMaxPlayers>& grid, PlayerId player, TilePos t) const {
+        if (player >= kMaxPlayers || grid[player].empty() || !map_.contains(t)) return false;
+        return grid[player][static_cast<size_t>(t.y * map_.width() + t.x)] != 0;
+    }
 
     // Line of fire. try_fire() returns false if a hill or house blocks the
     // line (the caller should move); it holds fire if own troops are in the way.
@@ -255,6 +311,18 @@ private:
     // Routes by (move class, goal tile). Only a cache: a route is rebuilt
     // identically whenever it's missing, so it can't affect the game.
     std::map<uint64_t, std::weak_ptr<const FlowField>> field_cache_;
+
+    // Fog of war: a byte per tile per player (empty for players not in the game).
+    std::array<std::vector<uint8_t>, kMaxPlayers> visible_;
+    std::array<std::vector<uint8_t>, kMaxPlayers> explored_;
+    uint32_t vision_revision_ = 0;
+    bool vision_ready_ = false;
+    std::vector<Fixed> corner_heights_;  // (width + 1) x (height + 1)
+    // What an observer sees from a tile, by (tile, radius, eye, own building).
+    // Only a cache of a pure function of the map, dropped when the map changes.
+    std::map<uint64_t, std::vector<int32_t>> sight_cache_;
+    uint32_t sight_cache_map_revision_ = 0;
+    std::vector<Sector> sectors_;  // rebuilt with the fog
 };
 
 }  // namespace engine

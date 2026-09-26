@@ -40,6 +40,7 @@ Game::Game(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int p
       lockstep_(sim_, local_player, player_count, transport),
       controller_(local_player) {
     engine::setup_demo_scenario(sim_.world_for_setup());
+    renderer_.set_viewer(local_player, reveal_);
 
     camera_.set_bounds(render::iso::map_bounds(sim_.world().map()));
     if (auto army = center_of(sim_.world(), [&](const engine::Unit& u) { return u.owner == local_player; })) {
@@ -88,7 +89,7 @@ void Game::update(float dt) {
 
     controller_.update(sim_.world(), lockstep_, camera_, hud_, renderer_, alpha_);
     renderer_.update(sim_.world(), scaled);
-    hud_.update(sim_.world());
+    hud_.update(sim_.world(), lockstep_.local_player(), reveal_);
 }
 
 void Game::draw(hud::NetStatus net) const {
@@ -117,7 +118,13 @@ void Game::draw(hud::NetStatus net) const {
         .placing = controller_.placement() ? engine::structure_type(controller_.placement()->type).name : "",
         .view_ground = {ground_at({0, 0}), ground_at({w, 0}), ground_at({w, h}), ground_at({0, h})},
         .net = net,
+        .reveal = reveal_,
     });
+}
+
+void Game::set_reveal(bool reveal) {
+    reveal_ = reveal;
+    renderer_.set_viewer(lockstep_.local_player(), reveal_);
 }
 
 void Game::select_army_and_attack_move(Vector2 ground) {

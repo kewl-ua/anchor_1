@@ -23,6 +23,11 @@ constexpr float kBodyLifetime = 8.0f;
 constexpr float kCircleRx = iso::kTileWidth * 0.5f * 1.41421356f;
 constexpr float kCircleRy = iso::kTileHeight * 0.5f * 1.41421356f;
 
+// Brightness of what is being drawn: 1 in view, lower for remembered
+// scenery under the fog of war. Set around each drawable, back to 1 after.
+float g_light = 1.0f;
+constexpr float kFogLight = 0.5f;
+
 // How high a unit's body is above its feet, pixels.
 float body_lift(const engine::Unit& u) { return engine::unit_type(u.type).vehicle ? 6.0f : 9.0f; }
 
@@ -33,11 +38,13 @@ Color shade(Color c, float k) {
     return {channel(c.r), channel(c.g), channel(c.b), c.a};
 }
 
+Color lit(Color c) { return g_light >= 1.0f ? c : shade(c, g_light); }
+
 // raylib skips triangles with the "wrong" winding; accept either.
 void fill_triangle(Vector2 a, Vector2 b, Vector2 c, Color color) {
     const float cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if (cross > 0) std::swap(b, c);
-    DrawTriangle(a, b, c, color);
+    DrawTriangle(a, b, c, lit(color));
 }
 
 void fill_quad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color) {
@@ -73,12 +80,12 @@ uint32_t tile_hash(int x, int y) {
 
 void draw_ground_ellipse(Vector2 center, float radius_tiles, Color color) {
     DrawEllipseLines(static_cast<int>(center.x), static_cast<int>(center.y), radius_tiles * kCircleRx,
-                     radius_tiles * kCircleRy, color);
+                     radius_tiles * kCircleRy, lit(color));
 }
 
 void fill_ground_ellipse(Vector2 center, float radius_tiles, Color color) {
     DrawEllipse(static_cast<int>(center.x), static_cast<int>(center.y), radius_tiles * kCircleRx,
-                radius_tiles * kCircleRy, color);
+                radius_tiles * kCircleRy, lit(color));
 }
 
 // A box standing on the terrain, `lift` pixels up, turned along `facing`:
@@ -104,7 +111,7 @@ std::array<Vector2, 4> draw_box(const engine::TileMap& map, Vector2 ground, Vect
         fill_quad(base[i], base[j], top[j], top[i], shade(color, 0.55f));
     }
     fill_quad(top[0], top[1], top[2], top[3], color);
-    for (size_t i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(color, 0.45f));
+    for (size_t i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], lit(shade(color, 0.45f)));
     return top;
 }
 
@@ -139,6 +146,54 @@ float unit_pick_radius(const RtsCamera& camera, const engine::Unit& unit) {
 
 void WorldRenderer::add_order_ping(Vector2 ground, bool attack) { pings_.push_back({ground, 0.0f, attack}); }
 
+void WorldRenderer::set_viewer(engine::PlayerId viewer, bool reveal) {
+    viewer_ = viewer;
+    reveal_ = reveal;
+}
+
+int WorldRenderer::fog(const engine::World& world, int tx, int ty) const {
+    if (reveal_) return kInView;
+    if (world.visible(viewer_, {tx, ty})) return kInView;
+    return world.explored(viewer_, {tx, ty}) ? kRemembered : kUnexplored;
+}
+
+bool WorldRenderer::in_view(const engine::World& world, Vector2 ground) const {
+    return fog(world, static_cast<int>(std::floor(ground.x)), static_cast<int>(std::floor(ground.y))) == kInView;
+}
+
+bool WorldRenderer::shows(const engine::World& world, const engine::Unit& u) const {
+    return reveal_ || world.sees(viewer_, u);
+}
+
+// What the fog hides is drawn as it was last seen: the ground (a forest
+// since cut down, a house since collapsed) and other players' buildings.
+void WorldRenderer::remember(const engine::World& world) {
+    const engine::TileMap& map = world.map();
+    const size_t tiles = static_cast<size_t>(map.width() * map.height());
+    const bool fresh = seen_terrain_.size() != tiles;
+    if (!fresh && world.vision_revision() == remembered_revision_ && !reveal_) return;
+    remembered_revision_ = world.vision_revision();
+    if (fresh) seen_terrain_.assign(tiles, engine::Terrain::Grass);
+    for (int ty = 0; ty < map.height(); ++ty) {
+        for (int tx = 0; tx < map.width(); ++tx) {
+            if (fresh || fog(world, tx, ty) == kInView) {
+                seen_terrain_[static_cast<size_t>(ty * map.width() + tx)] = map.terrain(tx, ty);
+            }
+        }
+    }
+    for (const engine::Structure& s : world.structures()) {
+        if (s.owner == viewer_ || s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
+        if (reveal_ || world.sees(viewer_, s)) remembered_[s.id] = s;
+    }
+    // Gone, and we have seen the empty spot: forget it.
+    std::erase_if(remembered_, [&](const auto& entry) {
+        if (world.find_structure(entry.first)) return false;
+        return std::any_of(entry.second.tiles.begin(), entry.second.tiles.end(), [&](const engine::TilePos& t) {
+            return fog(world, t.x, t.y) == kInView;
+        });
+    });
+}
+
 void WorldRenderer::update(const engine::World& world, float dt) {
     const engine::TileMap& map = world.map();
     if (map.width() != cache_width_ || map.height() != cache_height_) {
@@ -152,19 +207,22 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
     }
 
+    remember(world);
+
     // Shells and rockets that went off since the last frame: where they
     // actually burst, which may be a tree or a soldier in the way.
     for (const engine::Impact& impact : world.recent_impacts()) {
-        if (impact.tick < impacts_seen_until_) continue;
+        if (impact.tick < impacts_seen_until_ || !in_view(world, to_vector2(impact.pos))) continue;
         const float splash = to_float(engine::unit_type(impact.shooter_type).weapon.splash_radius);
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
     }
     impacts_seen_until_ = world.tick();
 
-    // Units that vanished died (a garrison buried in its house leaves no body to see).
+    // Units that vanished died (a garrison buried in its house leaves no body
+    // to see, and nobody sees who dies in the fog).
     std::unordered_map<engine::EntityId, Remains> alive;
     for (const engine::Unit& u : world.units()) {
-        if (!u.inside) alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle};
+        if (!u.inside && shows(world, u)) alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle};
     }
     for (const auto& [id, last] : units_seen_) {
         if (alive.contains(id) || world.find_unit(id)) continue;
@@ -177,7 +235,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     std::unordered_map<engine::EntityId, StructureSeen> standing;
     for (const engine::Structure& s : world.structures()) standing[s.id] = {to_vector2(s.center), s.type};
     for (const auto& [id, seen] : structures_seen_) {
-        if (standing.contains(id)) continue;
+        if (standing.contains(id) || !in_view(world, seen.center)) continue;
         const bool fuel = seen.type == engine::StructureType::FuelDepot;
         blasts_.push_back({seen.center, 0.0f, fuel ? 3.0f : 1.6f});
         if (fuel) blasts_.push_back({seen.center, -0.3f, 2.2f});  // a second, later burst
@@ -253,9 +311,9 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
     const Vector2 base = on_terrain(map, t.ground);
     const float s = t.size;
     const Color leaf = shade({46, 94, 44, 255}, t.tint);
-    DrawLineEx(base, {base.x, base.y - 7.0f * s}, 2.0f, {72, 54, 38, 255});
-    DrawCircleV({base.x, base.y - 13.0f * s}, 8.5f * s, ColorAlpha(shade(leaf, 0.8f), 0.95f));
-    DrawCircleV({base.x - 2.0f * s, base.y - 15.0f * s}, 5.5f * s, ColorAlpha(shade(leaf, 1.15f), 0.9f));
+    DrawLineEx(base, {base.x, base.y - 7.0f * s}, 2.0f, lit({72, 54, 38, 255}));
+    DrawCircleV({base.x, base.y - 13.0f * s}, 8.5f * s, lit(ColorAlpha(shade(leaf, 0.8f), 0.95f)));
+    DrawCircleV({base.x - 2.0f * s, base.y - 15.0f * s}, 5.5f * s, lit(ColorAlpha(shade(leaf, 1.15f), 0.9f)));
 }
 
 // A small house on one tile: walls and a hipped roof. Damage darkens it with
@@ -289,8 +347,8 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
 
     if (damage > 0.5f && (h & 3) == 0) {  // smoke from some of the tiles of a badly hit house
         const float puff = 5.0f + 5.0f * damage;
-        DrawCircleV({apex.x + 2.0f, apex.y - 6.0f}, puff, {70, 68, 66, 150});
-        DrawCircleV({apex.x - 3.0f, apex.y - 12.0f}, puff * 0.8f, {90, 88, 86, 110});
+        DrawCircleV({apex.x + 2.0f, apex.y - 6.0f}, puff, lit({70, 68, 66, 150}));
+        DrawCircleV({apex.x - 3.0f, apex.y - 12.0f}, puff * 0.8f, lit({90, 88, 86, 110}));
     }
 }
 
@@ -323,6 +381,7 @@ BuildingStyle style_of(engine::StructureType type) {
         case engine::StructureType::ArmorBarracks: return {22.0f, {128, 132, 124, 255}, {86, 92, 84, 255}, 0, true};
         case engine::StructureType::Warehouse: return {13.0f, {142, 112, 80, 255}, {110, 84, 60, 255}, 0, true};
         case engine::StructureType::Station: return {15.0f, {156, 98, 78, 255}, {98, 76, 66, 255}, 1};
+        case engine::StructureType::ReconBarracks: return {12.0f, {118, 126, 96, 255}, {80, 94, 66, 255}, 1};
         // Half dug in, under earth: only a low front shows.
         case engine::StructureType::AmmoDepot: return {8.0f, {112, 118, 90, 255}, {96, 104, 72, 255}, 0, true};
         case engine::StructureType::FuelDepot: return {5.0f, {128, 126, 118, 255}, {110, 108, 100, 255}, 0, false, true};
@@ -353,15 +412,15 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
     fill_quad(base[1], base[2], top[2], top[1], walls);
     fill_quad(base[2], base[3], top[3], top[2], shade(walls, 0.72f));
     fill_quad(top[0], top[1], top[2], top[3], shade(style.roof, soot));
-    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], shade(walls, 0.5f));
+    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], lit(shade(walls, 0.5f)));
 
     if (!s.built) {
         // Scaffolding up to the full height.
         const Color pole{120, 96, 64, 255};
         for (int i = 0; i < 4; ++i) {
             const Vector2 full{base[i].x, base[i].y - style.wall};
-            DrawLineEx(base[i], full, 1.5f, pole);
-            DrawLineEx(full, {base[(i + 1) % 4].x, base[(i + 1) % 4].y - style.wall}, 1.0f, pole);
+            DrawLineEx(base[i], full, 1.5f, lit(pole));
+            DrawLineEx(full, {base[(i + 1) % 4].x, base[(i + 1) % 4].y - style.wall}, 1.0f, lit(pole));
         }
         return;
     }
@@ -375,7 +434,7 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
                 const float t = static_cast<float>(i) / 5.0f;
                 const Vector2 p{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
                 const float lift = style.wall * (row == 0 ? 0.4f : 0.75f);
-                DrawRectangleRec({p.x - 2.0f, p.y - lift, 4.0f, 5.0f}, {60, 66, 72, 255});
+                DrawRectangleRec({p.x - 2.0f, p.y - lift, 4.0f, 5.0f}, lit({60, 66, 72, 255}));
             }
         }
         // ...or wide gates.
@@ -395,15 +454,15 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
             const float rx = 0.32f * kCircleRx;
             const Color steel = shade({176, 178, 172, 255}, soot);
             fill_ground_ellipse(bottom, 0.32f, shade(steel, 0.6f));
-            DrawRectangleRec({bottom.x - rx, cap.y, 2.0f * rx, bottom.y - cap.y}, shade(steel, 0.8f));
+            DrawRectangleRec({bottom.x - rx, cap.y, 2.0f * rx, bottom.y - cap.y}, lit(shade(steel, 0.8f)));
             fill_ground_ellipse(cap, 0.32f, steel);
             draw_ground_ellipse(cap, 0.32f, shade(steel, 0.5f));
         }
     }
 
     const Vector2 pole = top[0];
-    DrawLineEx(pole, {pole.x, pole.y - 22.0f}, 2.0f, {50, 50, 50, 255});
-    DrawRectangleRec({pole.x, pole.y - 22.0f, 14.0f, 9.0f}, theme::player_color(s.owner));
+    DrawLineEx(pole, {pole.x, pole.y - 22.0f}, 2.0f, lit({50, 50, 50, 255}));
+    DrawRectangleRec({pole.x, pole.y - 22.0f, 14.0f, 9.0f}, lit(theme::player_color(s.owner)));
 }
 
 // The foundation that follows the cursor while placing a building.
@@ -428,9 +487,9 @@ void draw_rail(const engine::TileMap& map, int tx, int ty, bool along_x) {
     auto at = [&](float u, float v) { return on_terrain(map, along_x ? Vector2{x + u, y + v} : Vector2{x + v, y + u}); };
     for (int i = 0; i < 4; ++i) {
         const float u = 0.125f + 0.25f * static_cast<float>(i);
-        DrawLineEx(at(u, 0.26f), at(u, 0.74f), 2.0f, {84, 64, 46, 255});
+        DrawLineEx(at(u, 0.26f), at(u, 0.74f), 2.0f, lit({84, 64, 46, 255}));
     }
-    for (const float v : {0.38f, 0.62f}) DrawLineEx(at(0.0f, v), at(1.0f, v), 1.2f, {178, 180, 184, 255});
+    for (const float v : {0.38f, 0.62f}) DrawLineEx(at(0.0f, v), at(1.0f, v), 1.2f, lit({178, 180, 184, 255}));
 }
 
 // Grey boulders of a stone outcrop, fewer as it is quarried away.
@@ -442,9 +501,10 @@ void draw_rock(const engine::TileMap& map, int tx, int ty, int32_t left) {
         const float fy = 0.25f + static_cast<float>((h >> (i * 8 + 4)) & 0xFF) / 255.0f * 0.5f;
         const Vector2 p = on_terrain(map, {static_cast<float>(tx) + fx, static_cast<float>(ty) + fy});
         const float size = 7.0f + static_cast<float>((h >> (i * 5)) & 7);
-        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - size * 0.4f), size, size * 0.7f, {112, 114, 110, 255});
+        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - size * 0.4f), size, size * 0.7f,
+                    lit({112, 114, 110, 255}));
         DrawEllipse(static_cast<int>(p.x - size * 0.25f), static_cast<int>(p.y - size * 0.7f), size * 0.5f,
-                    size * 0.3f, {150, 152, 148, 255});
+                    size * 0.3f, lit({150, 152, 148, 255}));
     }
 }
 
@@ -455,8 +515,8 @@ void draw_ruins(const engine::TileMap& map, int tx, int ty) {
         const float fx = 0.25f + static_cast<float>((h >> (i * 8)) & 0xFF) / 255.0f * 0.5f;
         const float fy = 0.25f + static_cast<float>((h >> (i * 8 + 4)) & 0xFF) / 255.0f * 0.5f;
         const Vector2 p = on_terrain(map, {static_cast<float>(tx) + fx, static_cast<float>(ty) + fy});
-        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - 2.0f), 9.0f, 4.5f, {92, 80, 70, 255});
-        DrawEllipse(static_cast<int>(p.x - 1.0f), static_cast<int>(p.y - 4.0f), 5.0f, 2.5f, {130, 108, 92, 255});
+        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - 2.0f), 9.0f, 4.5f, lit({92, 80, 70, 255}));
+        DrawEllipse(static_cast<int>(p.x - 1.0f), static_cast<int>(p.y - 4.0f), 5.0f, 2.5f, lit({130, 108, 92, 255}));
     }
 }
 
@@ -538,6 +598,7 @@ void WorldRenderer::collect_trains(const engine::World& world, float alpha, std:
     for (const auto& [station_id, route] : rail_routes_) {
         const engine::Structure* station = world.find_structure(station_id);
         if (!station || route.size() < 2) continue;
+        const bool ours = station->owner == viewer_;
         float line = 0.0f;
         for (size_t i = 0; i + 1 < route.size(); ++i) {
             line += std::hypot(route[i + 1].x - route[i].x, route[i + 1].y - route[i].y);
@@ -568,6 +629,7 @@ void WorldRenderer::collect_trains(const engine::World& world, float alpha, std:
             const float d = head + kCarLength * (static_cast<float>(i) + 0.5f);
             if (d > line) break;  // still beyond the map edge
             const auto [ground, dir] = along(route, d);
+            if (!ours && !in_view(world, ground)) continue;  // an enemy train is seen only where we look
             cars.push_back({ground, {-dir.x, -dir.y}, i});
         }
     }
@@ -579,6 +641,12 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
     for (const engine::Structure& s : world.structures()) {
         const Vector2 c = on_terrain(map, to_vector2(s.center), 30.0f);
         if (!CheckCollisionPointRec(c, {view.x - 40, view.y - 40, view.width + 80, view.height + 80})) continue;
+        if (!reveal_ && !world.sees(viewer_, s)) continue;
+        // Who holds a house shows only once one of them is seen.
+        const bool garrison_seen = std::any_of(s.garrison.begin(), s.garrison.end(), [&](engine::EntityId id) {
+            const engine::Unit* u = world.find_unit(id);
+            return u && shows(world, *u);
+        });
 
         const int32_t max_hp = engine::structure_type(s.type).max_hp;
         if (s.hp < max_hp) {
@@ -586,7 +654,7 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
             DrawRectangleRec({c.x - 21, c.y - 1, 42, 5}, {0, 0, 0, 170});
             DrawRectangleRec({c.x - 20, c.y, 40 * frac, 3}, frac > 0.5f ? Color{200, 200, 190, 255} : Color{230, 110, 60, 255});
         }
-        if (!s.garrison.empty()) {
+        if (garrison_seen) {
             const char* count = TextFormat("%d", static_cast<int>(s.garrison.size()));
             const Color flag = theme::player_color(s.owner);
             DrawLineEx({c.x, c.y + 18}, {c.x, c.y - 10}, 1.5f, {40, 40, 40, 255});
@@ -607,7 +675,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
 
     BeginMode2D(camera.camera2d());
 
-    draw_terrain(map, view);
+    draw_terrain(world, view);
     draw_remains(map);
 
     for (const engine::Unit& u : world.units()) {
@@ -641,11 +709,12 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
+        float light = 1.0f;  // dimmer under the fog of war
     };
     std::vector<Drawable> drawables;
     drawables.reserve(world.units().size() + world.projectiles().size() + 1024);
     for (const engine::Unit& u : world.units()) {
-        if (u.inside) continue;  // behind walls
+        if (u.inside || !shows(world, u)) continue;  // behind walls, or unseen
         const Vector2 g = unit_ground_pos(u, alpha);
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
@@ -653,51 +722,61 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     for (const engine::Projectile& p : world.projectiles()) {
         const Vector2 g = lerp(to_vector2(p.prev_pos), to_vector2(p.pos), alpha);
-        drawables.push_back({.depth = g.x + g.y, .projectile = &p});
+        if (in_view(world, g)) drawables.push_back({.depth = g.x + g.y, .projectile = &p});
     }
+    // Scenery comes from the remembered ground: what the fog hides stays as it was.
     for_each_visible_tile(map, view, [&](int tx, int ty) {
-        switch (map.terrain(tx, ty)) {
+        const int state = fog(world, tx, ty);
+        if (state == kUnexplored) return;
+        const float light = state == kInView ? 1.0f : kFogLight;
+        switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
             case engine::Terrain::Forest:
                 for (const Tree& t : trees_on_tile(tx, ty)) {
-                    drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t});
+                    drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
                 }
                 break;
             case engine::Terrain::House: {
                 float damage = 0.0f;
-                if (const engine::Structure* s = world.structure_at({tx, ty})) {
+                if (const engine::Structure* s = world.structure_at({tx, ty}); s && state == kInView) {
                     const int32_t max_hp = engine::structure_type(s->type).max_hp;
                     damage = 1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp);
                 }
-                drawables.push_back(
-                    {.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty, .damage = damage});
+                drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
+                                     .damage = damage, .light = light});
                 break;
             }
             case engine::Terrain::Ruins:
-                drawables.push_back(
-                    {.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty, .ruins = true});
+                drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
+                                     .ruins = true, .light = light});
                 break;
             case engine::Terrain::Rock:
-                drawables.push_back(
-                    {.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty, .rock = true});
+                drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
+                                     .rock = true, .light = light});
                 break;
             default:
                 break;
         }
     });
-    for (const engine::Structure& s : world.structures()) {
-        if (s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
+    // Our buildings as they are; others' as we last saw them.
+    auto add_building = [&](const engine::Structure& s, float light) {
         const Vector2 c = to_vector2(s.center);
         if (!CheckCollisionPointRec(on_terrain(map, c), {view.x - 150, view.y - 150, view.width + 300, view.height + 300})) {
-            continue;
+            return;
         }
-        drawables.push_back({.depth = c.x + c.y + 1.0f, .building = &s});
+        drawables.push_back({.depth = c.x + c.y + 1.0f, .building = &s, .light = light});
+    };
+    for (const engine::Structure& s : world.structures()) {
+        if (s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
+        if (s.owner == viewer_) add_building(s, 1.0f);
     }
+    for (const auto& [id, s] : remembered_) add_building(s, reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight);
     std::vector<TrainCar> cars;
     collect_trains(world, alpha, cars);
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
     for (const Drawable& d : drawables) {
+        g_light = d.light;
         if (d.unit) {
             draw_unit(map, *d.unit, alpha);
         } else if (d.projectile) {
@@ -716,6 +795,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_tree(map, d.tree);
         }
     }
+    g_light = 1.0f;
 
     draw_shots(world, alpha);
     draw_blasts(map);
@@ -730,8 +810,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     EndMode2D();
 }
 
-void WorldRenderer::draw_terrain(const engine::TileMap& map, Rectangle view) const {
+void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) const {
+    const engine::TileMap& map = world.map();
     if (map.width() != cache_width_ || map.height() != cache_height_) return;  // update() hasn't seen this map yet
+    if (seen_terrain_.size() != static_cast<size_t>(map.width() * map.height())) return;
 
     for_each_visible_tile(map, view, [&](int tx, int ty) {
         const float h00 = corner(tx, ty);
@@ -758,7 +840,10 @@ void WorldRenderer::draw_terrain(const engine::TileMap& map, Rectangle view) con
         const float noise = static_cast<float>(tile_hash(tx, ty) & 0xFF) / 255.0f - 0.5f;
         const float height = (h00 + h10 + h01 + h11) * 0.25f;
         const float light = 1.0f + noise * 0.07f + slope_x * 0.30f - slope_y * 0.18f + height * 0.05f;
-        const engine::Terrain terrain = map.terrain(tx, ty);
+        const int state = fog(world, tx, ty);
+        if (state == kUnexplored) return;  // black, like the background
+        const engine::Terrain terrain = seen_terrain_[static_cast<size_t>(ty * map.width() + tx)];
+        g_light = state == kInView ? 1.0f : kFogLight;
         fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
         if (terrain == engine::Terrain::Rail) {
             auto track = [&](int x, int y) {
@@ -768,6 +853,7 @@ void WorldRenderer::draw_terrain(const engine::TileMap& map, Rectangle view) con
             draw_rail(map, tx, ty, track(tx - 1, ty) || track(tx + 1, ty));
         }
     });
+    g_light = 1.0f;
 }
 
 void WorldRenderer::draw_remains(const engine::TileMap& map) const {
@@ -815,6 +901,27 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
             draw_ground_ellipse(to, 0.35f, ColorAlpha(theme::kWarning, 0.8f));
             DrawLineV({to.x - 6, to.y}, {to.x + 6, to.y}, theme::kWarning);
             DrawLineV({to.x, to.y - 3}, {to.x, to.y + 3}, theme::kWarning);
+            break;
+        }
+        case engine::Order::Observe: {
+            // The sector: 90 degrees towards the point, as far as the post sees.
+            const engine::UnitTypeDef& def = engine::unit_type(u.type);
+            const Vector2 ground = unit_ground_pos(u, alpha);
+            const Vector2 target = to_vector2(u.order_point);
+            const float heading = std::atan2(target.y - ground.y, target.x - ground.x);
+            const float reach = to_float(def.sector_range) +
+                                static_cast<float>(map.elevation_at(u.pos));
+            constexpr float kHalf = 0.785398f;  // 45 degrees
+            constexpr int kArc = 16;
+            Vector2 prev = from;
+            const Color color = ColorAlpha(theme::kSelection, 0.35f);
+            for (int i = 0; i <= kArc; ++i) {
+                const float a = heading - kHalf + 2.0f * kHalf * static_cast<float>(i) / kArc;
+                const Vector2 p = on_terrain(map, {ground.x + std::cos(a) * reach, ground.y + std::sin(a) * reach});
+                if (i == 0 || i == kArc) DrawLineV(from, p, color);
+                if (i > 0) DrawLineV(prev, p, color);
+                prev = p;
+            }
             break;
         }
         case engine::Order::Idle:
@@ -940,6 +1047,7 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
     const engine::TileMap& map = world.map();
     for (const engine::Unit& u : world.units()) {
         if (u.last_shot_tick == engine::kNeverFired || world.tick() - u.last_shot_tick > 2) continue;
+        if (!shows(world, u)) continue;
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const Vector2 ground = unit_ground_pos(u, alpha);
         const Vector2 facing = unit_facing(u);

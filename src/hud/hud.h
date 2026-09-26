@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include <raylib.h>
 
@@ -35,6 +36,7 @@ struct HudState {
     // bottom-right, bottom-left), for the camera frame on the minimap.
     std::array<Vector2, 4> view_ground{};
     NetStatus net;
+    bool reveal = false;  // fog of war lifted (development)
 };
 
 // Screen-space UI. Reads the game state, never changes it: whatever a HUD
@@ -46,9 +48,9 @@ public:
     Hud(const Hud&) = delete;
     Hud& operator=(const Hud&) = delete;
 
-    // Rebuilds cached images (the minimap terrain) when the map changes.
-    // Call once per frame before draw().
-    void update(const engine::World& world);
+    // Rebuilds cached images (the minimap under the viewer's fog of war)
+    // when the map or the fog changes. Call once per frame before draw().
+    void update(const engine::World& world, engine::PlayerId viewer, bool reveal);
     void draw(const engine::World& world, const HudState& state) const;
 
     // True if the point is over a HUD panel, so the click must not reach the world.
@@ -58,7 +60,8 @@ public:
     // Which command-panel button slot is under the point: a building's
     // hiring roster, or the rear troops' building list.
     std::optional<size_t> button_at(Vector2 screen_pos) const;
-    static constexpr size_t kButtonSlots = 5;
+    static constexpr size_t kButtonColumns = 4;
+    static constexpr size_t kButtonSlots = 2 * kButtonColumns;
 
 private:
     struct Layout {
@@ -90,6 +93,11 @@ private:
     int32_t map_width_ = 0;
     int32_t map_height_ = 0;
     uint32_t map_revision_ = 0;
+    uint32_t vision_revision_ = 0;
+    bool painted_reveal_ = false;
+    std::vector<engine::TilePos> pixel_tile_;   // tile under each minimap pixel
+    std::vector<float> pixel_light_;            // height shading and contour lines
+    std::vector<engine::Terrain> seen_terrain_;  // the ground as last seen
 };
 
 // Full-screen message shown before a network game starts.

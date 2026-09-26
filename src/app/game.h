@@ -46,6 +46,8 @@ public:
     void set_tick_limit(engine::Tick limit) { tick_limit_ = limit; }
     void set_time_scale(float scale) { time_scale_ = scale; }
     void select_army_and_attack_move(Vector2 ground);
+    // Lifts the fog of war on screen (the game itself still plays by it).
+    void set_reveal(bool reveal);
 
 private:
     engine::Simulation sim_;
@@ -59,6 +61,7 @@ private:
     float alpha_ = 0.0f;
     float stall_time_ = 0.0f;
     float time_scale_ = 1.0f;
+    bool reveal_ = false;
     bool minimap_drag_ = false;  // left button went down on the minimap
     engine::Tick tick_limit_ = std::numeric_limits<engine::Tick>::max();
 };

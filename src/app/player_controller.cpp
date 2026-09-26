@@ -35,11 +35,12 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
 
     if (IsKeyPressed(KEY_A) && !selection_.empty()) targeting_ = Targeting::AttackMove;
     if (IsKeyPressed(KEY_G) && !selection_.empty()) targeting_ = Targeting::AttackGround;
+    if (IsKeyPressed(KEY_O) && has_scouts(world)) targeting_ = Targeting::Observe;
     if (IsKeyPressed(KEY_ESCAPE) || selection_.empty()) targeting_ = Targeting::None;
     if (IsKeyPressed(KEY_ESCAPE) || !has_workers(world)) placing_.reset();
 
-    // Command panel hotkeys: 1-5 build (rear troops); Q, W, E, T hire (a building).
-    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE};
+    // Command panel hotkeys: 1-6 build (rear troops); Q, W, E, T hire (a building).
+    constexpr KeyboardKey kBuildKeys[] = {KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX};
     constexpr KeyboardKey kHireKeys[] = {KEY_Q, KEY_W, KEY_E, KEY_T};
     static_assert(std::size(kBuildKeys) >= std::size(engine::kBuildable));
     for (size_t i = 0; i < std::size(kBuildKeys); ++i) {
@@ -66,6 +67,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         } else if (targeting() && target) {
             if (targeting_ == Targeting::AttackMove) order_attack_move(lockstep, renderer, *target);
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
+            if (targeting_ == Targeting::Observe) order_to_point(lockstep, renderer, *target, engine::CommandType::Observe);
             if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more clicks
         } else if (!over_hud) {
             pressing_ = true;
@@ -170,6 +172,13 @@ bool PlayerController::has_trucks(const engine::World& world) const {
     });
 }
 
+bool PlayerController::has_scouts(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::unit_type(u->type).sector_range.raw > 0;
+    });
+}
+
 bool PlayerController::is_supply_point(engine::StructureType type) {
     return type == engine::StructureType::Station || type == engine::StructureType::Warehouse ||
            type == engine::StructureType::AmmoDepot || type == engine::StructureType::FuelDepot;
@@ -263,6 +272,7 @@ const char* PlayerController::targeting_label() const {
     switch (targeting_) {
         case Targeting::AttackMove: return "Attack-move";
         case Targeting::AttackGround: return "Fire at ground";
+        case Targeting::Observe: return "Observation sector";
         case Targeting::None: break;
     }
     return "";
@@ -330,6 +340,7 @@ const engine::Unit* PlayerController::unit_at(const engine::World& world, const 
     float best_dist = 0.0f;
     for (const engine::Unit& u : world.units()) {
         if ((u.owner == player_) != own) continue;
+        if (!own && !world.sees(player_, u)) continue;  // can't click what we can't see
         const Vector2 p = render::unit_screen_pos(camera, world.map(), u, alpha);
         const float dist = std::hypot(p.x - mouse.x, p.y - mouse.y);
         if (dist <= render::unit_pick_radius(camera, u) && (!best || dist < best_dist)) {
