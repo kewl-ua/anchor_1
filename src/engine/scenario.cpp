@@ -500,6 +500,17 @@ TileMap make_demo_map(int32_t size) {
             if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops ||
                 under == Terrain::DirtRoad || under == Terrain::Road || under == Terrain::Wheat) {
                 p.paint(x, y, Terrain::Crater);
+                // Of every calibre, from both sides: on the other half of
+                // the map the same crater, its shell from the other way.
+                const uint32_t n = tile_noise(x, y) / 23;
+                const uint32_t pick = n % 20;
+                const CraterKind kind = pick < 4    ? CraterKind::Small
+                                        : pick < 11 ? CraterKind::Shell
+                                        : pick < 16 ? CraterKind::Rocket
+                                                    : CraterKind::Heavy;
+                const auto from = static_cast<uint8_t>((n / 20) % 8);
+                map.set_crater(x, y, kind, from);
+                map.set_crater(size - 1 - x, size - 1 - y, kind, static_cast<uint8_t>((from + 4) % 8));
             }
         }
     }

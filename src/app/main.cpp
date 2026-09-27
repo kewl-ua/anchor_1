@@ -399,6 +399,31 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
+    if (options.scene == "craters" && options.mode == Options::Mode::Offline) {
+        // Offline: every gun fires high explosive at the ground ahead, a
+        // scout spotting for them: craters of every calibre, fresh.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        const engine::EntityId howitzer = w.spawn_unit(me, engine::UnitTypeId::Howitzer, ahead(6.0f, 1.0f));
+        const engine::EntityId mortar = w.spawn_unit(me, engine::UnitTypeId::Mortar, ahead(9.0f, -1.0f));
+        const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, ahead(13.0f, 0.0f));
+        const engine::EntityId mlrs = w.spawn_unit(me, engine::UnitTypeId::Mlrs, ahead(4.0f, -2.0f));
+        const engine::EntityId spg = w.spawn_unit(me, engine::UnitTypeId::Spg, ahead(7.0f, -3.0f));
+        game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(22.0f, 0.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(21.0f, 3.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {spg}, .target = ahead(22.0f, -3.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {mortar}, .target = ahead(18.0f, 0.0f)});
+        game.submit({.type = engine::CommandType::Ability, .units = {mlrs}, .target = ahead(25.0f, 0.0f),
+                     .ability = static_cast<uint8_t>(engine::AbilityId::Salvo)});
+        game.select_units({scout});
+        return render::to_vector2(ahead(21.0f, 0.0f));
+    }
+
     if (options.scene == "engineering" && options.mode == Options::Mode::Offline) {
         // Offline: four sappers in front of the army put up wire, hedgehogs,
         // a pillbox and a mine. The pillbox builder stays selected.

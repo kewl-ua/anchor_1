@@ -130,6 +130,26 @@ inline FixedVec2 tile_center(TilePos t) {
     return {Fixed::from_int(t.x) + Fixed::from_ratio(1, 2), Fixed::from_int(t.y) + Fixed::from_ratio(1, 2)};
 }
 
+// What made a shell crater, which sets its size: a mortar bomb's or a
+// grenade's (small, shallow), a 122 mm shell's, a rocket's (Grad, S-8: long
+// and shallow, along its flight), a heavy shell's or a bomb's (only the old
+// ones on the map). The deeper it is, the more cover it gives a man lying in
+// it; the renderer draws each its own way.
+enum class CraterKind : uint8_t { None, Small, Rocket, Shell, Heavy };
+
+// The direction a shell came from, one of eight, 0 along +x, then towards +y
+// (1: +x +y, 2: +y, ... 7: +x -y). `d` points from the burst back to the gun.
+inline uint8_t octant(FixedVec2 d) {
+    const int64_t x = d.x.raw;
+    const int64_t y = d.y.raw;
+    const int64_t ax = x < 0 ? -x : x;
+    const int64_t ay = y < 0 ? -y : y;
+    if (ay * 12 <= ax * 5) return x >= 0 ? 0 : 4;  // within 22.5 degrees of the x axis
+    if (ax * 12 <= ay * 5) return y >= 0 ? 2 : 6;
+    if (x >= 0) return y >= 0 ? 1 : 7;
+    return y >= 0 ? 3 : 5;
+}
+
 // The battlefield: a grid of square tiles, each with a terrain type and an
 // elevation level. Units move freely in continuous tile coordinates, where
 // 1.0 is one tile. How it looks (isometric or not) is the renderer's business.
@@ -142,7 +162,8 @@ public:
           height_(height),
           elevation_(static_cast<size_t>(width * height), 0),
           terrain_(static_cast<size_t>(width * height), Terrain::Grass),
-          resource_(static_cast<size_t>(width * height), 0) {}
+          resource_(static_cast<size_t>(width * height), 0),
+          crater_(static_cast<size_t>(width * height), 0) {}
 
     int32_t width() const { return width_; }
     int32_t height() const { return height_; }
@@ -177,6 +198,14 @@ public:
     // Changes only when some tile became impassable (a bridge blown up):
     // only then can an existing route lead into a dead end.
     uint32_t blocking_revision() const { return blocking_revision_; }
+
+    // A crater tile's kind and the direction its shell came from (see octant).
+    CraterKind crater_kind(int32_t tx, int32_t ty) const { return static_cast<CraterKind>(crater_[index(tx, ty)] & 0x0F); }
+    uint8_t crater_from(int32_t tx, int32_t ty) const { return static_cast<uint8_t>(crater_[index(tx, ty)] >> 4); }
+    void set_crater(int32_t tx, int32_t ty, CraterKind kind, uint8_t from) {
+        crater_[index(tx, ty)] = static_cast<uint8_t>(static_cast<uint8_t>(kind) | ((from & 7u) << 4));
+        ++revision_;
+    }
 
     // Materials left on a tile (forest timber, rock stone).
     int32_t resource(TilePos t) const { return contains(t) ? resource_[index(t.x, t.y)] : 0; }
@@ -238,6 +267,7 @@ private:
     std::vector<uint8_t> elevation_;
     std::vector<Terrain> terrain_;
     std::vector<int32_t> resource_;
+    std::vector<uint8_t> crater_;  // kind | from << 4
     uint32_t revision_ = 0;
     uint32_t blocking_revision_ = 0;
 };

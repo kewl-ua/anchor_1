@@ -56,7 +56,18 @@ inline constexpr Fixed kSectorDetection = Fixed::from_int(4);
 // of the man: bullets and fragments from the level or below, not from above
 // and not lobbed ones.
 inline constexpr int32_t kFoxholeCover = 50;
-inline constexpr int32_t kCraterCover = 40;  // a man lying in a shell crater
+inline constexpr int32_t kCraterCover = 40;       // a man lying in a 122 mm shell's crater
+inline constexpr int32_t kSmallCraterCover = 25;  // a mortar bomb's, a grenade's: shallow
+inline constexpr int32_t kRocketCraterCover = 30; // a rocket's: long and shallow
+inline constexpr int32_t kHeavyCraterCover = 55;  // a heavy shell's or a bomb's
+inline constexpr int32_t crater_cover(CraterKind kind) {
+    switch (kind) {
+        case CraterKind::Small: return kSmallCraterCover;
+        case CraterKind::Rocket: return kRocketCraterCover;
+        case CraterKind::Heavy: return kHeavyCraterCover;
+        default: return kCraterCover;
+    }
+}
 inline constexpr int32_t kTrenchCover = 50;         // at a position in a trench...
 inline constexpr int32_t kTrenchWalkingCover = 10;  // ...walking along it
 inline constexpr int32_t kParapetCover = 25;        // on top, against fire from the front
@@ -821,7 +832,7 @@ private:
     void move_projectiles();
     void explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit);
     // A burst on open ground may leave a crater there.
-    void maybe_crater(FixedVec2 at, const WeaponDef& weapon);
+    void maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& weapon);
     void hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot);
     void apply_damage_and_remove_dead();
     void separate_units();

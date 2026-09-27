@@ -1249,7 +1249,7 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
     WeaponDef weapon = p.weapon;
     auto blow = [&](FixedVec2 spot) {
         recent_impacts_.push_back({tick_, spot, p.shooter_type, weapon.splash_radius});
-        maybe_crater(spot, weapon);
+        maybe_crater(p, spot, weapon);
         splash(p, spot, weapon);
     };
     switch (p.shell) {
@@ -1316,7 +1316,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     if (p.shell != Shell::He) return burst_shell(p, at);
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
-    maybe_crater(at, weapon);
+    maybe_crater(p, at, weapon);
 
     // Thrown in through a window or down a dugout's entrance: the men
     // inside take it, walls or not.
@@ -1354,17 +1354,29 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     if (direct_hit) hurt(*direct_hit, weapon, {p.origin, p.shooter_elevation, false, p.lobbed});
 }
 
-void World::maybe_crater(FixedVec2 at, const WeaponDef& weapon) {
+void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& weapon) {
     if (weapon.damage_type != DamageType::Explosive || weapon.splash_radius < kMediumBurst) return;
     const TilePos t = map_.clamp_tile(tile_of(at));
     const Terrain ground = map_.terrain(t);
     const bool open = ground == Terrain::Grass || ground == Terrain::Plowed || ground == Terrain::Crops ||
                       ground == Terrain::DirtRoad || ground == Terrain::Road || ground == Terrain::Wheat ||
-                      ground == Terrain::Garden;
+                      ground == Terrain::Garden || ground == Terrain::Crater;
     if (!open || structure_id_at(t) != 0) return;
     const int32_t chance = weapon.splash_radius >= kHeavyBurst ? kHeavyCraterPercent : kMediumCraterPercent;
     if (static_cast<int32_t>(rng_.next_below(100)) >= chance) return;
+    // Its size by what made it; a bigger one swallows a smaller one.
+    CraterKind kind = CraterKind::Small;
+    switch (p.shooter_type) {
+        case UnitTypeId::Mlrs:
+        case UnitTypeId::Su25: kind = CraterKind::Rocket; break;
+        case UnitTypeId::Howitzer:
+        case UnitTypeId::Spg: kind = CraterKind::Shell; break;
+        case UnitTypeId::Tank: kind = weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small; break;
+        default: break;
+    }
+    if (ground == Terrain::Crater && crater_cover(map_.crater_kind(t.x, t.y)) >= crater_cover(kind)) return;
     map_.set_terrain(t.x, t.y, Terrain::Crater);  // passable for all: no route goes stale
+    map_.set_crater(t.x, t.y, kind, octant(p.origin - at));
 }
 
 int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
@@ -1378,7 +1390,7 @@ int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
         if (shot.blast ? tile_of(shot.from) == tile : (shot.from - victim.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {
             return 0;
         }
-        return kCraterCover;
+        return crater_cover(map_.crater_kind(tile.x, tile.y));
     }
     if (shot.blast) {
         if (tile_of(shot.from) == tile) return 0;  // burst right in it

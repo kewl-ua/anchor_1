@@ -4196,11 +4196,12 @@ void test_crops_swamps_and_craters() {
     CHECK(!hidden(Terrain::Wheat, UnitTypeId::Rifleman));
     CHECK(!hidden(Terrain::Garden, UnitTypeId::Rifleman));
 
-    auto damage = [](Terrain ground) {
+    auto damage = [](Terrain ground, CraterKind kind = CraterKind::None) {
         int32_t total = 0;
         for (uint64_t seed = 1; seed <= 20; ++seed) {
             TileMap map(30, 20);
             map.set_terrain(15, 10, ground);
+            if (kind != CraterKind::None) map.set_crater(15, 10, kind, 0);
             Simulation sim(seed, map);
             const EntityId man = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, tile_center({15, 10}));
             sim.world_for_setup().unit_for_setup(man)->hp = 100000;
@@ -4217,6 +4218,16 @@ void test_crops_swamps_and_craters() {
     const int32_t open = damage(Terrain::Grass);
     const int32_t crater = damage(Terrain::Crater);
     CHECK(crater < open && crater * 100 >= open * (100 - kCraterCover - 12) && crater * 100 <= open * (100 - kCraterCover + 12));
+    // The deeper the crater, the better the cover.
+    auto covered = [&](CraterKind kind, int32_t cover) {
+        const int32_t got = damage(Terrain::Crater, kind);
+        return got * 100 >= open * (100 - cover - 10) && got * 100 <= open * (100 - cover + 10);
+    };
+    CHECK(covered(CraterKind::Small, kSmallCraterCover));
+    CHECK(covered(CraterKind::Rocket, kRocketCraterCover));
+    CHECK(covered(CraterKind::Shell, kCraterCover));
+    CHECK(covered(CraterKind::Heavy, kHeavyCraterCover));
+    static_assert(kSmallCraterCover < kRocketCraterCover && kRocketCraterCover < kCraterCover && kCraterCover < kHeavyCraterCover);
 
     TileMap road(30, 20);
     for (int x = 0; x < 30; ++x) road.set_terrain(x, 10, Terrain::Road);
@@ -4275,6 +4286,68 @@ void test_shelling_leaves_craters() {
     for (int y = 0; y < 20; ++y) {
         for (int x = 22; x < 40; ++x) CHECK(forest.world().map().terrain(x, y) == Terrain::Forest);
     }
+}
+
+// Each gun leaves its own crater, the shell's way in pointing back at the gun:
+// a mortar bomb a small one, a 122 mm shell a deep one, rockets long ones. A
+// bigger one swallows a smaller one, never the other way round. The old
+// craters on the demo map are of every kind, the same on both halves, their
+// shells from the other side.
+void test_crater_kinds() {
+    auto fire = [](UnitTypeId type, int gun_x, CraterKind before) {
+        TileMap map(40, 20);
+        if (before != CraterKind::None) {
+            for (int y = 0; y < 20; ++y) {
+                for (int x = 16; x < 40; ++x) {
+                    map.set_terrain(x, y, Terrain::Crater);
+                    map.set_crater(x, y, before, 0);
+                }
+            }
+        }
+        Simulation sim(1, map);
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, type, at(gun_x, 10));
+        sim.world_for_setup().unit_for_setup(gun)->rounds = 30;
+        issue(sim, fire_at(0, {gun}, 30, 10));
+        for (int i = 0; i < 2400; ++i) sim.step();
+        std::array<int, 5> kinds{};
+        int back = 0;
+        int total = 0;
+        for (int y = 0; y < 20; ++y) {
+            for (int x = 0; x < 40; ++x) {
+                const TileMap& m = sim.world().map();
+                if (m.terrain(x, y) != Terrain::Crater) continue;
+                if (before != CraterKind::None && m.crater_kind(x, y) == before) continue;
+                ++kinds[static_cast<size_t>(m.crater_kind(x, y))];
+                ++total;
+                back += m.crater_from(x, y) == 4 ? 1 : 0;  // towards -x, where the gun is
+            }
+        }
+        CHECK(back == total);
+        return std::pair{kinds, total};
+    };
+    const auto [mortar, mortars] = fire(UnitTypeId::Mortar, 12, CraterKind::None);
+    CHECK(mortars >= 2 && mortar[static_cast<size_t>(CraterKind::Small)] == mortars);
+    const auto [shell, shells] = fire(UnitTypeId::Howitzer, 4, CraterKind::None);
+    CHECK(shells >= 2 && shell[static_cast<size_t>(CraterKind::Shell)] == shells);
+    const auto [rocket, rockets] = fire(UnitTypeId::Mlrs, 4, CraterKind::None);
+    CHECK(rockets >= 2 && rocket[static_cast<size_t>(CraterKind::Rocket)] == rockets);
+    CHECK(fire(UnitTypeId::Howitzer, 4, CraterKind::Small).second >= 2);  // deeper over the small ones
+    CHECK(fire(UnitTypeId::Mortar, 12, CraterKind::Heavy).second == 0);   // the big ones stay
+
+    const TileMap map = make_demo_map();
+    std::array<int, 5> old{};
+    const int size = map.width();
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            if (map.terrain(x, y) != Terrain::Crater) continue;
+            ++old[static_cast<size_t>(map.crater_kind(x, y))];
+            const int mx = size - 1 - x;
+            const int my = size - 1 - y;
+            CHECK(map.terrain(mx, my) == Terrain::Crater && map.crater_kind(mx, my) == map.crater_kind(x, y) &&
+                  map.crater_from(mx, my) == (map.crater_from(x, y) + 4) % 8);
+        }
+    }
+    CHECK(old[0] == 0 && old[1] > 0 && old[2] > 0 && old[3] > 0 && old[4] > 0);
 }
 
 void test_vehicle_drives_around_forest() {
@@ -5130,6 +5203,7 @@ int main() {
     test_roads_fields_and_swamps();
     test_crops_swamps_and_craters();
     test_shelling_leaves_craters();
+    test_crater_kinds();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
     test_group_moves_at_slowest_speed();

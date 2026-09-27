@@ -136,6 +136,12 @@ private:
     // The tops of the spoil tips (ground points), for the gullies down their sides.
     std::vector<Vector2> spoil_peaks_;
     void draw_spoil_gullies(const engine::World& world, Rectangle view) const;
+    // When each crater appeared (GetTime(); those there from the start count
+    // as long weathered), and its kind as last seen, to notice new ones.
+    std::vector<float> crater_born_;
+    std::vector<uint8_t> crater_seen_;
+    uint32_t crater_revision_ = 0;
+    void draw_crater(const engine::World& world, int tx, int ty) const;
     int cache_width_ = 0;
     int cache_height_ = 0;
 

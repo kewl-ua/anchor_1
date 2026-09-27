@@ -376,6 +376,28 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
     }
 
+    // Craters: when each appeared, so fresh ones smoke and look raw.
+    const size_t tiles = static_cast<size_t>(map.width() * map.height());
+    const bool first = crater_born_.size() != tiles;
+    if (first || map.revision() != crater_revision_) {
+        if (first) {
+            crater_born_.assign(tiles, -1.0e6f);
+            crater_seen_.assign(tiles, 0);
+        }
+        const auto now = static_cast<float>(GetTime());
+        for (int y = 0; y < map.height(); ++y) {
+            for (int x = 0; x < map.width(); ++x) {
+                if (map.terrain(x, y) != engine::Terrain::Crater) continue;
+                const size_t i = static_cast<size_t>(y * map.width() + x);
+                const auto packed = static_cast<uint8_t>(static_cast<uint8_t>(map.crater_kind(x, y)) | map.crater_from(x, y) << 4);
+                if (packed == crater_seen_[i]) continue;
+                crater_seen_[i] = packed;
+                if (!first) crater_born_[i] = now;
+            }
+        }
+        crater_revision_ = map.revision();
+    }
+
     remember(world);
 
     // Shells and rockets that went off since the last frame: where they
@@ -1372,11 +1394,6 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
                 const float v = 0.1f + 0.8f * static_cast<float>((h >> (i * 3 + 16)) & 7) / 7.0f;
                 DrawCircleV(at(u, v), 1.2f, lit({118, 108, 92, 255}));
             }
-            break;
-        }
-        case engine::Terrain::Crater: {
-            fill_ground_ellipse(at(0.5f, 0.5f), 0.32f, {120, 108, 88, 255});  // thrown-up earth
-            fill_ground_ellipse(at(0.5f, 0.5f), 0.2f, {58, 50, 42, 255});    // the hole
             break;
         }
         default:
@@ -2857,6 +2874,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
     if (map.width() != cache_width_ || map.height() != cache_height_) return;  // update() hasn't seen this map yet
     if (seen_terrain_.size() != static_cast<size_t>(map.width() * map.height())) return;
 
+    std::vector<engine::TilePos> craters;
     for_each_visible_tile(map, view, [&](int tx, int ty) {
         const float h00 = corner(tx, ty);
         const float h10 = corner(tx + 1, ty);
@@ -2881,6 +2899,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         g_light = state == kInView ? 1.0f : kFogLight;
         paint_ground(world, tx, ty, terrain, false);
         if (behind_relief(tx, ty)) return;  // the ground in front covers the rest
+        if (terrain == engine::Terrain::Crater) craters.push_back({tx, ty});
         if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
             terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit ||
             terrain == engine::Terrain::Wire || terrain == engine::Terrain::Hedgehogs) {
@@ -2910,8 +2929,160 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         }
         paint_ground(world, tx, ty, terrain, true);
     });
+    for (const engine::TilePos& t : craters) {
+        g_light = fog(world, t.x, t.y) == kInView ? 1.0f : kFogLight;
+        draw_crater(world, t.x, t.y);
+    }
     g_light = 1.0f;
     draw_spoil_gullies(world, view);
+}
+
+// A ragged patch of ground: an ellipse `rx` along `dir` by `ry` across it,
+// its edge wobbling by `rag`, laid on the terrain.
+void ground_blob(const engine::TileMap& map, Vector2 c, float rx, float ry, Vector2 dir, Color color, uint32_t seed,
+                 float rag) {
+    constexpr int kPoints = 14;
+    Vector2 ring[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const float a = static_cast<float>(i) * 6.2831853f / kPoints;
+        const float k = 1.0f + rag * (hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i * 7, i * 13 + 5)) - 0.5f) * 2.0f;
+        const float lx = std::cos(a) * rx * k;
+        const float ly = std::sin(a) * ry * k;
+        ring[i] = on_terrain(map, {c.x + dir.x * lx - dir.y * ly, c.y + dir.y * lx + dir.x * ly});
+    }
+    const Vector2 mid = on_terrain(map, c);
+    for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], color);
+}
+
+// A shell crater, by what made it. A mortar bomb's: small and shallow in a
+// star of streaks. A 122 mm shell's: a deep round bowl in a lip of thrown-up
+// earth, clods all round. A rocket's: long along its flight, the furrow it
+// ploughed coming in pointing back at the launcher, the earth thrown out to
+// the sides; now and then the rocket's tail sticking out of it, pointing the
+// same way. A heavy one's: wide, a terrace in its sides. The bowl is in
+// shadow on its upper left and lit on its lower right. Fresh: raw dark
+// earth, the bottom scorched, smoke curling up for a while; over the minutes
+// the earth dries paler and the grass creeps back over the lip; an old deep
+// one holds rainwater now and then. On a road, broken concrete instead of clods.
+void WorldRenderer::draw_crater(const engine::World& world, int tx, int ty) const {
+    using engine::CraterKind;
+    const engine::TileMap& map = world.map();
+    const size_t index = static_cast<size_t>(ty * map.width() + tx);
+    const uint32_t h = tile_hash(tx * 3 + 1, ty * 5 + 2);
+    auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 8) + i * 17, i * 29 + 3)); };
+    CraterKind kind = map.crater_kind(tx, ty);
+    if (kind == CraterKind::None) kind = CraterKind::Shell;
+    const float angle = static_cast<float>(map.crater_from(tx, ty)) * 0.7853982f + (rnd(0) - 0.5f) * 0.3f;
+    const Vector2 from{std::cos(angle), std::sin(angle)};  // towards the gun
+    const Vector2 c{static_cast<float>(tx) + 0.5f + (rnd(1) - 0.5f) * 0.14f, static_cast<float>(ty) + 0.5f + (rnd(2) - 0.5f) * 0.14f};
+    const float age = index < crater_born_.size() ? static_cast<float>(GetTime()) - crater_born_[index] : 1.0e6f;
+    const float old = std::clamp((age - 60.0f) / 400.0f, 0.0f, 1.0f);
+    auto road_at = [&](int x, int y) {
+        if (!map.contains_tile(x, y)) return false;
+        const engine::Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
+        return t == engine::Terrain::Road || t == engine::Terrain::Bridge;
+    };
+    const bool road = road_at(tx - 1, ty) || road_at(tx + 1, ty) || road_at(tx, ty - 1) || road_at(tx, ty + 1);
+
+    float r = 0.34f;
+    float stretch = 1.0f;
+    int clods = 12;
+    switch (kind) {
+        case CraterKind::Small: r = 0.2f; clods = 6; break;
+        case CraterKind::Rocket: r = 0.27f; stretch = 1.5f; clods = 12; break;
+        case CraterKind::Heavy: r = 0.5f; clods = 20; break;
+        default: break;
+    }
+    const Vector2 dir = kind == CraterKind::Rocket ? from : Vector2{1.0f, 0.0f};
+    const float rx = r * stretch;
+    const float ry = kind == CraterKind::Rocket ? r * 0.85f : r;
+    const Color soil = mix({86, 68, 50, 255}, {120, 106, 84, 255}, old);
+    const Color clod = mix({62, 48, 36, 255}, {104, 92, 72, 255}, old);
+    const Color bowl = mix({52, 42, 33, 255}, {84, 72, 57, 255}, old);
+    const Color wall = mix({102, 84, 62, 255}, {128, 114, 90, 255}, old);
+    const Color deep = mix({30, 25, 20, 255}, {64, 54, 44, 255}, old);
+    set_grain(grain_of(engine::Terrain::Crater));
+
+    // What it threw out.
+    if (kind == CraterKind::Small) {
+        for (int k = 0; k < 9; ++k) {
+            const float a = static_cast<float>(k) * 0.698f + (rnd(10 + k) - 0.5f) * 0.4f;
+            const Vector2 u{std::cos(a), std::sin(a)};
+            const float reach = r * (1.7f + 0.8f * rnd(20 + k));
+            DrawLineEx(on_terrain(map, {c.x + u.x * r * 0.7f, c.y + u.y * r * 0.7f}),
+                       on_terrain(map, {c.x + u.x * reach, c.y + u.y * reach}), 1.3f, lit(clod));
+        }
+    }
+    for (int k = 0; k < clods; ++k) {
+        float a = rnd(30 + k) * 6.2831853f;
+        if (kind == CraterKind::Rocket) {
+            // Out to the sides, like wings.
+            const float side = k % 2 == 0 ? 1.5708f : -1.5708f;
+            a = angle + side + (rnd(30 + k) - 0.5f) * 1.2f;
+        }
+        const float reach = r * (1.2f + 1.1f * rnd(50 + k));
+        const Vector2 p = on_terrain(map, {c.x + std::cos(a) * reach, c.y + std::sin(a) * reach});
+        const float size = (kind == CraterKind::Heavy ? 1.6f : 1.1f) + 1.2f * rnd(70 + k);
+        if (road) {
+            const Color slab = shade({132, 130, 124, 255}, 0.85f + 0.3f * rnd(90 + k));
+            fill_quad({p.x - size, p.y - size * 0.3f}, {p.x + size * 0.4f, p.y - size * 0.8f}, {p.x + size, p.y + size * 0.2f},
+                      {p.x - size * 0.3f, p.y + size * 0.6f}, slab);
+        } else {
+            disc(p, size, clod);
+            disc({p.x - size * 0.3f, p.y - size * 0.35f}, size * 0.45f, shade(clod, 1.3f));
+        }
+    }
+    // The lip, a heavy one's terrace, a rocket's furrow, the bowl lit on the far side, its bottom.
+    ground_blob(map, c, rx * 1.4f, ry * 1.4f, dir, soil, h, 0.25f);
+    if (kind == CraterKind::Rocket) {
+        ground_blob(map, {c.x + from.x * rx * 0.95f, c.y + from.y * rx * 0.95f}, rx * 0.6f, ry * 0.32f, from, bowl, h + 5, 0.15f);
+    }
+    if (kind == CraterKind::Heavy) ground_blob(map, c, rx * 1.15f, ry * 1.15f, dir, mix(soil, bowl, 0.5f), h + 7, 0.18f);
+    ground_blob(map, c, rx, ry, dir, bowl, h + 1, 0.15f);
+    ground_blob(map, {c.x + r * 0.12f, c.y + r * 0.12f}, rx * 0.7f, ry * 0.7f, dir, wall, h + 2, 0.14f);
+    ground_blob(map, {c.x - r * 0.06f, c.y - r * 0.06f}, rx * 0.52f, ry * 0.52f, dir, deep, h + 3, 0.14f);
+    if (old < 1.0f) {
+        // Scorched black at the bottom while it's fresh.
+        ground_blob(map, {c.x - r * 0.05f, c.y - r * 0.05f}, rx * 0.4f, ry * 0.4f, dir,
+                    ColorAlpha({20, 17, 15, 255}, 0.85f * (1.0f - old)), h + 4, 0.2f);
+    } else if (kind != CraterKind::Small && kind != CraterKind::Rocket && h % 3 == 0) {
+        // Rainwater in an old deep one.
+        ground_blob(map, {c.x - r * 0.05f, c.y - r * 0.05f}, rx * 0.46f, ry * 0.42f, dir, {70, 90, 98, 255}, h + 6, 0.1f);
+        const Vector2 glint = on_terrain(map, {c.x - r * 0.18f, c.y - r * 0.1f});
+        DrawLineEx(glint, {glint.x + 4.0f, glint.y}, 1.0f, lit({150, 170, 176, 255}));
+    }
+    // The grass creeping back over the lip.
+    const int tufts = static_cast<int>(old * 7.0f);
+    for (int k = 0; k < tufts; ++k) {
+        const float a = rnd(110 + k) * 6.2831853f;
+        const Vector2 p = on_terrain(map, {c.x + std::cos(a) * rx * 1.25f, c.y + std::sin(a) * ry * 1.25f});
+        for (int side = -1; side <= 1; ++side) {
+            DrawLineV(p, {p.x + static_cast<float>(side) * 1.6f, p.y - (side == 0 ? 4.0f : 2.8f)}, lit({88, 116, 56, 255}));
+        }
+    }
+    // A rocket's tail sticking out, pointing back along its flight.
+    if (kind == CraterKind::Rocket && h % 3 == 0) {
+        const Vector2 base = on_terrain(map, {c.x + from.x * 0.03f, c.y + from.y * 0.03f}, 1.0f);
+        const Vector2 end = on_terrain(map, {c.x + from.x * 0.16f, c.y + from.y * 0.16f}, 10.0f);
+        DrawLineEx(base, end, 3.2f, lit({64, 66, 60, 255}));
+        DrawLineEx({base.x - 1.0f, base.y}, {end.x - 1.0f, end.y}, 1.0f, lit({110, 112, 104, 255}));
+        const Vector2 side{-(end.y - base.y), end.x - base.x};
+        const float len = std::max(1.0f, std::sqrt(side.x * side.x + side.y * side.y));
+        for (const float s : {-1.0f, 1.0f}) {
+            DrawLineEx(end, {end.x + side.x / len * 3.0f * s, end.y + side.y / len * 3.0f * s + 1.5f}, 1.2f, lit({54, 56, 52, 255}));
+        }
+        disc(end, 1.6f, {36, 36, 34, 255});
+    }
+    set_grain({});
+    // Fresh: smoke curling up for half a minute.
+    if (age < 30.0f) {
+        const float fade = 1.0f - age / 30.0f;
+        for (int k = 0; k < 3; ++k) {
+            const float t = std::fmod(age * 0.5f + static_cast<float>(k) * 0.33f, 1.0f);
+            const Vector2 p = on_terrain(map, c, 3.0f + t * 30.0f);
+            DrawCircleV({p.x + t * 8.0f, p.y}, (2.5f + t * 7.0f) * (0.6f + r), ColorAlpha({70, 66, 62, 255}, (1.0f - t) * 0.45f * fade));
+        }
+    }
 }
 
 // Gullies the rain washed down the spoil tips: rays from the top to the foot,
