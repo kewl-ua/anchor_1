@@ -1,6 +1,6 @@
 # Anchor RTS
 
-Изометрическая компететив RTS в духе Age of Empires II, война около 2004 года. C++20 + raylib 6.0, детерминированный lockstep.
+Изометрическая компететив RTS в духе Age of Empires II, 2022 год без дронов. C++20 + raylib 6.0, детерминированный lockstep.
 
 Дизайн игры и план работ: [docs/DESIGN.md](docs/DESIGN.md).
 
