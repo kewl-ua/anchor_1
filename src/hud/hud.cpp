@@ -652,7 +652,21 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     // Fuel and rounds, or the cargo of a service vehicle.
     const char* supply = nullptr;
     Color supply_color = theme::kTextDim;
-    if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
+    if (def.deploy_time > 0) {
+        // A gun: set up or not, and how far along the bracketing is.
+        const char* stance = u.deployed ? "Deployed" : "Packed up";
+        if (u.deploy_work > 0) {
+            stance = TextFormat("%s %d%%", u.deployed ? "Packing up" : "Setting up",
+                                static_cast<int>(u.deploy_work * 100 / def.deploy_time));
+        }
+        const char* ranging = "not ranged in";
+        if (u.ranging_shots > 0) {
+            ranging = TextFormat("ranging shot %d (%d%% on target)", u.ranging_shots,
+                                 engine::kRangingChance[static_cast<size_t>(u.ranging_shots) - 1]);
+        }
+        supply = TextFormat("%s    Rounds %d / %d    %s", stance, u.rounds, def.rounds_capacity, ranging);
+        if (u.rounds <= 0) supply_color = theme::kDanger;
+    } else if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
         const int fuel = static_cast<int>(to_float(u.fuel));
         supply = TextFormat("Fuel %d / %d tiles    Rounds %d / %d", fuel, static_cast<int>(to_float(def.fuel_capacity)),
                             u.rounds, def.rounds_capacity);

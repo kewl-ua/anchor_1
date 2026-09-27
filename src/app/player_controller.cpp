@@ -183,6 +183,8 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Assault: return "Assault";
         case engine::UnitTypeId::FuelTanker: return "Tanker";
         case engine::UnitTypeId::AmmoTruck: return "Ammo truck";
+        case engine::UnitTypeId::Mortar: return "Mortar";
+        case engine::UnitTypeId::Howitzer: return "Howitzer";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -193,6 +195,7 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::InfantryBarracks: return "Infantry";
         case engine::StructureType::ArmorBarracks: return "Armor";
         case engine::StructureType::ReconBarracks: return "Recon";
+        case engine::StructureType::ArtilleryBarracks: return "Artillery";
         case engine::StructureType::Warehouse: return "Warehouse";
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
@@ -276,10 +279,12 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         // Ready as soon as one of them is; a switch shows what is loaded.
         float cooldown = 1.0f;
         bool alt_loaded = false;
+        bool deployed = false;
         for (engine::EntityId unit_id : selection_) {
             const engine::Unit* u = world.find_unit(unit_id);
             if (!u || u->type != *lead) continue;
             alt_loaded = u->round_type == 1;
+            deployed = u->deployed;
             const engine::Tick ready = u->ability_ready[i];
             const float left = ready > world.tick() && ability.cooldown > 0
                                    ? static_cast<float>(ready - world.tick()) / static_cast<float>(ability.cooldown)
@@ -288,6 +293,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         }
         const char* label = ability.label;
         if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
+        if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
         hud::CommandButton& b = put(i, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);

@@ -84,6 +84,21 @@ inline constexpr Tick kRefuelInterval = 4;
 inline constexpr Tick kRearmInterval = 8;
 inline constexpr Tick kRefillInterval = 2;  // loading at the depot
 
+// Artillery. Ranging (bracketing): the chance a shell lands on the aim point
+// on the 1st, 2nd and 3rd and later shots at the same target, and how far
+// off the others land. A new aim point this close to the last one is still
+// the same target. A target our scouts see is bracketed one step faster.
+inline constexpr std::array<int32_t, 3> kRangingChance = {17, 50, 95};
+inline constexpr std::array<Fixed, 3> kRangingSpread = {Fixed::from_int(4), Fixed::from_int(2), Fixed::from_int(1)};
+inline constexpr Fixed kOnTargetSpread = Fixed::from_ratio(3, 10);
+inline constexpr Fixed kSameTarget = Fixed::from_ratio(3, 2);
+// A gun's flash gives it away this long to whoever looks its way; an
+// observation post facing it sees the flash from twice its reach. Firing
+// from a village, the locals report it to the enemy wherever he is.
+inline constexpr Tick kGunRevealTicks = 6 * kTicksPerSecond;
+inline constexpr int32_t kFlashSectorPercent = 200;
+inline constexpr Tick kReportedTicks = 15 * kTicksPerSecond;
+
 // The tiles of a trench dug from a to b: a 4-connected line, so men can walk
 // along it, at most kMaxTrenchLength long.
 std::vector<TilePos> trench_line(TilePos a, TilePos b);
@@ -140,6 +155,13 @@ struct Unit {
     // Vehicles run out: fuel in tiles of driving, rounds for the main gun.
     Fixed fuel{};
     int32_t rounds = 0;
+
+    // Guns: set up or packed, and how far that is along; the point being
+    // bracketed and how many shots in.
+    bool deployed = false;
+    Tick deploy_work = 0;
+    FixedVec2 ranging_point{};
+    uint8_t ranging_shots = 0;
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -337,7 +359,14 @@ private:
         PlayerId owner;
         FixedVec2 from;
         std::vector<int32_t> tiles;
+        FixedVec2 dir{};     // where it looks
+        int32_t radius = 0;  // tiles
     };
+    // A gun that just fired and gives itself away to `player`: its flash seen
+    // by an observation post, or the locals reporting it from a village.
+    bool betrayed(PlayerId player, const Unit& gun) const;
+    // A point one of `player`'s scouts is looking at.
+    bool spotted_by_scouts(PlayerId player, FixedVec2 point) const;
     Fixed ground_at(FixedVec2 p) const;  // TileMap::surface_height, from cached corners
     bool fog_at(const std::array<std::vector<uint8_t>, kMaxPlayers>& grid, PlayerId player, TilePos t) const {
         if (player >= kMaxPlayers || grid[player].empty() || !map_.contains(t)) return false;
@@ -361,6 +390,13 @@ private:
     void refill(Unit& u);
     // A fireball: fuel or ammunition going up.
     void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire);
+
+    // Artillery (world_artillery.cpp). A step of setting up or packing up;
+    // true once done.
+    bool deploy_step(Unit& u);
+    bool pack_step(Unit& u);
+    void engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal);
+    void fire_indirect(Unit& u, FixedVec2 aim);
 
     // Movement. `formation` limits the speed to the group's slowest unit.
     std::shared_ptr<const FlowField> field_to(TilePos goal, MoveClass cls);

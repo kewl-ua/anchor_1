@@ -1036,6 +1036,16 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
     const Color color = theme::player_color(u.owner);
     const Color dark = shade(color, 0.55f);
 
+    if (u.type == engine::UnitTypeId::Mortar) {
+        // The tube on its base plate in front of the crewman: up when set up, on his back when not.
+        const Vector2 plate = {feet.x + iso_offset(facing).x * 0.25f, feet.y + iso_offset(facing).y * 0.25f};
+        if (u.deployed) {
+            DrawEllipse(static_cast<int>(plate.x), static_cast<int>(plate.y), 4.0f, 2.0f, {50, 52, 48, 255});
+            const Vector2 muzzle{plate.x + iso_offset(facing).x * 0.12f, plate.y - 10.0f};
+            DrawLineEx(plate, muzzle, 3.0f, {60, 66, 56, 255});
+        }
+    }
+
     DrawRectangleRounded({feet.x - 3.0f, feet.y - 13.0f, 6.0f, 12.0f}, 0.6f, 4, color);
     DrawCircleV({feet.x, feet.y - 15.5f}, 3.0f, shade(color, 1.25f));
 
@@ -1057,6 +1067,11 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
         case engine::UnitTypeId::Worker:
             length = 0.15f;
             thickness = 1.2f;
+            break;
+        case engine::UnitTypeId::Mortar:
+            length = u.deployed ? 0.1f : 0.2f;
+            thickness = u.deployed ? 1.2f : 3.0f;
+            weapon = {60, 66, 56, 255};
             break;
         default:
             break;
@@ -1096,6 +1111,28 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         return;
     }
 
+    if (u.type == engine::UnitTypeId::Howitzer) {
+        // A carriage on two wheels and a long barrel: set up, the trails
+        // spread behind and the barrel points up; packed, it trails behind
+        // for towing.
+        const Color steel = shade(color, 0.6f);
+        draw_box(map, ground, facing, 0.34f, 0.46f, 5.0f, shade(color, 0.8f));
+        const Vector2 hub = on_terrain(map, ground, 6.0f);
+        if (u.deployed) {
+            const Vector2 side{-facing.y, facing.x};
+            for (const float k : {-0.35f, 0.35f}) {
+                const Vector2 tail{ground.x - facing.x * 0.55f + side.x * k, ground.y - facing.y * 0.55f + side.y * k};
+                DrawLineEx(on_terrain(map, ground, 2.0f), on_terrain(map, tail), 2.0f, steel);
+            }
+            const Vector2 tip = on_terrain(map, {ground.x + facing.x * 0.45f, ground.y + facing.y * 0.45f}, 20.0f);
+            DrawLineEx(hub, tip, 3.0f, steel);
+        } else {
+            const Vector2 tip = on_terrain(map, {ground.x - facing.x * 0.6f, ground.y - facing.y * 0.6f}, 7.0f);
+            DrawLineEx(hub, tip, 3.0f, steel);
+        }
+        return;
+    }
+
     const bool tank = u.type == engine::UnitTypeId::Tank;
     const float length = tank ? 0.95f : 0.85f;
     const float width = tank ? 0.58f : 0.5f;
@@ -1127,8 +1164,18 @@ void WorldRenderer::draw_projectile(const engine::Projectile& p, float alpha) co
     const float len = std::hypot(dir.x, dir.y);
     dir = len > 0.0f ? Vector2{dir.x / len, dir.y / len} : Vector2{1.0f, 0.0f};
 
-    if (p.lobbed) {  // a grenade tumbling through the air
-        DrawCircleV(pos, 2.5f, {60, 64, 50, 255});
+    if (p.lobbed) {
+        if (p.weapon.indirect) {
+            // A shell high on its arc, with a faint trail just behind it.
+            const float back = std::max(0.0f, t - 0.04f);
+            const Vector2 g0{origin.x + (target.x - origin.x) * back, origin.y + (target.y - origin.y) * back};
+            float h0 = to_float(p.origin_height) + (to_float(p.target_height) - to_float(p.origin_height)) * back;
+            h0 += 4.0f * back * (1.0f - back) * std::max(1.0f, total * 0.3f);
+            DrawLineEx(iso::project(g0, h0), pos, 2.0f, {200, 200, 190, 110});
+            DrawCircleV(pos, 3.0f, {40, 42, 38, 255});
+            return;
+        }
+        DrawCircleV(pos, 2.5f, {60, 64, 50, 255});  // a grenade tumbling through the air
         return;
     }
     switch (p.weapon.damage_type) {

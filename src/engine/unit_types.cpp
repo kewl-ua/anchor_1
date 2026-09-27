@@ -241,6 +241,51 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .abilities = {AbilityId::Refill},
         .ability_count = 1,
     },
+    {
+        // Plunging fire: the one that finds men in trenches.
+        .name = "Mortar crew",
+        .short_name = "MOR",
+        .max_hp = 45,
+        .armor = {0, 0, 45},
+        .speed = tiles_per_second(4, 5),
+        .radius = tiles(1, 4),
+        .sight = tiles(6),
+        .mass = 2,
+        .vehicle = false,
+        .weapon = {.name = "82mm mortar bomb", .damage = 45, .damage_type = DamageType::Explosive,
+                   .range = tiles(14), .reload = seconds(3), .projectile_speed = tiles_per_second(7),
+                   .splash_radius = tiles(1), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
+                   .min_range = tiles(3)},
+        .cost = {2, 50, 0, 40, 0},
+        .train_time = seconds(20),
+        .rounds_capacity = 40,
+        .abilities = {AbilityId::Deploy},
+        .ability_count = 1,
+        .deploy_time = seconds(3),
+    },
+    {
+        // Far-reaching and blind: it hits what someone else sees for it.
+        .name = "Howitzer D-30",
+        .short_name = "HOW",
+        .max_hp = 160,
+        .armor = {8, 10, 10},
+        .speed = tiles_per_second(1),
+        .radius = tiles(2, 5),
+        .sight = tiles(5),
+        .mass = 12,
+        .vehicle = true,
+        .wheeled = true,  // towed
+        .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
+                   .range = tiles(26), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
+                   .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
+                   .min_range = tiles(5)},
+        .cost = {4, 0, 150, 60, 30},
+        .train_time = seconds(40),
+        .rounds_capacity = 30,
+        .abilities = {AbilityId::Deploy},
+        .ability_count = 1,
+        .deploy_time = seconds(8),
+    },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -283,6 +328,8 @@ constexpr AbilityDef kAbilities[] = {
                 .reload = 0, .projectile_speed = tiles_per_second(8), .splash_radius = tiles(1),
                 .accuracy = 85, .miss_spread = tiles(1, 2)}},
     {.name = "Refill at the depot (fuel or ammunition, from the stock)", .label = "Refill",
+     .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
+    {.name = "Deploy to fire / pack up to move (it also happens by itself)", .label = "Deploy",
      .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
@@ -330,6 +377,9 @@ constexpr StructureDef kStructureTypes[] = {
     {.name = "Parapet", .max_hp = 150, .armor = {0, 10, 60}},
     // Logs and earth: holds against mortars and light shells, not against heavy ones.
     {.name = "Dugout", .max_hp = 1200, .armor = {0, 30, 80}, .capacity = 8},
+    {.name = "Artillery barracks", .max_hp = 1800, .armor = {0, 15, 60},
+     .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 200, 0, 50}, .build_time = seconds(40),
+     .roster = {UnitTypeId::Mortar, UnitTypeId::Howitzer}, .roster_size = 2},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

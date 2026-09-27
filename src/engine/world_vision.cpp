@@ -240,7 +240,7 @@ void World::update_vision() {
         const int64_t dy = (u.order_point - from).y.raw >> 8;
         if (dx == 0 && dy == 0) continue;
         const int32_t radius = def.sector_range.to_int() + kSightPerLevel * map_.elevation(tile.x, tile.y);
-        Sector sector{u.owner, from, {}};
+        Sector sector{u.owner, from, {}, u.order_point - from, radius};
         for (int32_t i : sight_from(tile, radius, eye_height(def), 0)) {
             const int64_t tx = i % map_.width() - tile.x;
             const int64_t ty = i / map_.width() - tile.y;
@@ -261,14 +261,17 @@ void World::update_vision() {
         u.seen_by = 0;
         const Structure* house = find_structure(u.inside);
         const TilePos tile = map_.clamp_tile(tile_of(u.pos));
-        const bool fired = u.last_shot_tick != kNeverFired && tick_ - u.last_shot_tick < kRevealTicks;
+        const Tick reveal = weapon_of(u).indirect ? kGunRevealTicks : kRevealTicks;
+        const bool fired = u.last_shot_tick != kNeverFired && tick_ - u.last_shot_tick < reveal;
         const bool hidden = in_cover(map_, u) && !fired;
         for (size_t p = 0; p < kMaxPlayers; ++p) {
             const auto player = static_cast<PlayerId>(p);
             if (!present[p] || player == u.owner) continue;
             // A garrison is where its house is, and the house is seen if any wall is.
             const bool in_view = house ? sees(player, *house) : visible(player, tile);
-            if ((in_view && !hidden) || spotted(player, u)) u.seen_by = static_cast<uint8_t>(u.seen_by | (1u << p));
+            if ((in_view && !hidden) || spotted(player, u) || betrayed(player, u)) {
+                u.seen_by = static_cast<uint8_t>(u.seen_by | (1u << p));
+            }
         }
     }
 }

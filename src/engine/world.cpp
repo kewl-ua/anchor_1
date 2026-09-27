@@ -454,6 +454,7 @@ void World::update_unit(Unit& u) {
         case Order::Idle:
             if (def_of(u).supplies != Resource::Count) serve(u);
             if (!is_armed(def_of(u))) break;
+            if (weapon_of(u).indirect) break;  // guns fire when told to, not at whatever shows up
             if (const Unit* target = find_enemy_in_sight(u)) engage(u, *target);
             break;
 
@@ -546,6 +547,7 @@ const Unit* World::find_enemy_in_sight(Unit& u) {
 
 void World::engage(Unit& u, const Unit& target) {
     u.engaged = target.id;
+    if (weapon_of(u).indirect) return engage_indirect(u, target.pos, u.chase_path, tile_of(target.pos));
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius + def_of(target).radius;
     const FixedVec2 to_target = target.pos - u.pos;
@@ -564,6 +566,7 @@ void World::engage(Unit& u, const Unit& target) {
 }
 
 void World::engage_ground(Unit& u) {
+    if (weapon_of(u).indirect) return engage_indirect(u, u.order_point, u.order_path, u.order_goal);
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius;
     const FixedVec2 to_point = u.order_point - u.pos;
@@ -642,6 +645,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     const UnitTypeDef& def = def_of(u);
     const bool thirsty = def.fuel_capacity.raw > 0;
     if (thirsty && u.fuel.raw <= 0) return Step::Blocked;  // out of fuel: stuck where it stands
+    if (u.deployed && !pack_step(u)) return Step::Moved;   // a gun packs up before it goes anywhere
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
     // Terrain slows down (forest for infantry, villages for vehicles...).
@@ -654,6 +658,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     if (!move_to(u, next)) return Step::Blocked;
     u.moving = true;
     if (thirsty) u.fuel = max(Fixed{}, u.fuel - (u.pos - before).length());
+    u.deploy_work = 0;  // setting up starts over wherever it stops
     return u.pos == point ? Step::Arrived : Step::Moved;
 }
 
@@ -1130,6 +1135,10 @@ uint64_t World::checksum() const {
         mix(u.still);
         mix_fixed(u.fuel);
         mix(static_cast<uint32_t>(u.rounds));
+        mix(u.deployed ? 1 : 0);
+        mix(u.deploy_work);
+        mix_vec(u.ranging_point);
+        mix(u.ranging_shots);
     }
     for (const Structure& s : structures_) {
         mix(s.id);

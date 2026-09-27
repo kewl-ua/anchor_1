@@ -120,8 +120,8 @@ void World::apply_ability(const Command& cmd) {
         leave_structure(*u);
         u->order = Order::Ability;
         u->order_ability = id;
-        // A foxhole is dug where the man stands; a refill needs no point at all.
-        const bool here = id == AbilityId::DigFoxhole || id == AbilityId::Refill;
+        // A foxhole is dug where the man stands; a refill or a deploy needs no point at all.
+        const bool here = id == AbilityId::DigFoxhole || id == AbilityId::Refill || id == AbilityId::Deploy;
         u->order_point = here ? u->pos : clamp_to_map(cmd.target, Fixed{});
         u->order_point2 = clamp_to_map(cmd.target_end, Fixed{});
         u->order_goal = map_.clamp_tile(tile_of(u->order_point));
@@ -131,6 +131,7 @@ void World::apply_ability(const Command& cmd) {
         u->order_target = 0;
         u->engaged = 0;
         u->shots_left = id == AbilityId::MgSweep ? kSweepShots : 0;
+        if (id == AbilityId::Deploy) u->shots_left = u->deployed ? 0 : 1;  // which way: set up or pack up
         u->work = 0;
     }
 }
@@ -253,6 +254,10 @@ void World::update_ability(Unit& u) {
 
         case AbilityId::Refill:
             return refill(u);
+
+        case AbilityId::Deploy:
+            if (u.shots_left == 1 ? deploy_step(u) : pack_step(u)) finish_ability(u);
+            return;
 
         case AbilityId::SwitchAmmo:
         case AbilityId::Count:

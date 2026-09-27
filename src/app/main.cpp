@@ -41,8 +41,9 @@ struct Options {
     // nearest house and the tanks shell the next one until it collapses.
     // Also `economy`, `build`, `logistics` (depots by the station, supply
     // trucks, the first train), `recon` (scouts' observation posts), `skills`
-    // (tank and IFV skills), `works` (riflemen dig in) and `supply` (offline:
-    // dry tanks, a tanker and an ammunition truck).
+    // (tank and IFV skills), `works` (riflemen dig in), `supply` (offline:
+    // dry tanks, a tanker and an ammunition truck) and `artillery` (offline:
+    // a howitzer and a mortar firing, a scout spotting).
     std::string scene;
 };
 
@@ -236,6 +237,27 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         game.submit({.type = engine::CommandType::Move, .units = service, .target = render::to_fixed_vec2(army)});
         game.select_units({tank});
         return army;
+    }
+
+    if (options.scene == "artillery" && options.mode == Options::Mode::Offline) {
+        // Offline: a howitzer and a mortar join the army; a scout goes out on
+        // an observation post; the guns open up on the ground ahead, the
+        // howitzer blind. The howitzer stays selected.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        const engine::EntityId howitzer = w.spawn_unit(me, engine::UnitTypeId::Howitzer, ahead(6.0f, 1.0f));
+        const engine::EntityId mortar = w.spawn_unit(me, engine::UnitTypeId::Mortar, ahead(9.0f, -1.0f));
+        const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, ahead(13.0f, 0.0f));
+        game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(25.0f, 0.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(24.0f, 2.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {mortar}, .target = ahead(19.0f, -2.0f)});
+        game.select_units({howitzer});
+        return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
     if (options.scene == "build") {

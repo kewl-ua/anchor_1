@@ -64,12 +64,25 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
     setup_demo_scenario(sim.world_for_setup());
     const int32_t center = sim.world().map().width() / 2;
     constexpr int kMelee = 2400;  // by now the armies have met
+    // Each side's guns shell the middle of the map all along.
+    std::array<std::vector<EntityId>, 2> guns;
+    for (PlayerId p = 0; p < 2; ++p) {
+        const FixedVec2 base = demo_base_position(sim.world().map().width(), p);
+        const Fixed step = Fixed::from_int(p == 0 ? 8 : -8);
+        guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Howitzer, {base.x + step, base.y - step}));
+        guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Mortar, {base.x + step, base.y}));
+    }
 
     std::vector<uint64_t> checksums;
     for (int t = 0; t < ticks; ++t) {
         if (t == 0) {
             issue(sim, make_order(CommandType::AttackMove, 0, units_of(sim.world(), 0), center, center));
             issue(sim, make_order(CommandType::AttackMove, 1, units_of(sim.world(), 1), center, center));
+        }
+        if (t == 5) {
+            for (PlayerId p = 0; p < 2; ++p) {
+                issue(sim, make_order(CommandType::AttackGround, p, guns[p], center + (p == 0 ? -10 : 10), center));
+            }
         }
         if (t == 1) {
             // Meanwhile the rear troops cut wood behind each base and the
@@ -1700,6 +1713,167 @@ void test_tanker_goes_up_in_flames() {
     CHECK(!neighbour_hurt(0));
 }
 
+// --- Artillery -----------------------------------------------------------------
+
+Fixed abs_fixed(Fixed f) { return f.raw < 0 ? Fixed::from_raw(-f.raw) : f; }
+
+// Where a fire mission's shells come down, in firing order.
+std::vector<FixedVec2> shell_landings(Simulation& sim, int ticks) {
+    std::vector<FixedVec2> landings;
+    uint32_t last = 0;
+    for (int i = 0; i < ticks; ++i) {
+        sim.step();
+        for (const Projectile& p : sim.world().projectiles()) {
+            if (p.lobbed && p.id > last) {
+                landings.push_back(p.target);
+                last = p.id;
+            }
+        }
+    }
+    return landings;
+}
+
+bool on_the_spot(FixedVec2 landing, FixedVec2 aim) {
+    const Fixed close = kOnTargetSpread + Fixed::from_ratio(1, 100);
+    return abs_fixed(landing.x - aim.x) <= close && abs_fixed(landing.y - aim.y) <= close;
+}
+
+// On-target shells by shot number (1st, 2nd, 3rd) over 100 fire missions of
+// a mortar at (5, 10) on (15, 10); `scout` puts one of ours next to the target.
+std::array<int, 3> bracketing(bool scout) {
+    std::array<int, 3> on{};
+    for (uint64_t seed = 1; seed <= 100; ++seed) {
+        Simulation sim(seed, TileMap(30, 20));
+        const EntityId mortar = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+        if (scout) sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at(17, 12));
+        sim.schedule(0, fire_at(0, {mortar}, 15, 10));
+        const std::vector<FixedVec2> landings = shell_landings(sim, 300);
+        CHECK(landings.size() >= 3);
+        for (size_t i = 0; i < 3 && i < landings.size(); ++i) on[i] += on_the_spot(landings[i], at(15, 10)) ? 1 : 0;
+    }
+    return on;
+}
+
+// Bracketing: 17%, 50%, then 95% of the shells on the aim point.
+void test_artillery_brackets_its_target() {
+    const std::array<int, 3> on = bracketing(false);
+    CHECK(on[0] >= 5 && on[0] <= 30);
+    CHECK(on[1] >= 35 && on[1] <= 65);
+    CHECK(on[2] >= 85);
+    // A scout looking at the target corrects the fire: a step ahead.
+    const std::array<int, 3> spotted = bracketing(true);
+    CHECK(spotted[0] >= 35 && spotted[0] <= 65);
+    CHECK(spotted[1] >= 85);
+}
+
+// The same target (a new aim point close to the last) keeps the ranging; a
+// new one starts over; the first misses land far, the later ones close.
+void test_ranging_follows_the_target() {
+    Simulation sim(4, TileMap(40, 20));
+    const EntityId mortar = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    sim.schedule(0, fire_at(0, {mortar}, 15, 10));
+    shell_landings(sim, 300);
+    CHECK(sim.world().find_unit(mortar)->ranging_shots == 3);
+    issue(sim, fire_at(0, {mortar}, 16, 10));  // a tile along: still the same target
+    shell_landings(sim, 80);
+    CHECK(sim.world().find_unit(mortar)->ranging_shots == 3);
+    issue(sim, fire_at(0, {mortar}, 12, 16));  // somewhere else: from scratch
+    const std::vector<FixedVec2> landings = shell_landings(sim, 70);
+    CHECK(sim.world().find_unit(mortar)->ranging_shots == 1);
+    CHECK(!landings.empty());
+
+    // Misses of a first shot scatter up to 4 tiles, of a third up to 1.
+    Fixed widest_first{};
+    Fixed widest_third{};
+    for (uint64_t seed = 1; seed <= 30; ++seed) {
+        Simulation s(seed, TileMap(30, 20));
+        const EntityId m = s.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+        s.schedule(0, fire_at(0, {m}, 15, 10));
+        const std::vector<FixedVec2> l = shell_landings(s, 300);
+        if (l.size() < 3) continue;
+        widest_first = max(widest_first, max(abs_fixed(l[0].x - Fixed::from_int(15)), abs_fixed(l[0].y - Fixed::from_int(10))));
+        widest_third = max(widest_third, max(abs_fixed(l[2].x - Fixed::from_int(15)), abs_fixed(l[2].y - Fixed::from_int(10))));
+    }
+    CHECK(widest_first > Fixed::from_int(2) && widest_first <= kRangingSpread[0]);
+    CHECK(widest_third <= kRangingSpread[2]);
+}
+
+// A howitzer sets up before it fires and packs up before it moves.
+void test_guns_deploy_and_pack_up() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(5, 10));
+    const Tick setup = unit_type(UnitTypeId::Howitzer).deploy_time;
+    sim.schedule(0, fire_at(0, {gun}, 25, 10));
+    for (Tick i = 0; i + 2 < setup; ++i) sim.step();
+    CHECK(sim.world().find_unit(gun)->last_shot_tick == kNeverFired);
+    CHECK(!sim.world().find_unit(gun)->deployed);
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(sim.world().find_unit(gun)->deployed);
+    CHECK(sim.world().find_unit(gun)->last_shot_tick != kNeverFired);
+
+    const FixedVec2 set_up_at = sim.world().find_unit(gun)->pos;
+    issue(sim, make_move(0, {gun}, 5, 18));
+    for (Tick i = 0; i + 2 < setup; ++i) sim.step();
+    CHECK(sim.world().find_unit(gun)->pos == set_up_at);  // still packing up
+    for (int i = 0; i < 40; ++i) sim.step();
+    CHECK(!sim.world().find_unit(gun)->deployed);
+    CHECK(sim.world().find_unit(gun)->pos != set_up_at);
+}
+
+// Nothing closer than the minimum range, and no firing at whatever shows up:
+// guns fire when told to.
+void test_guns_hold_fire_unless_ordered() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId mortar = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    sim.schedule(0, fire_at(0, {mortar}, 6, 10));  // too close to lob at
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(sim.world().find_unit(mortar)->last_shot_tick == kNeverFired);
+
+    Simulation idle(1, TileMap(40, 20));
+    const EntityId gun = idle.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    idle.world_for_setup().unit_for_setup(gun)->deployed = true;
+    idle.world_for_setup().spawn_unit(1, UnitTypeId::Truck, at(10, 10));  // in plain sight and range
+    for (int i = 0; i < 200; ++i) idle.step();
+    CHECK(idle.world().find_unit(gun)->last_shot_tick == kNeverFired);
+}
+
+// A gun far behind the lines stays hidden when it fires; from a village the
+// locals report it for a while; an observation post facing it sees the
+// flash from twice its reach.
+void test_firing_guns_give_themselves_away() {
+    auto seen_after_firing = [](bool village, bool post, Tick wait_after) {
+        TileMap map(60, 20);
+        if (village) {
+            for (int y = 8; y <= 12; ++y) {
+                for (int x = 38; x <= 42; ++x) map.set_terrain(x, y, Terrain::Urban);
+            }
+        }
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, at_half(81, 21));  // (40.5, 10.5)
+        w.spawn_unit(1, UnitTypeId::Rifleman, at(3, 3));  // the enemy, far away
+        if (post) {
+            const EntityId scout = w.spawn_unit(1, UnitTypeId::Scout, at_half(31, 21));  // 25 tiles off
+            sim.schedule(0, observe(1, {scout}, 40, 10));
+        }
+        sim.schedule(0, fire_at(0, {mortar}, 52, 10));
+        bool before = false;
+        for (int i = 0; i < 400 && sim.world().find_unit(mortar)->last_shot_tick == kNeverFired; ++i) {
+            sim.step();
+            before = before || sim.world().sees(1, *sim.world().find_unit(mortar));
+        }
+        CHECK(!before);
+        issue(sim, {.type = CommandType::Stop, .player = 0, .units = {mortar}});  // one shot, then quiet
+        for (Tick i = 0; i < wait_after; ++i) sim.step();
+        return sim.world().sees(1, *sim.world().find_unit(mortar));
+    };
+    CHECK(!seen_after_firing(false, false, 2 * kVisionInterval));
+    CHECK(seen_after_firing(true, false, 2 * kVisionInterval));   // the locals tell
+    CHECK(!seen_after_firing(true, false, kReportedTicks + 2 * kVisionInterval));
+    CHECK(seen_after_firing(false, true, 2 * kVisionInterval));   // the flash
+    CHECK(!seen_after_firing(false, true, kGunRevealTicks + 2 * kVisionInterval));
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -1835,6 +2009,11 @@ int main() {
     test_out_of_rounds_until_rearmed();
     test_service_vehicles_refill_at_depots();
     test_tanker_goes_up_in_flames();
+    test_artillery_brackets_its_target();
+    test_ranging_follows_the_target();
+    test_guns_deploy_and_pack_up();
+    test_guns_hold_fire_unless_ordered();
+    test_firing_guns_give_themselves_away();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

@@ -29,6 +29,7 @@ enum class StructureType : uint8_t {
     Foxhole,
     Parapet,           // on open ground; on a trench or foxhole it is part of that
     Dugout,            // a foxhole upgraded into a shelter
+    ArtilleryBarracks, // hires mortars and howitzers
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -60,6 +61,7 @@ inline constexpr StructureType kBuildable[] = {
     StructureType::InfantryBarracks,
     StructureType::ArmorBarracks,
     StructureType::ReconBarracks,
+    StructureType::ArtilleryBarracks,
     StructureType::Warehouse,
     StructureType::AmmoDepot,
     StructureType::FuelDepot,

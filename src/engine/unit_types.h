@@ -32,6 +32,10 @@ struct WeaponDef {
     Fixed splash_radius;
     uint8_t accuracy;  // percent; a miss lands up to miss_spread tiles off
     Fixed miss_spread;
+    // Artillery: lobbed high over everything at a point, bracketing it in
+    // (see kRangingChance) instead of accuracy; nothing closer than min_range.
+    bool indirect = false;
+    Fixed min_range{};
 };
 
 // Skills, used with a command-grid button. Each unit type lists its own.
@@ -45,6 +49,7 @@ enum class AbilityId : uint8_t {
     BuildParapet,  // rifleman: throw up a parapet facing a direction
     ThrowGrenade,  // assault trooper: a hand grenade, into a trench, a dugout, a house
     Refill,        // fuel tanker, ammo truck: load up at the fuel or ammunition depot
+    Deploy,        // guns: set up to fire, or pack up to move
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -101,6 +106,8 @@ struct UnitTypeDef {
     WeaponDef alt_weapon{};
     std::array<AbilityId, kMaxAbilities> abilities{};
     uint8_t ability_count = 0;
+    // Guns: set up before firing, packed up before moving, like a trebuchet.
+    Tick deploy_time = 0;
 };
 
 enum class UnitTypeId : uint8_t {
@@ -115,6 +122,8 @@ enum class UnitTypeId : uint8_t {
     Assault,  // assault trooper: close combat, storming trenches and houses
     FuelTanker,  // refuels vehicles; burns when hit
     AmmoTruck,   // brings rounds to vehicles; its load goes off when hit
+    Mortar,      // 82mm mortar crew: plunging fire into trenches
+    Howitzer,    // 122mm towed howitzer: long range, needs spotters
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
