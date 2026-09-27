@@ -1398,6 +1398,7 @@ void test_rear_troops_retrain_as_riflemen() {
         const Unit* u = sim.world().find_unit(id);
         CHECK(u && u->inside == 0 && u->order == Order::Idle);
         if (u && u->type == UnitTypeId::Rifleman) ++riflemen;
+        if (u && u->type == UnitTypeId::Rifleman) CHECK(u->rounds == unit_type(UnitTypeId::Rifleman).rounds_capacity);
         if (u && u->type == UnitTypeId::Worker) ++workers;
     }
     CHECK(riflemen == 1 && workers == 1);  // ammo for one only
@@ -1666,6 +1667,138 @@ void test_trucks_assigned_to_a_depot() {
     CHECK(food.world().find_unit(loaded)->haul_depot == depot);
 }
 
+// --- Ammunition at combat positions ---
+
+Command attach(PlayerId player, std::vector<EntityId> vehicles, EntityId unit);  // below
+
+// A rifleman carries so many rounds; once they're gone he holds fire.
+void test_infantry_runs_out_of_rounds() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(10, 10));
+    const EntityId truck = sim.world_for_setup().spawn_unit(1, UnitTypeId::Truck, at(14, 10));
+    sim.world_for_setup().unit_for_setup(truck)->hp = 100000;
+    sim.world_for_setup().unit_for_setup(rifle)->rounds = 5;
+    issue(sim, attack_order(0, {rifle}, truck));
+    for (int i = 0; i < 400; ++i) sim.step();
+    const Unit* r = sim.world().find_unit(rifle);
+    CHECK(r->rounds == 0);
+    const Tick last = r->last_shot_tick;
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(rifle)->last_shot_tick == last);  // silent since
+}
+
+// A trench tile at (20, 10), a gun pit at (30, 10); an ammunition depot and
+// ammunition in stock.
+Simulation positions_sim() {
+    TileMap map(48, 24);
+    map.set_terrain(20, 10, Terrain::Trench);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::Trench, 0, {20, 10}, 1, 1);
+    w.place_structure(StructureType::GunPit, 0, {30, 10}, 1, 1);
+    w.place_structure(StructureType::AmmoDepot, 0, {4, 4}, 2, 2);
+    w.set_stock(0, {0, 100, 0, 200, 0});
+    return sim;
+}
+
+// An ammunition truck keeps a position stocked: its own load first, then
+// from the depot, until the position is full; men at it (but not farther
+// off, and not the enemy's) take their rounds from it.
+void test_positions_hold_ammunition() {
+    Simulation sim = positions_sim();
+    World& w = sim.world_for_setup();
+    const EntityId trench = sim.world().structure_at({20, 10})->id;
+    const EntityId pit = sim.world().structure_at({30, 10})->id;
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(16, 14));
+    w.unit_for_setup(truck)->carrying = 10;
+    const int32_t trench_room = structure_type(StructureType::Trench).cache_capacity;
+    issue(sim, attach(0, {truck}, trench));
+    for (int i = 0; i < 3000 && sim.world().find_structure(trench)->cache < trench_room; ++i) sim.step();
+    CHECK(sim.world().find_structure(trench)->cache == trench_room);
+    CHECK(sim.world().find_structure(trench)->cache_owner == 0);
+    CHECK(sim.world().find_unit(truck)->order == Order::Supply);
+    CHECK(stock_of(sim, Resource::Ammo) < 200);  // it went back to the depot for more
+
+    // A rifleman out of rounds in the trench fills up from it; one farther off doesn't.
+    const EntityId in = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, tile_center({20, 10}));
+    const EntityId out = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(20, 17));
+    const EntityId enemy = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(22, 11));
+    sim.world_for_setup().unit_for_setup(in)->rounds = 0;
+    sim.world_for_setup().unit_for_setup(out)->rounds = 0;
+    sim.world_for_setup().unit_for_setup(enemy)->rounds = 0;
+    issue(sim, make_order(CommandType::Stop, 0, {in, out}, 0, 0));
+    for (Tick i = 0; i < 10 * kRearmInterval; ++i) sim.step();
+    CHECK(sim.world().find_unit(in)->rounds == unit_type(UnitTypeId::Rifleman).rounds_capacity);
+    CHECK(sim.world().find_unit(out)->rounds == 0);
+    CHECK(!sim.world().find_unit(enemy) || sim.world().find_unit(enemy)->rounds == 0);
+    // The truck stands by and tops the position up again.
+    for (int i = 0; i < 3000 && sim.world().find_structure(trench)->cache < trench_room; ++i) sim.step();
+    CHECK(sim.world().find_structure(trench)->cache == trench_room);
+
+    // A mortar at its gun pit takes its bombs from the pit's stock.
+    Simulation guns = positions_sim();
+    const EntityId stocker = guns.world_for_setup().spawn_unit(0, UnitTypeId::AmmoTruck, at(26, 14));
+    const EntityId mortar = guns.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, tile_center({30, 10}));
+    guns.world_for_setup().unit_for_setup(mortar)->rounds = 0;
+    guns.world_for_setup().unit_for_setup(stocker)->carrying = 100;
+    issue(guns, attach(0, {stocker}, guns.world().structure_at({30, 10})->id));
+    for (int i = 0; i < 1500 && guns.world().find_unit(mortar)->rounds < unit_type(UnitTypeId::Mortar).rounds_capacity; ++i) {
+        guns.step();
+    }
+    CHECK(guns.world().find_unit(mortar)->rounds == unit_type(UnitTypeId::Mortar).rounds_capacity);
+    (void)pit;
+
+    // What's drawn is gone from the position: four units for a rifleman's 120 rounds.
+    Simulation drawn = positions_sim();
+    Structure* t = drawn.world_for_setup().structure_for_setup(drawn.world().structure_at({20, 10})->id);
+    t->cache = 10;
+    t->cache_owner = 0;
+    const EntityId empty = drawn.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, tile_center({20, 10}));
+    drawn.world_for_setup().unit_for_setup(empty)->rounds = 0;
+    for (Tick i = 0; i < 10 * kRearmInterval; ++i) drawn.step();
+    const int32_t per_supply = unit_type(UnitTypeId::Rifleman).rounds_per_supply;
+    CHECK(drawn.world().structure_at({20, 10})->cache == 10 - unit_type(UnitTypeId::Rifleman).rounds_capacity / per_supply);
+}
+
+// Only combat positions hold ammunition, and not ones the enemy holds or has
+// stocked; lose the position and the truck is free.
+void test_stocking_rules() {
+    Simulation sim(1, village_map());
+    World& w = sim.world_for_setup();
+    const EntityId house = house_id(sim);
+    const EntityId dugout = w.place_structure(StructureType::Dugout, 0, {30, 5}, 1, 1);
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(25, 8));
+    const EntityId enemy = w.spawn_unit(1, UnitTypeId::Rifleman, at(31, 7));
+    CHECK(!sim.world().can_stock(*sim.world().find_structure(house), 0));  // a house is no position
+    issue(sim, garrison(1, {enemy}, dugout));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_structure(dugout)->owner == 1);
+    CHECK(!sim.world().can_stock(*sim.world().find_structure(dugout), 0) && sim.world().can_stock(*sim.world().find_structure(dugout), 1));
+    issue(sim, attach(0, {truck}, dugout));
+    issue(sim, attach(0, {truck}, house));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(truck)->order == Order::Idle);
+
+    // Ours: stocked, then shelled flat: the truck is free again.
+    Simulation lost = positions_sim();
+    const EntityId trench = lost.world().structure_at({20, 10})->id;
+    const EntityId stocker = lost.world_for_setup().spawn_unit(0, UnitTypeId::AmmoTruck, at(16, 14));
+    issue(lost, attach(0, {stocker}, trench));
+    for (int i = 0; i < 400; ++i) lost.step();
+    CHECK(lost.world().find_structure(trench)->cache > 0);
+    CHECK(!lost.world().can_stock(*lost.world().find_structure(trench), 1));  // our stock in it
+    // An empty dugout with our stock in it is held by nobody, but it's ours to stock, not theirs.
+    const EntityId empty_dugout = lost.world_for_setup().place_structure(StructureType::Dugout, 0, {40, 5}, 1, 1);
+    Structure* d = lost.world_for_setup().structure_for_setup(empty_dugout);
+    d->owner = kNoOwner;
+    d->cache = 5;
+    d->cache_owner = 0;
+    CHECK(lost.world().can_stock(*d, 0) && !lost.world().can_stock(*d, 1));
+    lost.world_for_setup().structure_for_setup(trench)->hp = 0;
+    for (int i = 0; i < 3; ++i) lost.step();
+    CHECK(lost.world().find_unit(stocker)->order == Order::Idle);
+}
+
 // --- Rations ---
 
 // Every ration time each man takes his ration from the stock: a rifleman
@@ -1748,7 +1881,7 @@ void test_attached_supply() {
     w.place_structure(StructureType::AmmoDepot, 0, {4, 4}, 2, 2);
     const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(20, 15));
     const EntityId truck = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(12, 20));
-    const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(14, 20));
+    const EntityId scout = w.spawn_unit(0, UnitTypeId::Truck, at(14, 20));  // no gun, nothing to load
     const EntityId enemy = w.spawn_unit(1, UnitTypeId::Tank, at(50, 25));
     w.unit_for_setup(tank)->rounds = 0;
     w.unit_for_setup(enemy)->rounds = 0;
@@ -3531,6 +3664,9 @@ int main() {
     test_taking_over_rules();
     test_attached_supply();
     test_rations();
+    test_infantry_runs_out_of_rounds();
+    test_positions_hold_ammunition();
+    test_stocking_rules();
     test_hunger_weakens_the_army();
     test_radio_call_for_supply();
     test_rear_troops_unload_faster();

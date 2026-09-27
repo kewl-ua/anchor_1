@@ -630,6 +630,10 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
     const float hp_x = area.x + area.width - 90 - 10 - static_cast<float>(MeasureText(hp, kCardFontSize));
     draw_text(hp, hp_x, area.y + 3, kCardFontSize, theme::kText);
     const char* name = role == s.type ? def.name : TextFormat("%s (village building)", engine::structure_type(role).name);
+    if (def.cache_capacity > 0) {
+        name = TextFormat("%s   ammunition %d / %d", name, s.cache_owner == s.owner || s.cache == 0 ? s.cache : 0,
+                          def.cache_capacity);
+    }
     draw_text(name, area.x, area.y, fitting_font(name, kFontSize, hp_x - area.x - 12), theme::player_color(s.owner));
     const float frac = static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
     DrawRectangleRec({area.x + area.width - 90, area.y + 7, 90, 6}, {0, 0, 0, 170});
@@ -999,10 +1003,15 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     } else if (def.supplies != engine::Resource::Count) {
         // Standing by it sees to whoever is near; attached or called, to one unit.
         const engine::Unit* v = u.order == engine::Order::Supply ? world.find_unit(u.serves) : nullptr;
+        const engine::Structure* post = u.order == engine::Order::Supply ? world.find_structure(u.serves) : nullptr;
         const char* job = v ? TextFormat("%s %s.", u.on_call ? "Answering the radio call of:" : "Attached to:",
                                          engine::unit_type(v->type).name)
                             : TextFormat("Serves our vehicles within %d tiles; RMB on one: attach to it.",
                                          engine::kServiceRadius.to_int());
+        if (post) {
+            job = TextFormat("Stocking a %s: %d / %d.", engine::structure_type(post->type).name, post->cache,
+                             engine::structure_type(post->type).cache_capacity);
+        }
         supply = TextFormat("Aboard: %d / %d %s. %s", u.carrying, def.cargo_capacity,
                             engine::resource_name(def.supplies), job);
         if (u.carrying <= 0) supply_color = theme::kWarning;

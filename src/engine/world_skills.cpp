@@ -491,13 +491,18 @@ bool uses(const Unit& v, Resource cargo) {
 // it and keep it topped up, and fetch more from the depot when empty.
 void World::apply_supply(const Command& cmd) {
     const Unit* v = find_unit(cmd.target_unit);
+    // Or a combat position of ours, for an ammunition truck to keep stocked.
+    const Structure* post = v ? nullptr : find_structure(cmd.target_unit);
     for (EntityId id : cmd.units) {
         Unit* u = find_unit_mut(id);
         if (!u || u->owner != cmd.player) continue;
         const Resource cargo = unit_type(u->type).supplies;
-        if (cargo == Resource::Count || !v || v->owner != cmd.player || v->id == u->id || !uses(*v, cargo)) continue;
+        const bool stocks = post && cargo == Resource::Ammo && can_stock(*post, cmd.player);
+        if (!stocks && (cargo == Resource::Count || !v || v->owner != cmd.player || v->id == u->id || !uses(*v, cargo))) {
+            continue;
+        }
         u->order = Order::Supply;
-        u->serves = v->id;
+        u->serves = cmd.target_unit;  // the unit, or the position
         u->on_call = false;
         u->order_path.reset();
         u->chase_path.reset();
@@ -544,6 +549,7 @@ void World::call_supply(const Unit& caller) {
 // comes back. With the unit gone, it's free.
 void World::update_supply(Unit& u) {
     const Resource cargo = unit_type(u.type).supplies;
+    if (Structure* post = find_structure_mut(u.serves)) return stock_position(u, *post);
     const Unit* v = find_unit(u.serves);
     auto release = [&] {
         u.order = Order::Idle;
@@ -568,6 +574,70 @@ void World::update_supply(Unit& u) {
         return;
     }
     serve(u);
+}
+
+bool World::can_stock(const Structure& s, PlayerId player) const {
+    return structure_type(s.type).cache_capacity > 0 && s.built && (s.owner == kNoOwner || s.owner == player) &&
+           (s.cache == 0 || s.cache_owner == player);
+}
+
+// Stocking a position: brings its load over, fetches more when empty, and
+// once the position is full waits close by, seeing to whoever needs it,
+// ready to top the stock up again. Lost the position, it's free.
+void World::stock_position(Unit& u, Structure& post) {
+    const int32_t room = structure_type(post.type).cache_capacity - post.cache;
+    if (!can_stock(post, u.owner) || unit_type(u.type).supplies != Resource::Ammo) {
+        u.order = Order::Idle;
+        u.serves = 0;
+        u.order_path.reset();
+        u.chase_path.reset();
+        u.work = 0;
+        return;
+    }
+    const Structure* depot = nearest_owned(u.owner, StructureType::AmmoDepot, u.pos);
+    const bool at_depot = depot && distance_sq_to(*depot, u.pos) <= square_raw(Fixed::from_int(1));
+    if (room > 0 && (u.carrying <= 0 || (at_depot && u.carrying < unit_type(u.type).cargo_capacity))) {
+        if (load_up(u)) return;
+    }
+    const uint64_t dist_sq = distance_sq_to(post, u.pos);
+    if (room > 0 && u.carrying > 0) {
+        if (dist_sq > square_raw(kCacheUnload)) {
+            navigate(u, post.center, u.chase_path, map_.clamp_tile(tile_of(post.center)), false);
+            return;
+        }
+        if (++u.work < kRearmInterval) return;
+        u.work = 0;
+        ++post.cache;
+        post.cache_owner = u.owner;
+        --u.carrying;
+        return;
+    }
+    if (dist_sq > square_raw(kEscortDistance)) {
+        navigate(u, post.center, u.chase_path, map_.clamp_tile(tile_of(post.center)), false);
+        return;
+    }
+    serve(u);
+}
+
+// Everyone of ours short of rounds at a stocked position of ours takes a
+// unit of ammunition from it, the nearest position first.
+void World::draw_from_caches() {
+    for (Unit& u : units_) {
+        const UnitTypeDef& def = unit_type(u.type);
+        if (def.rounds_capacity == 0 || u.rounds >= def.rounds_capacity || u.airborne) continue;
+        Structure* best = nullptr;
+        uint64_t best_sq = 0;
+        for (Structure& s : structures_) {
+            if (s.cache <= 0 || s.cache_owner != u.owner) continue;
+            const uint64_t d = u.inside == s.id ? 0 : distance_sq_to(s, u.pos);
+            if (d > square_raw(kCacheReach) || (best && d >= best_sq)) continue;
+            best = &s;
+            best_sq = d;
+        }
+        if (!best) continue;
+        --best->cache;
+        u.rounds = std::min(def.rounds_capacity, u.rounds + def.rounds_per_supply);
+    }
 }
 
 void World::hand_over(Unit& u, const Unit& target) {

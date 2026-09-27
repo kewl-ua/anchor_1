@@ -868,6 +868,18 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
             DrawRectangleRec({c.x - 21, c.y - 1, 42, 5}, {0, 0, 0, 170});
             DrawRectangleRec({c.x - 20, c.y, 40 * frac, 3}, frac > 0.5f ? Color{200, 200, 190, 255} : Color{230, 110, 60, 255});
         }
+        if (s.cache > 0 && (reveal_ || s.cache_owner == viewer_)) {
+            // Ammunition boxes stacked at a position: one to three, as full as it is.
+            const int32_t capacity = std::max(1, engine::structure_type(s.type).cache_capacity);
+            const int boxes = 1 + static_cast<int>(2 * s.cache / capacity);
+            const Vector2 g = on_terrain(map, {to_vector2(s.center).x + 0.25f, to_vector2(s.center).y + 0.25f});
+            for (int i = 0; i < boxes; ++i) {
+                const Rectangle box{g.x - 6.0f + 4.0f * static_cast<float>(i), g.y - 4.0f - 2.0f * static_cast<float>(i % 2),
+                                    6.0f, 4.0f};
+                DrawRectangleRec(box, {96, 104, 64, 255});
+                DrawRectangleLinesEx(box, 1.0f, {52, 58, 34, 255});
+            }
+        }
         if (s.converted != engine::StructureType::Count) {
             // A depot in a village building: its owner's flag, crates by the door.
             const Color flag = theme::player_color(s.owner);
@@ -1291,7 +1303,11 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
             break;
         }
         case engine::Order::Supply:
-            if (const engine::Unit* v = world.find_unit(u.serves)) {
+            if (const engine::Structure* post = world.find_structure(u.serves)) {
+                const Vector2 to = on_terrain(map, to_vector2(post->center));
+                DrawLineV(from, to, ColorAlpha(theme::kSelection, 0.45f));
+                draw_ground_ellipse(to, 0.7f, ColorAlpha(theme::kSelection, 0.6f));
+            } else if (const engine::Unit* v = world.find_unit(u.serves)) {
                 const Vector2 to = on_terrain(map, unit_ground_pos(*v, alpha));
                 DrawLineV(from, to, ColorAlpha(theme::kSelection, 0.45f));
                 draw_ground_ellipse(to, engine::unit_type(v->type).radius.raw / 65536.0f + 0.3f,

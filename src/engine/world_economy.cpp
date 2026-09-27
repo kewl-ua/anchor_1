@@ -278,6 +278,7 @@ void World::update_retrain(Unit& u) {
         leave_structure(u);
         u.type = UnitTypeId::Rifleman;
         u.hp = unit_type(u.type).max_hp;
+        u.rounds = unit_type(u.type).rounds_capacity;  // issued with the rifle
         u.carrying = 0;
         u.cooldown = 0;
         return finish();

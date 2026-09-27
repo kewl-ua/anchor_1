@@ -143,7 +143,19 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             const engine::Structure* structure = render::structure_on_screen(camera, world, mouse);
             const std::optional<engine::TilePos> resource = render::resource_on_screen(camera, world, mouse);
             if (structure) ground = render::to_vector2(structure->center);
-            if (resource && !structure && has_workers(world)) {
+            if (structure && has_ammo_trucks(world) && world.can_stock(*structure, player_)) {
+                // Ammunition trucks keep the position stocked; the rest go there.
+                engine::Command stock{.type = engine::CommandType::Supply, .target_unit = structure->id};
+                engine::Command move{.type = engine::CommandType::Move, .target = structure->center};
+                for (engine::EntityId id : selection_) {
+                    const engine::Unit* u = world.find_unit(id);
+                    if (!u) continue;
+                    (engine::unit_type(u->type).supplies == engine::Resource::Ammo ? stock : move).units.push_back(id);
+                }
+                if (!stock.units.empty()) lockstep.submit(std::move(stock));
+                if (!move.units.empty()) lockstep.submit(std::move(move));
+                renderer.add_order_ping(render::to_vector2(structure->center), false);
+            } else if (resource && !structure && has_workers(world)) {
                 // Rear troops go to work; anyone else selected just goes there.
                 order_gather(lockstep, world, renderer, render::to_vector2(engine::tile_center(*resource)));
             } else if (structure && structure->owner == player_ && !structure->built &&
@@ -225,6 +237,11 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
     }
     if (s && s->owner == player_ && !s->built && (has_workers(world) || has_engineers(world))) {
         hint_ = "RMB: help build";
+        return;
+    }
+    if (s && has_ammo_trucks(world) && world.can_stock(*s, player_)) {
+        hint_ = TextFormat("RMB: keep this %s stocked with ammunition (%d / %d)", engine::structure_type(s->type).name,
+                           s->cache, engine::structure_type(s->type).cache_capacity);
         return;
     }
     const engine::StructureType role = s ? engine::role_of(*s) : engine::StructureType::Count;
@@ -691,6 +708,13 @@ bool PlayerController::refills_at(const engine::World& world, engine::StructureT
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
         return u && depot_for_refill(u->type) == depot;
+    });
+}
+
+bool PlayerController::has_ammo_trucks(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::unit_type(u->type).supplies == engine::Resource::Ammo;
     });
 }
 

@@ -60,6 +60,10 @@ struct StructureDef {
     // Who can be hired here, in button order (Q, W, E, ...).
     std::array<UnitTypeId, kMaxRoster> roster{};
     uint8_t roster_size = 0;
+
+    // A combat position (a trench, a dugout, a gun pit...): ammunition that
+    // can be stocked at it, in units of the stock.
+    int32_t cache_capacity = 0;
 };
 
 const StructureDef& structure_type(StructureType type);
@@ -130,6 +134,11 @@ struct Structure {
     // A village building turned into a depot (Count: it's still a house);
     // while `built` is false it's being turned.
     StructureType converted = StructureType::Count;
+
+    // Ammunition stocked at a combat position, and whose it is: that
+    // player's men at the position (or inside) draw on it.
+    int32_t cache = 0;
+    PlayerId cache_owner = kNoOwner;
 };
 
 // What a structure works as: a house turned into a depot is that depot.

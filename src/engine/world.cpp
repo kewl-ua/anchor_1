@@ -487,6 +487,7 @@ void World::step() {
     for (Unit& u : units_) u.pos = clamp_to_map(u.pos, def_of(u).radius);
     update_mines();
     update_charges();
+    if (tick_ % kRearmInterval == 0) draw_from_caches();
 
     while (!recent_impacts_.empty() && recent_impacts_.front().tick + kImpactHistory < tick_) {
         recent_impacts_.pop_front();
@@ -1323,6 +1324,8 @@ uint64_t World::checksum() const {
         mix(s.upgrading ? 1 : 0);
         mix(s.upgrade_work);
         mix(static_cast<uint8_t>(s.converted));
+        mix(static_cast<uint32_t>(s.cache));
+        mix(s.cache_owner);
     }
     for (const auto& [tile, work] : dig_work_) {
         mix(static_cast<uint32_t>(tile));

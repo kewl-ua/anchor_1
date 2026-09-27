@@ -86,6 +86,11 @@ inline constexpr Tick kRearmInterval = 8;
 inline constexpr Tick kRefillInterval = 2;  // loading at the depot
 // A service vehicle attached to a unit keeps this close to it.
 inline constexpr Fixed kEscortDistance = Fixed::from_int(3);
+// Ammunition stocked at a combat position: men this close to it (or inside
+// it) draw on it, a unit of it every kRearmInterval; the truck stocking it
+// unloads from this close.
+inline constexpr Fixed kCacheReach = Fixed::from_int(3);
+inline constexpr Fixed kCacheUnload = Fixed::from_ratio(3, 2);
 
 // Artillery. Ranging (bracketing): the chance a shell lands on the aim point
 // on the 1st, 2nd and 3rd and later shots at the same target, and how far
@@ -395,6 +400,9 @@ public:
     // Economy.
     const Stock& stock(PlayerId player) const { return stock_[player % kMaxPlayers]; }
     void set_stock(PlayerId player, const Stock& stock) { stock_[player % kMaxPlayers] = stock; }
+    // Whether `player` may stock ammunition at this structure: a combat
+    // position not held by the enemy, with no one else's stock in it.
+    bool can_stock(const Structure& s, PlayerId player) const;
     // Whether `player`'s rear troops may turn this building into a depot: a
     // spacious village building, not a depot already, not held by the enemy.
     bool can_convert(const Structure& s, PlayerId player) const;
@@ -585,6 +593,10 @@ private:
     void apply_supply(const Command& cmd);
     void update_supply(Unit& u);
     void call_supply(const Unit& caller);
+    // An ammunition truck keeping a combat position stocked.
+    void stock_position(Unit& u, Structure& post);
+    // Men at positions take ammunition from the stock there.
+    void draw_from_caches();
     // Drives up to `v` and hands over a unit of cargo every so often.
     void hand_over(Unit& u, const Unit& v);
     // Loads up at the nearest depot for the cargo; false once full or when it can't.
