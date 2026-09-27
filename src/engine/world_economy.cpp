@@ -445,6 +445,33 @@ int32_t haul_capacity(const Unit& u) {
     return def.supplies != Resource::Count ? def.cargo_capacity : kTruckCapacity;
 }
 
+const Structure* World::freight_source(const Unit& u, std::optional<Resource>& pick) const {
+    const Structure* best = nullptr;
+    uint64_t best_sq = 0;
+    for (const Structure& s : structures_) {
+        const bool source = s.type == StructureType::Station || s.type == StructureType::GasStation ||
+                            s.type == StructureType::Elevator;
+        if (!source || s.owner != u.owner || !s.built) continue;
+        // What this truck would take on here: its own freight, or (on auto)
+        // what there's most of, as long as a depot of ours takes it.
+        std::optional<Resource> here;
+        for (Resource r : {Resource::Ammo, Resource::Fuel, Resource::Food}) {
+            const auto i = static_cast<size_t>(r);
+            if (u.haul_cargo != Resource::Count && r != u.haul_cargo) continue;
+            if (s.cargo[i] <= 0 || !haul_destination(u, r)) continue;
+            if (!here || s.cargo[i] > s.cargo[static_cast<size_t>(*here)]) here = r;
+        }
+        if (!here) continue;
+        const uint64_t d = distance_sq_to(s, u.pos);
+        if (!best || d < best_sq) {
+            best = &s;
+            best_sq = d;
+            pick = here;
+        }
+    }
+    return best;
+}
+
 const Structure* World::haul_destination(const Unit& truck, Resource cargo) const {
     if (const Structure* own = find_structure(truck.haul_depot);
         own && own->owner == truck.owner && own->built && depot_cargo(role_of(*own)) == cargo) {
@@ -460,16 +487,9 @@ const Structure* World::haul_destination(const Unit& truck, Resource cargo) cons
 // nowhere to put it, the truck waits.
 void World::update_hauling(Unit& u) {
     if (u.carrying == 0) {
-        const Structure* station = station_of(u.owner);
-        if (!station) return;
         std::optional<Resource> pick;
-        for (Resource r : {Resource::Ammo, Resource::Fuel, Resource::Food}) {
-            const auto i = static_cast<size_t>(r);
-            if (u.haul_cargo != Resource::Count && r != u.haul_cargo) continue;
-            if (station->cargo[i] <= 0 || !haul_destination(u, r)) continue;
-            if (!pick || station->cargo[i] > station->cargo[static_cast<size_t>(*pick)]) pick = r;
-        }
-        if (!pick) return;
+        const Structure* station = freight_source(u, pick);
+        if (!station) return;
         if (distance_sq_to(*station, u.pos) > square_raw(kDoorReach)) {
             navigate(u, station->center, u.order_path, map_.clamp_tile(tile_of(station->center)), false);
             u.work = 0;
@@ -513,7 +533,7 @@ void World::update_hauling(Unit& u) {
 
 // A fuel depot going up: a fireball that hurts everything around, and a good
 // part of the owner's fuel gone with it.
-void World::burn_fuel_depot(const Structure& depot) {
+void World::burn_fuel_depot(const Structure& depot, bool stock_burns) {
     static constexpr WeaponDef kFireball{.name = "Fuel fire", .damage = 120, .damage_type = DamageType::Explosive,
                                          .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
                                          .splash_radius = Fixed::from_int(2), .accuracy = 100, .miss_spread = Fixed{}};
@@ -530,7 +550,7 @@ void World::burn_fuel_depot(const Structure& depot) {
             if (closest <= square_raw(kFireball.splash_radius)) hurt_structure(s, kFireball);
         }
     }
-    if (depot.owner < kMaxPlayers) {
+    if (stock_burns && depot.owner < kMaxPlayers) {
         int32_t& fuel = stock_[depot.owner][static_cast<size_t>(Resource::Fuel)];
         fuel -= fuel * kFuelDepotLossPercent / 100;
     }

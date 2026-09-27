@@ -640,6 +640,19 @@ void World::draw_from_caches() {
         --best->cache;
         u.rounds = std::min(def.rounds_capacity, u.rounds + def.rounds_per_supply);
     }
+    // The pumps of a gas station we hold.
+    for (Unit& u : units_) {
+        const UnitTypeDef& def = unit_type(u.type);
+        if (def.fuel_capacity.raw == 0 || u.fuel >= def.fuel_capacity || u.airborne || def.aircraft) continue;
+        for (Structure& s : structures_) {
+            int32_t& tanks = s.cargo[static_cast<size_t>(Resource::Fuel)];
+            if (s.type != StructureType::GasStation || s.owner != u.owner || tanks <= 0) continue;
+            if (distance_sq_to(s, u.pos) > square_raw(kPumpReach)) continue;
+            u.fuel = min(def.fuel_capacity, u.fuel + Fixed::from_int(kTilesPerFuel));
+            --tanks;
+            break;
+        }
+    }
 }
 
 void World::hand_over(Unit& u, const Unit& target) {

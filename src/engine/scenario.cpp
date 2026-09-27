@@ -112,8 +112,12 @@ struct Shed {
     int32_t w;
     int32_t h;
 };
-constexpr Shed kSheds[] = {{11, 56, 5, 2}, {15, 55, 3, 3}};
+constexpr Shed kSheds[] = {{11, 56, 5, 2}, {16, 55, 3, 3}};
 constexpr Barn kTowers[] = {{24, 62}, {44, 54}};
+// A gas station by the highway (this far along it, beside the road) and a
+// grain elevator by the industrial zone.
+constexpr int32_t kGasStationAlongPct = 40;
+constexpr Barn kElevators[] = {{21, 57}};
 // The old front line: craters in the middle of the map.
 constexpr Rect kShelledBelt = {35, 48, 15, 17};
 
@@ -412,6 +416,10 @@ TileMap make_demo_map(int32_t size) {
                 const Terrain under = map.terrain(x, y);
                 if (under == Terrain::Water || under == Terrain::Bridge || under == Terrain::Rail) continue;
                 const bool inside = dx >= 0 && dx < w && dy >= 0 && dy < h;
+                // A yard doesn't eat into the building next door.
+                const bool built_up = under == Terrain::House || under == Terrain::Apartment || under == Terrain::Tower ||
+                                      under == Terrain::GasStation || under == Terrain::Elevator;
+                if (!inside && built_up) continue;
                 p.paint(x, y, inside ? t : Terrain::Urban);
             }
         }
@@ -419,6 +427,12 @@ TileMap make_demo_map(int32_t size) {
     for (const Barn& a : kApartments) building(p.at(a.x_pct), p.at(a.y_pct), kApartmentWidth, kApartmentDepth, Terrain::Apartment);
     for (const Shed& s : kSheds) building(p.at(s.x_pct), p.at(s.y_pct), s.w, s.h, Terrain::House);
     for (const Barn& t : kTowers) building(p.at(t.x_pct), p.at(t.y_pct), 1, 1, Terrain::Tower);
+    for (const Barn& e : kElevators) building(p.at(e.x_pct), p.at(e.y_pct), 3, 2, Terrain::Elevator);
+    {
+        // The highway runs where x + y = size: the station stands just off it.
+        const int32_t x = p.at(kGasStationAlongPct);
+        building(x - 4, size - x - 1, 2, 2, Terrain::GasStation);
+    }
 
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
 

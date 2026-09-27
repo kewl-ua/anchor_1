@@ -2050,6 +2050,28 @@ void test_demo_map_has_barns() {
             towers += s.type == StructureType::CellTower ? 1 : 0;
         }
         CHECK(blocks == 4 && towers == 4);
+        // A gas station by the highway and a grain elevator a side, stocked.
+        int stations = 0;
+        int elevators = 0;
+        for (const Structure& s : world.structures()) {
+            if (s.type == StructureType::GasStation) {
+                ++stations;
+                CHECK(s.cargo[static_cast<size_t>(Resource::Fuel)] == kGasStationFuel);
+                bool by_road = false;
+                for (int dy = -3; dy <= 3; ++dy) {
+                    for (int dx = -3; dx <= 3; ++dx) {
+                        const TilePos t{s.tiles.front().x + dx, s.tiles.front().y + dy};
+                        by_road = by_road || (world.map().contains(t) && world.map().terrain(t) == Terrain::Road);
+                    }
+                }
+                CHECK(by_road);
+            }
+            if (s.type == StructureType::Elevator) {
+                ++elevators;
+                CHECK(s.cargo[static_cast<size_t>(Resource::Food)] == kElevatorFood);
+            }
+        }
+        CHECK(stations == 2 && elevators == 2);
     }
 }
 
@@ -2241,6 +2263,72 @@ void test_cell_towers() {
     for (int i = 0; i < 5; ++i) sim.step();
     tank->pos = at(40, 18);
     CHECK(!sim.world().in_touch(*tank));  // nobody up there: no relay
+}
+
+// A gas station (2 x 2 at (20..21, 10..11)) and a grain elevator (3 x 2 at
+// (30..32, 10..11)) on a plain, with a warehouse and a fuel depot of ours.
+Simulation spoils_sim() {
+    TileMap map(48, 24);
+    for (int y = 10; y <= 11; ++y) {
+        for (int x = 20; x <= 21; ++x) map.set_terrain(x, y, Terrain::GasStation);
+        for (int x = 30; x <= 32; ++x) map.set_terrain(x, y, Terrain::Elevator);
+    }
+    Simulation sim(1, map);
+    sim.world_for_setup().place_structure(StructureType::Warehouse, 0, {4, 4}, 2, 2);
+    sim.world_for_setup().place_structure(StructureType::FuelDepot, 0, {8, 4}, 2, 2);
+    return sim;
+}
+
+void hold(Simulation& sim, TilePos building, PlayerId player, int32_t x, int32_t y) {
+    const EntityId man = sim.world_for_setup().spawn_unit(player, UnitTypeId::Rifleman, at(x, y));
+    issue(sim, garrison(player, {man}, sim.world().structure_at(building)->id));
+    for (int i = 0; i < 80; ++i) sim.step();
+    CHECK(sim.world().find_unit(man)->inside == sim.world().structure_at(building)->id);
+}
+
+// Held by our men, a gas station fills our vehicles up at the pumps from its
+// tanks; nobody's, it doesn't. Destroyed with fuel in it, it goes up in
+// flames, and our stock of fuel doesn't burn with it.
+void test_gas_stations() {
+    Simulation sim = spoils_sim();
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(20, 14));
+    sim.world_for_setup().unit_for_setup(tank)->fuel = Fixed::from_int(10);
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->fuel == Fixed::from_int(10));  // nobody holds it
+    hold(sim, {20, 10}, 0, 23, 12);
+    for (int i = 0; i < 100; ++i) sim.step();
+    const Structure* station = sim.world().structure_at({20, 10});
+    CHECK(sim.world().find_unit(tank)->fuel > Fixed::from_int(10));
+    CHECK(station->cargo[static_cast<size_t>(Resource::Fuel)] < kGasStationFuel);
+
+    // Up in flames: the man nearby burns, our stock doesn't.
+    sim.world_for_setup().set_stock(0, {0, 0, 0, 0, 100});
+    const EntityId near = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(22, 13));
+    sim.world_for_setup().structure_for_setup(station->id)->hp = 0;
+    sim.step();
+    sim.step();
+    CHECK(sim.world().structure_at({20, 10}) == nullptr);
+    CHECK(hp_of(sim, near) < unit_type(UnitTypeId::Rifleman).max_hp);
+    CHECK(stock_of(sim, Resource::Fuel) == 100);
+}
+
+// Held by our men, an elevator's grain is ours: trucks haul it to the
+// warehouse, with no railway station at all. Its garrison sees far.
+void test_grain_elevators() {
+    Simulation sim = spoils_sim();
+    const EntityId truck = sim.world_for_setup().spawn_unit(0, UnitTypeId::Truck, at(26, 16));
+    issue(sim, haul_cargo({truck}, haul_code(Resource::Food)));
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(sim.world().find_unit(truck)->carrying == 0);  // nobody holds it yet
+    hold(sim, {30, 10}, 0, 33, 13);
+    for (int i = 0; i < 2000 && stock_of(sim, Resource::Food) == 0; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Food) > 0);
+    CHECK(sim.world().structure_at({30, 10})->cargo[static_cast<size_t>(Resource::Food)] < kElevatorFood);
+
+    // From the top: a rifleman's 7 tiles of sight become 13.
+    const EntityId far = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(31, 22));
+    for (int i = 0; i < 6; ++i) sim.step();
+    CHECK(seen(sim, 0, far));
 }
 
 // Rear troops and trucks with nothing to do are idle; on the supply run or at work they aren't.
@@ -3914,6 +4002,8 @@ int main() {
     test_service_vehicles_on_the_rail_run();
     test_apartment_blocks();
     test_cell_towers();
+    test_gas_stations();
+    test_grain_elevators();
     test_demo_map_has_barns();
     test_demo_map_relief();
     test_take_over_a_village_building();

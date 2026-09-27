@@ -138,16 +138,20 @@ void World::build_structures() {
         for (int32_t x = 0; x < w; ++x) {
             const Terrain terrain = map_.terrain(x, y);
             const bool made = terrain == Terrain::House || terrain == Terrain::Bridge || terrain == Terrain::Apartment ||
-                              terrain == Terrain::Tower;
+                              terrain == Terrain::Tower || terrain == Terrain::GasStation || terrain == Terrain::Elevator;
             if (!made || structure_id_at({x, y}) != 0) continue;
 
             Structure s;
             s.id = next_id_++;
-            s.type = terrain == Terrain::House       ? StructureType::House
-                     : terrain == Terrain::Bridge    ? StructureType::Bridge
-                     : terrain == Terrain::Apartment ? StructureType::Apartment
-                                                     : StructureType::CellTower;
+            s.type = terrain == Terrain::House        ? StructureType::House
+                     : terrain == Terrain::Bridge     ? StructureType::Bridge
+                     : terrain == Terrain::Apartment  ? StructureType::Apartment
+                     : terrain == Terrain::Tower      ? StructureType::CellTower
+                     : terrain == Terrain::GasStation ? StructureType::GasStation
+                                                      : StructureType::Elevator;
             s.hp = structure_type(s.type).max_hp;
+            if (s.type == StructureType::GasStation) s.cargo[static_cast<size_t>(Resource::Fuel)] = kGasStationFuel;
+            if (s.type == StructureType::Elevator) s.cargo[static_cast<size_t>(Resource::Food)] = kElevatorFood;
 
             // Flood fill the patch (4-connected, fixed neighbour order).
             std::vector<TilePos> open{{x, y}};
@@ -267,6 +271,7 @@ void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
 // into the river.
 void World::collapse(const Structure& s) {
     if (role_of(s) == StructureType::FuelDepot) burn_fuel_depot(s);
+    if (s.type == StructureType::GasStation && s.cargo[static_cast<size_t>(Resource::Fuel)] > 0) burn_fuel_depot(s, false);
     if (s.type == StructureType::Airfield) {
         // The aircraft parked on the runway go with it.
         for (Unit& u : units_) {
@@ -787,6 +792,7 @@ Fixed World::window_height(EntityId structure) const {
     if (!s) return kWindowHeight;
     if (s->type == StructureType::Apartment) return kApartmentWindow;
     if (s->type == StructureType::CellTower) return kTowerEye;
+    if (s->type == StructureType::Elevator) return kElevatorWindow;
     return kWindowHeight;
 }
 
@@ -818,6 +824,12 @@ World::Obstruction World::trace_terrain(const FireLine& line, Fixed start, bool 
             return Obstruction::Terrain;
         }
         if (terrain == Terrain::Apartment && h < ground + kApartmentHeight && structure_id_at(tile) != own_structure) {
+            return Obstruction::Terrain;
+        }
+        if (terrain == Terrain::Elevator && h < ground + kElevatorHeight && structure_id_at(tile) != own_structure) {
+            return Obstruction::Terrain;
+        }
+        if (terrain == Terrain::GasStation && h < ground + kHouseHeight && structure_id_at(tile) != own_structure) {
             return Obstruction::Terrain;
         }
         if (terrain == Terrain::Building && h < ground + kBuildingHeight && structure_id_at(tile) != own_structure) {
@@ -935,7 +947,8 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
     // From the upper floors or up a mast: as from higher ground.
     if (const Structure* home = find_structure(shooter.inside);
-        home && (home->type == StructureType::Apartment || home->type == StructureType::CellTower)) {
+        home && (home->type == StructureType::Apartment || home->type == StructureType::CellTower ||
+                 home->type == StructureType::Elevator)) {
         shot.elevation = static_cast<uint8_t>(shot.elevation + kUpperFloorLevels);
     }
     if (works && !shooter.inside) {

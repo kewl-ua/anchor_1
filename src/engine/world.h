@@ -174,6 +174,13 @@ inline constexpr Fixed kTowerRelay = Fixed::from_int(15);
 inline constexpr int32_t kApartmentSightBonus = 3;
 inline constexpr int32_t kTowerSightBonus = 8;
 inline constexpr uint8_t kUpperFloorLevels = 2;
+inline constexpr int32_t kElevatorSightBonus = 6;
+// Spoils: fuel in a gas station's tanks, grain in an elevator. Whoever holds
+// them (men inside) hauls it off to his depots; his vehicles this close to
+// the pumps fill up there.
+inline constexpr int32_t kGasStationFuel = 300;
+inline constexpr int32_t kElevatorFood = 600;
+inline constexpr Fixed kPumpReach = Fixed::from_int(2);
 // Two bearings on a radio fix it only if they cross at 20 degrees or more
 // (sin^2 20 = 0.117): from nearly the same spot they only give a direction.
 inline constexpr int64_t kFixSinSqPermille = 117;
@@ -540,7 +547,8 @@ private:
     void update_production();
     void update_trains();
     void update_rations();
-    void burn_fuel_depot(const Structure& depot);
+    // `stock_burns`: a depot burns part of its owner's fuel with it; a gas station only what's in it.
+    void burn_fuel_depot(const Structure& depot, bool stock_burns = true);
     const Structure* nearest_headquarters(PlayerId owner, FixedVec2 from) const;
     // The nearest finished building of `owner` that takes in materials.
     const Structure* nearest_drop_off(PlayerId owner, FixedVec2 from) const;
@@ -612,8 +620,12 @@ private:
     void call_supply(const Unit& caller);
     // An ammunition truck keeping a combat position stocked.
     void stock_position(Unit& u, Structure& post);
-    // Men at positions take ammunition from the stock there.
+    // Men at positions take ammunition from the stock there; vehicles by the
+    // pumps of a gas station we hold fill up from its tanks.
     void draw_from_caches();
+    // Where a truck loads next: the railway station, or a gas station or an
+    // elevator our men hold, the nearest with freight on it for this truck.
+    const Structure* freight_source(const Unit& u, std::optional<Resource>& pick) const;
     // Drives up to `v` and hands over a unit of cargo every so often.
     void hand_over(Unit& u, const Unit& v);
     // Loads up at the nearest depot for the cargo; false once full or when it can't.

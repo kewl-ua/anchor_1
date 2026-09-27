@@ -595,6 +595,8 @@ float drawn_height(const engine::Structure& s) {
         case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 23.0f;
         case engine::StructureType::Apartment: return 74.0f;
         case engine::StructureType::CellTower: return 92.0f;
+        case engine::StructureType::GasStation: return 30.0f;
+        case engine::StructureType::Elevator: return 112.0f;
         case engine::StructureType::Pillbox: return 10.0f;
         case engine::StructureType::Bridge:
         case engine::StructureType::Airfield:
@@ -659,6 +661,71 @@ void draw_cell_tower(const engine::TileMap& map, const engine::Structure& s, flo
         DrawRectangleRec({tip.x + dx - 1.5f, tip.y + 10.0f, 3.0f, 8.0f}, lit({210, 210, 204, 255}));
     }
     DrawCircleV(tip, 2.0f, {230, 60, 50, 255});
+}
+
+// A gas station: a canopy on four posts over the pumps, a small shop behind.
+void draw_gas_station(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    const Rectangle r = footprint(s, 0.1f);
+    const float soot = 1.0f - 0.45f * damage;
+    // The shop along the back edge.
+    const Vector2 shop_ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height * 0.35f},
+                                    {r.x, r.y + r.height * 0.35f}};
+    Vector2 base[4];
+    Vector2 top[4];
+    for (int i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, shop_ground[i]);
+        top[i] = {base[i].x, base[i].y - 14.0f};
+    }
+    const Color wall = shade({200, 196, 186, 255}, soot);
+    fill_quad(base[1], base[2], top[2], top[1], wall);
+    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));
+    fill_quad(top[0], top[1], top[2], top[3], shade({150, 60, 50, 255}, soot));
+    // Pumps, and the canopy over them on four posts.
+    for (const float k : {0.35f, 0.65f}) {
+        const Vector2 pump = on_terrain(map, {r.x + r.width * k, r.y + r.height * 0.7f});
+        DrawRectangleRec({pump.x - 2.0f, pump.y - 8.0f, 4.0f, 8.0f}, lit({200, 60, 50, 255}));
+    }
+    const Vector2 canopy_ground[4] = {{r.x + r.width * 0.1f, r.y + r.height * 0.45f},
+                                      {r.x + r.width * 0.9f, r.y + r.height * 0.45f},
+                                      {r.x + r.width * 0.9f, r.y + r.height * 0.95f},
+                                      {r.x + r.width * 0.1f, r.y + r.height * 0.95f}};
+    Vector2 roof[4];
+    for (int i = 0; i < 4; ++i) {
+        const Vector2 post = on_terrain(map, canopy_ground[i]);
+        roof[i] = {post.x, post.y - 20.0f};
+        DrawLineEx(post, roof[i], 1.5f, lit({210, 210, 204, 255}));
+    }
+    fill_quad(roof[0], roof[1], roof[2], roof[3], ColorAlpha(lit(shade({226, 222, 212, 255}, soot)), 0.92f));
+    DrawLineEx(roof[2], roof[3], 2.0f, lit({200, 60, 50, 255}));
+}
+
+// A grain elevator: a row of tall concrete silos and a head house above them.
+void draw_elevator(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    const Rectangle r = footprint(s, 0.1f);
+    const float soot = 1.0f - 0.45f * damage;
+    const Color concrete = shade({196, 190, 176, 255}, soot);
+    constexpr float kSilo = 80.0f;
+    const bool along_x = r.width >= r.height;
+    const int silos = 3;
+    for (int i = 0; i < silos; ++i) {
+        const float k = (static_cast<float>(i) + 0.5f) / static_cast<float>(silos);
+        const Vector2 g = along_x ? Vector2{r.x + r.width * k, r.y + r.height * 0.5f}
+                                  : Vector2{r.x + r.width * 0.5f, r.y + r.height * k};
+        const Vector2 foot = on_terrain(map, g);
+        constexpr float kRadius = 11.0f;
+        DrawRectangleRec({foot.x - kRadius, foot.y - kSilo, 2.0f * kRadius, kSilo}, lit(concrete));
+        DrawRectangleRec({foot.x, foot.y - kSilo, kRadius, kSilo}, lit(shade(concrete, 0.8f)));
+        DrawEllipse(static_cast<int>(foot.x), static_cast<int>(foot.y), kRadius, kRadius * 0.5f, lit(shade(concrete, 0.8f)));
+        DrawEllipse(static_cast<int>(foot.x), static_cast<int>(foot.y - kSilo), kRadius, kRadius * 0.5f,
+                    lit(shade(concrete, 1.1f)));
+    }
+    // The head house on top of the middle silo.
+    const Vector2 mid = on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height * 0.5f});
+    DrawRectangleRec({mid.x - 8.0f, mid.y - kSilo - 26.0f, 16.0f, 26.0f}, lit(shade(concrete, 0.95f)));
+    for (int row = 0; row < 3; ++row) {
+        DrawRectangleRec({mid.x - 4.0f, mid.y - kSilo - 22.0f + 7.0f * static_cast<float>(row), 3.0f, 4.0f},
+                         lit({70, 76, 82, 255}));
+    }
 }
 
 void draw_building(const engine::TileMap& map, const engine::Structure& s) {
@@ -1194,7 +1261,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 break;
             }
             case engine::Terrain::Apartment:
-            case engine::Terrain::Tower: {
+            case engine::Terrain::Tower:
+            case engine::Terrain::GasStation:
+            case engine::Terrain::Elevator: {
                 // One building, drawn once whichever of its tiles is in view.
                 const engine::Structure* s = world.structure_at({tx, ty});
                 if (!s || std::find(barns.begin(), barns.end(), s) != barns.end()) break;
@@ -1232,7 +1301,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         return s.type != engine::StructureType::House && s.type != engine::StructureType::Bridge &&
                !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout &&
                s.type != engine::StructureType::Airfield && s.type != engine::StructureType::Apartment &&
-               s.type != engine::StructureType::CellTower;  // drawn with the ground's tiles, like houses
+               s.type != engine::StructureType::CellTower && s.type != engine::StructureType::GasStation &&
+               s.type != engine::StructureType::Elevator;  // drawn with the ground's tiles, like houses
     };
     for (const engine::Structure& s : world.structures()) {
         if (is_building(s) && s.owner == viewer_) add_building(s, 1.0f);
@@ -1264,6 +1334,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 draw_apartment(map, *d.barn, d.damage);
             } else if (d.barn->type == engine::StructureType::CellTower) {
                 draw_cell_tower(map, *d.barn, d.damage);
+            } else if (d.barn->type == engine::StructureType::GasStation) {
+                draw_gas_station(map, *d.barn, d.damage);
+            } else if (d.barn->type == engine::StructureType::Elevator) {
+                draw_elevator(map, *d.barn, d.damage);
             } else {
                 draw_barn(map, *d.barn, d.damage);
             }

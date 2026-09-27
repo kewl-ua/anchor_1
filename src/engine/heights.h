@@ -26,5 +26,8 @@ inline constexpr Fixed kWindowHeight = Fixed::from_int(1);
 inline constexpr Fixed kApartmentHeight = Fixed::from_int(3);
 inline constexpr Fixed kApartmentWindow = Fixed::from_ratio(5, 2);
 inline constexpr Fixed kTowerEye = Fixed::from_ratio(7, 2);
+// A grain elevator's silos stand higher still; its garrison looks from the top.
+inline constexpr Fixed kElevatorHeight = Fixed::from_int(4);
+inline constexpr Fixed kElevatorWindow = Fixed::from_ratio(7, 2);
 
 }  // namespace engine

@@ -40,6 +40,8 @@ enum class StructureType : uint8_t {
     Airfield,          // a runway: builds and rearms attack aircraft
     Apartment,         // a five-storey apartment block: a big garrison high up
     CellTower,         // a cell tower: a spotter up it sees far; it relays radio for whoever holds it
+    GasStation,        // fuel in its tanks for whoever holds it: at the pumps, or hauled off
+    Elevator,          // a grain elevator: food for whoever holds it, and a view from the top
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -177,7 +179,8 @@ inline bool is_fieldwork(StructureType t) {
 // Infantry can go inside: a house, a dugout, a pillbox. Whoever is inside holds it.
 inline bool is_shelter(StructureType t) {
     return t == StructureType::House || t == StructureType::Dugout || t == StructureType::Pillbox ||
-           t == StructureType::Apartment || t == StructureType::CellTower;
+           t == StructureType::Apartment || t == StructureType::CellTower || t == StructureType::GasStation ||
+           t == StructureType::Elevator;
 }
 // Obstacles: in the way, but no cover.
 inline bool is_obstacle(StructureType t) { return t == StructureType::Wire || t == StructureType::Hedgehogs; }

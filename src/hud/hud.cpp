@@ -750,6 +750,25 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                       area.x, line3, kCardFontSize, theme::kTextDim);
             draw_text("Nothing behind it is seen past it.", area.x, line4, kCardFontSize, theme::kTextDim);
             return;
+        case engine::StructureType::GasStation:
+            draw_text(TextFormat("Fuel in the tanks: %d. Held by our men: ours.",
+                                 s.cargo[static_cast<size_t>(engine::Resource::Fuel)]),
+                      area.x, line2, kCardFontSize, theme::kText);
+            draw_text(TextFormat("Our vehicles within %d tiles of the pumps fill up; trucks and tankers haul it off.",
+                                 engine::kPumpReach.to_int()),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("With fuel in it, it goes up in flames when destroyed.", area.x, line4, kCardFontSize,
+                      theme::kWarning);
+            return;
+        case engine::StructureType::Elevator:
+            draw_text(TextFormat("Grain: %d food. Held by our men, trucks haul it to the warehouse.",
+                                 s.cargo[static_cast<size_t>(engine::Resource::Food)]),
+                      area.x, line2, kCardFontSize, theme::kText);
+            draw_text(TextFormat("From the top the garrison (%d / %d) sees %d tiles farther and fires down.",
+                                 static_cast<int>(s.garrison.size()), def.capacity, engine::kElevatorSightBonus),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("Nothing behind it is seen past it.", area.x, line4, kCardFontSize, theme::kTextDim);
+            return;
         case engine::StructureType::CellTower:
             draw_text(TextFormat("A spotter up the mast sees %d tiles farther.", engine::kTowerSightBonus), area.x, line2,
                       kCardFontSize, theme::kText);

@@ -31,7 +31,7 @@ Fixed eye_height(const UnitTypeDef& def) { return def.vehicle ? kVehicleTop : kI
 int32_t structure_sight(const Structure& s) {
     const StructureType role = role_of(s);
     if (role == StructureType::House || role == StructureType::Bridge || role == StructureType::Apartment ||
-        role == StructureType::CellTower) {
+        role == StructureType::CellTower || role == StructureType::GasStation || role == StructureType::Elevator) {
         return 0;  // the garrison looks instead
     }
     if (is_fieldwork(s.type) || s.type == StructureType::Dugout) return 0;           // just holes in the ground
@@ -124,6 +124,12 @@ bool World::line_of_sight(FixedVec2 from, Fixed eye, TilePos target, EntityId ow
                 break;
             case Terrain::Apartment:
                 if (h < ground + kApartmentHeight && structure_id_at(tile) != own_structure) return false;
+                break;
+            case Terrain::Elevator:
+                if (h < ground + kElevatorHeight && structure_id_at(tile) != own_structure) return false;
+                break;
+            case Terrain::GasStation:
+                if (h < ground + kHouseHeight && structure_id_at(tile) != own_structure) return false;
                 break;
             case Terrain::Building:
                 if (h < ground + kBuildingHeight && structure_id_at(tile) != own_structure) return false;
@@ -237,6 +243,7 @@ void World::update_vision() {
             Fixed sight = def.sight;
             if (s->type == StructureType::Apartment) sight += Fixed::from_int(kApartmentSightBonus);
             if (s->type == StructureType::CellTower) sight += Fixed::from_int(kTowerSightBonus);
+            if (s->type == StructureType::Elevator) sight += Fixed::from_int(kElevatorSightBonus);
             look(u.owner, s->center, sight, window_height(s->id), s->id);
         } else {
             look(u.owner, u.pos, def.sight, u.airborne ? kFlightHeight : eye_height(def), 0);
