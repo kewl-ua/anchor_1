@@ -4028,12 +4028,13 @@ void solid(const Frame& fr, const Vector2* base, const Vector2* top, int n, floa
         if (len <= 0.0f) continue;
         const Vector2 gn{g.x / len, g.y / len};
         if (gn.x + gn.y <= 0.02f) continue;  // turned away
-        const float k = 0.62f + 0.24f * gn.x - 0.1f * gn.y;
+        const float k = 0.54f + 0.3f * gn.x - 0.14f * gn.y;
         fill_quad(fr.at(base[i].x, base[i].y, z0), fr.at(base[j].x, base[j].y, z0), fr.at(top[j].x, top[j].y, z1),
                   fr.at(top[i].x, top[i].y, z1), shade(color, k));
     }
     const Vector2 t0 = fr.at(top[0].x, top[0].y, z1);
-    for (int i = 1; i + 1 < n; ++i) fill_triangle(t0, fr.at(top[i].x, top[i].y, z1), fr.at(top[i + 1].x, top[i + 1].y, z1), color);
+    const Color lid = shade(color, 1.1f);  // tops catch the most light
+    for (int i = 1; i + 1 < n; ++i) fill_triangle(t0, fr.at(top[i].x, top[i].y, z1), fr.at(top[i + 1].x, top[i + 1].y, z1), lid);
 }
 
 // A box of the vehicle from a0 to a1 along it and c0 to c1 across, z0 to z1
@@ -4427,9 +4428,9 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
 // the splash guard, the engine deck's grilles, two fuel drums across the
 // back, headlights. `frame` moves the track links on.
 void draw_tank_hull(const Frame& fr, Color paint, int frame) {
-    const Color rubber{40, 40, 36, 255};
-    const Color steel{70, 72, 64, 255};
-    const Color wheel_hub{120, 122, 108, 255};
+    const Color rubber{30, 30, 27, 255};
+    const Color steel{64, 66, 58, 255};
+    const Color wheel_hub{148, 150, 130, 255};
     const float near = left_is_near(fr) ? 1.0f : -1.0f;
     auto side_block = [&](float sgn, float a0, float a1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f) {
         block(fr, a0, a1, sgn > 0 ? c0 : -c1, sgn > 0 ? c1 : -c0, z0, z1, color, front);
@@ -4581,13 +4582,13 @@ void pixelate(Image& img, const std::vector<Color>& palette) {
                 continue;
             }
             if (at(x, y - 1).a == 0) {  // the light catching a top edge
-                out[y * w + x] = shade(c, 1.22f);
+                out[y * w + x] = shade(c, 1.32f);
                 continue;
             }
             const Color r = at(x + 1, y);
             const Color d = at(x, y + 1);
-            const bool edge = (r.a && lum(c) - lum(r) > 34.0f) || (d.a && lum(c) - lum(d) > 34.0f);
-            if (edge) out[y * w + x] = shade(c, 0.7f);
+            const bool edge = (r.a && lum(c) - lum(r) > 30.0f) || (d.a && lum(c) - lum(d) > 30.0f);
+            if (edge) out[y * w + x] = shade(c, 0.58f);
         }
     }
     std::copy(out.begin(), out.end(), px);
@@ -4624,7 +4625,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         const Color team = theme::player_color(owner);
         const Color paint{100, 104, 58, 255};
         std::vector<Color> palette;
-        for (const float k : {0.36f, 0.52f, 0.68f, 0.84f, 1.0f, 1.18f, 1.4f}) palette.push_back(shade(paint, k));
+        for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
         palette.push_back({112, 84, 54, 255});  // wood
         palette.push_back({150, 116, 76, 255});
         for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
