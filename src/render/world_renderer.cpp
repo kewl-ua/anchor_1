@@ -1090,6 +1090,94 @@ void draw_coop(const engine::TileMap& map, const engine::Structure& s, float dam
 
 // Roads, fields, bogs and craters: marks on the ground of a tile whose
 // corners on screen are top, right, bottom, left.
+float field(Vector2 p, int seed);  // with the ground's colours, below
+float smooth01(float t);
+
+float noise_at(Vector2 p, float scale, int seed);
+
+// How far along the fields are, in patches, the same for the ground and for
+// what grows on it. Sunflowers: 1 in bloom, down to 0 dried black on their
+// stalks (fields left standing). Wheat: 1 where the combine has been (in
+// straight strips along the field, where the harvest has got to), 0 standing;
+// unripe (greener) in patches; flattened by rain and wind in others.
+float sunflower_bloom(Vector2 p) { return smooth01((field(p, 41) - 0.2f) / 0.2f); }
+float wheat_cut(Vector2 p) {
+    const int strip = static_cast<int>(std::floor(p.y)) % 9;
+    return strip < 3 && noise_at(p, 20.0f, 47) > 0.55f ? 1.0f : 0.0f;
+}
+float wheat_unripe(Vector2 p) { return smooth01((field(p, 23) - 0.6f) / 0.2f); }
+bool wheat_lodged(Vector2 p) { return field(p, 53) > 0.7f; }
+
+// A sunflower from its foot, `tall` pixels up to the head, `head` its radius.
+// `stage`: over 0.6 in bloom, the head up, all yellow petals; down to 0.3
+// ripening, the head heavy and turned down, the petals going, the lowest
+// leaf yellowing; below that dried black on its stalk, the leaves shrivelled.
+// Some show the back of the head. `far`: just the stalk and the head.
+void draw_sunflower(Vector2 base, float tall, float head, float stage, float lean, bool back, bool far) {
+    const bool bloom = stage > 0.6f;
+    const bool dry = stage < 0.3f;
+    const Color stalk = dry ? Color{104, 82, 50, 255} : bloom ? Color{66, 96, 38, 255} : Color{92, 104, 46, 255};
+    const float droop = bloom ? 0.0f : dry ? 1.0f : 0.55f;  // how far the head hangs
+    const Vector2 neck{base.x + lean, base.y - tall};
+    const Vector2 hc{neck.x + head * 0.9f * droop, neck.y + head * 1.3f * droop};
+    DrawLineEx(base, neck, 1.2f, lit(stalk));
+    if (droop > 0.0f) DrawLineEx(neck, hc, 1.0f, lit(stalk));
+    if (!far) {
+        for (int i = 0; i < 3; ++i) {
+            const float side = i % 2 == 0 ? -1.0f : 1.0f;
+            const float k = 0.3f + 0.2f * static_cast<float>(i);
+            const Vector2 a{base.x + lean * k, base.y - tall * k};
+            if (dry) {
+                DrawLineEx(a, {a.x + side * 1.6f, a.y + 3.2f}, 1.2f, lit({80, 60, 38, 255}));  // shrivelled, hanging
+                continue;
+            }
+            const Color leaf = i == 0 && !bloom ? Color{150, 144, 62, 255} : Color{70, 104, 40, 255};
+            const Vector2 tip{a.x + side * 4.2f, a.y + 1.6f};
+            fill_triangle(a, {a.x + side * 2.0f, a.y - 1.2f}, tip, shade(leaf, 1.15f));
+            fill_triangle(a, tip, {a.x + side * 2.2f, a.y + 1.5f}, shade(leaf, 0.78f));
+        }
+    }
+    if (dry) {
+        disc(hc, head * 0.85f, {46, 34, 24, 255});
+        if (!far) disc({hc.x - head * 0.3f, hc.y - head * 0.3f}, head * 0.35f, {72, 54, 36, 255});
+        return;
+    }
+    const Color petal = bloom ? Color{240, 194, 36, 255} : Color{200, 158, 58, 255};
+    if (back) {
+        // Turned away: the green back of the head, the petals' tips round it.
+        if (!far) {
+            for (int k = 0; k < 5; ++k) {
+                const float a = -2.6f + 0.55f * static_cast<float>(k);
+                disc({hc.x + std::cos(a) * head, hc.y + std::sin(a) * head * 0.8f}, head * 0.36f, petal);
+            }
+        }
+        disc(hc, head * 0.85f, {88, 112, 44, 255});
+        return;
+    }
+    disc(hc, head * (bloom ? 0.95f : 0.8f), petal);
+    if (!far) {
+        const int petals = bloom ? 7 : 4;
+        for (int k = 0; k < petals; ++k) {
+            const float a = static_cast<float>(k) * 6.2831853f / static_cast<float>(petals) + head;
+            disc({hc.x + std::cos(a) * head * 0.95f, hc.y + std::sin(a) * head * 0.8f}, head * 0.38f,
+                 k % 3 == 0 ? shade(petal, 0.88f) : petal);
+        }
+    }
+    disc(hc, head * 0.58f, bloom ? Color{96, 62, 30, 255} : Color{78, 62, 36, 255});
+    if (!far) disc({hc.x + head * 0.15f, hc.y + head * 0.15f}, head * 0.32f, {58, 38, 20, 255});
+}
+
+// A round bale of straw lying on its side: the lit end, the rolled side.
+void draw_bale(Vector2 b) {
+    DrawEllipse(static_cast<int>(b.x + 4.0f), static_cast<int>(b.y + 0.5f), 8.0f, 2.2f, lit({20, 24, 12, 70}));
+    DrawRectangleRec({b.x - 3.5f, b.y - 7.4f, 9.0f, 7.4f}, lit({172, 142, 74, 255}));
+    DrawLineEx({b.x - 3.5f, b.y - 6.6f}, {b.x + 5.5f, b.y - 6.6f}, 1.4f, lit({214, 188, 112, 255}));
+    DrawLineV({b.x - 3.5f, b.y - 0.5f}, {b.x + 5.5f, b.y - 0.5f}, lit({128, 104, 56, 255}));
+    DrawEllipse(static_cast<int>(b.x - 3.5f), static_cast<int>(b.y - 3.7f), 2.6f, 3.7f, lit({224, 198, 126, 255}));
+    DrawEllipseLines(static_cast<int>(b.x - 3.5f), static_cast<int>(b.y - 3.7f), 1.5f, 2.2f, lit({176, 146, 78, 255}));
+    DrawEllipseLines(static_cast<int>(b.x - 3.5f), static_cast<int>(b.y - 3.7f), 0.6f, 0.9f, lit({176, 146, 78, 255}));
+}
+
 void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terrain terrain, Vector2 top, Vector2 right,
                         Vector2 bottom, Vector2 left) {
     const auto fx = static_cast<float>(tx);
@@ -1134,45 +1222,106 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
             break;
         }
         case engine::Terrain::Crops: {
-            // Rows of sunflowers: a stalk with its leaves, a big yellow head,
-            // brown in the middle, all turned the same way.
+            // Rows of sunflowers, each its own height and head, swaying a
+            // little; in bloom, ripening or dried black, field patch by patch.
+            // Now and then one missing from the row.
+            const auto t = static_cast<float>(GetTime());
+            const bool far = g_zoom < 0.6f;
+            const float taller = 1.0f + 0.25f * (field({fx, fy}, 43) - 0.5f);  // some fields grew taller
             for (int row = 0; row < 3; ++row) {
                 for (int k = 0; k < 3; ++k) {
                     const uint32_t hk = tile_hash(tx * 3 + k, ty * 5 + row);
-                    const float u = 0.18f + 0.32f * static_cast<float>(k) + (static_cast<float>(hk & 15) / 15.0f - 0.5f) * 0.1f;
-                    const float v = 0.18f + 0.32f * static_cast<float>(row);
-                    const Vector2 base = along_x ? at(u, v) : at(v, u);
-                    const float tall = 8.0f + static_cast<float>((hk >> 4) & 3);
-                    const Vector2 head{base.x + 0.8f, base.y - tall};
-                    DrawLineV(base, head, lit({66, 92, 38, 255}));
-                    DrawEllipse(static_cast<int>(base.x - 2.2f), static_cast<int>(base.y - tall * 0.45f), 2.6f, 1.3f, lit({62, 90, 34, 255}));
-                    DrawEllipse(static_cast<int>(base.x + 2.4f), static_cast<int>(base.y - tall * 0.66f), 2.4f, 1.2f, lit({80, 112, 44, 255}));
-                    DrawCircleV(head, 2.5f, lit({232, 188, 40, 255}));
-                    DrawCircleV({head.x + 0.5f, head.y + 0.3f}, 1.2f, lit({94, 62, 30, 255}));
+                    if (hk % 23 == 0) continue;
+                    const float u = 0.18f + 0.32f * static_cast<float>(k) + (hash_unit(hk) - 0.5f) * 0.12f;
+                    const float v = 0.18f + 0.32f * static_cast<float>(row) + (hash_unit(hk >> 4) - 0.5f) * 0.06f;
+                    const Vector2 g = along_x ? Vector2{fx + u, fy + v} : Vector2{fx + v, fy + u};
+                    const float stage = sunflower_bloom(g) + (hash_unit(hk >> 8) - 0.5f) * 0.25f;
+                    const float tall = (8.0f + 3.5f * hash_unit(hk >> 12)) * taller;
+                    const float head = 2.1f + 0.9f * hash_unit(hk >> 16);
+                    const float sway = stage > 0.3f ? 0.5f * std::sin(t * 1.1f + (g.x + g.y) * 0.45f) : 0.0f;
+                    const float lean = 0.8f + (hash_unit(hk >> 20) - 0.5f) * 1.4f + sway;
+                    draw_sunflower(at(g.x - fx, g.y - fy), tall, head, stage, lean, (hk >> 24) % 7 == 0, far);
                 }
             }
             break;
         }
         case engine::Terrain::Wheat: {
-            // Rows of ears, the wind running over them in waves; every fourth
-            // row of tiles the tramlines the tractor left.
+            const Vector2 mid{fx + 0.5f, fy + 0.5f};
+            auto spot = [&](float u, float v) { return along_x ? at(u, v) : at(v, u); };
+            const bool far = g_zoom < 0.6f;
+            if (wheat_cut(mid) > 0.5f) {
+                // Cut: stubble in rows, a swath of straw along every other
+                // row, a round bale here and there.
+                for (int row = 0; row < 5 && !far; ++row) {
+                    for (int k = 0; k < 6; ++k) {
+                        const Vector2 b = at(0.08f + 0.17f * static_cast<float>(k) + hash_unit(h >> (row + k)) * 0.04f,
+                                             0.1f + 0.2f * static_cast<float>(row));
+                        DrawLineEx(b, {b.x, b.y - 2.0f}, 1.2f, lit({148, 126, 74, 255}));
+                        DrawLineV({b.x + 0.5f, b.y - 2.0f}, {b.x + 0.5f, b.y - 1.0f}, lit({214, 196, 136, 255}));
+                    }
+                }
+                if (ty % 2 == 0) {
+                    // The swath the combine left, along the strip.
+                    const float wob = (hash_unit(h >> 3) - 0.5f) * 0.1f;
+                    DrawLineEx(at(0.0f, 0.5f + wob, 0.5f), at(0.5f, 0.52f - wob, 0.5f), 4.0f, lit({170, 142, 80, 255}));
+                    DrawLineEx(at(0.5f, 0.52f - wob, 0.5f), at(1.0f, 0.5f + wob, 0.5f), 4.0f, lit({170, 142, 80, 255}));
+                    DrawLineEx(at(0.0f, 0.48f + wob, 1.5f), at(0.5f, 0.5f - wob, 1.5f), 2.2f, lit({224, 200, 128, 255}));
+                    DrawLineEx(at(0.5f, 0.5f - wob, 1.5f), at(1.0f, 0.48f + wob, 1.5f), 2.2f, lit({224, 200, 128, 255}));
+                } else if (h % 5 == 0) {
+                    draw_bale(at(0.3f + 0.4f * hash_unit(h >> 5), 0.35f + 0.3f * hash_unit(h >> 9)));
+                }
+                break;
+            }
+            // Standing: every fourth row of tiles the tramlines the tractor
+            // left; ears on their stalks with their awns, the wind running over
+            // them in waves; greener where it's unripe; flattened in patches.
             if ((along_x ? ty : tx) % 4 == 0) {
-                for (const float v : {0.38f, 0.62f}) {
-                    DrawLineEx(along_x ? at(0.0f, v) : at(v, 0.0f), along_x ? at(1.0f, v) : at(v, 1.0f), 1.6f, lit({156, 124, 58, 255}));
+                for (const float v : {0.38f, 0.62f}) DrawLineEx(spot(0.0f, v), spot(1.0f, v), 1.6f, lit({156, 124, 58, 255}));
+            }
+            const float green = wheat_unripe(mid);
+            const Color ripe = mix({188, 152, 66, 255}, {170, 162, 84, 255}, green);
+            const Color light = mix({242, 216, 132, 255}, {204, 206, 128, 255}, green);
+            const auto t = static_cast<float>(GetTime());
+            if (wheat_lodged(mid)) {
+                const float swirl = field(mid, 59) * 3.0f;
+                for (int k = 0; k < 9; ++k) {
+                    const Vector2 b = spot(0.1f + 0.8f * hash_unit(h >> k), 0.1f + 0.8f * hash_unit(h >> (k + 9)));
+                    const float a = swirl + (hash_unit(h >> (k + 3)) - 0.5f) * 0.6f;
+                    DrawLineEx(b, {b.x + std::cos(a) * 4.5f, b.y + std::sin(a) * 1.8f}, 1.5f, lit(shade(ripe, 0.9f)));
                 }
             }
-            const auto t = static_cast<float>(GetTime());
-            for (int row = 0; row < 4; ++row) {
-                const float v = 0.12f + 0.25f * static_cast<float>(row);
-                for (int k = 0; k < 5; ++k) {
-                    const float u = 0.1f + 0.2f * static_cast<float>(k) + static_cast<float>((h >> (row * 5 + k)) & 1) * 0.05f;
+            const int rows = wheat_lodged(mid) ? 2 : 5;
+            for (int row = 0; row < rows; ++row) {
+                const float v = 0.1f + (rows == 5 ? 0.2f : 0.45f) * static_cast<float>(row);
+                for (int k = 0; k < (far ? 3 : 5); ++k) {
+                    const uint32_t hk = tile_hash(tx * 5 + k, ty * 7 + row);
+                    const float u = 0.1f + (far ? 0.3f : 0.2f) * static_cast<float>(k) + hash_unit(hk) * 0.08f;
                     const float wave = 0.5f + 0.5f * std::sin(t * 1.4f - (fx + u + fy + v) * 0.55f);
-                    const Color ear = mix({184, 148, 66, 255}, {240, 214, 130, 255}, wave);
-                    const Vector2 base = along_x ? at(u, v) : at(v, u);
-                    const float lean = (wave - 0.5f) * 1.6f;
-                    const Vector2 tip{base.x + lean, base.y - 4.0f};
-                    DrawLineV(base, tip, lit(shade(ear, 0.8f)));
-                    DrawLineEx({tip.x - lean * 0.1f, tip.y + 1.6f}, tip, 1.8f, lit(ear));
+                    const Color ear = mix(ripe, light, wave * 0.8f + 0.2f * hash_unit(hk >> 5));
+                    const Vector2 base = spot(u, v);
+                    const float lean = (wave - 0.5f) * 1.6f + (hash_unit(hk >> 9) - 0.5f) * 0.8f;
+                    const float tall = 3.4f + 1.4f * hash_unit(hk >> 13);
+                    const Vector2 tip{base.x + lean, base.y - tall};
+                    DrawLineV(base, tip, lit(shade(ear, 0.78f)));
+                    DrawLineEx({tip.x - lean * 0.1f, tip.y + 1.8f}, tip, 1.9f, lit(ear));
+                    if (!far) DrawLineV(tip, {tip.x + lean * 0.4f + 0.3f, tip.y - 1.6f}, lit(shade(light, 1.05f)));
+                }
+            }
+            // Poppies, cornflowers and camomile, thick along the edge of the field.
+            const bool edge = !same(tx - 1, ty) || !same(tx + 1, ty) || !same(tx, ty - 1) || !same(tx, ty + 1);
+            const int flowers = far ? 0 : edge ? 3 : (h >> 7) % 5 == 0 ? 1 : 0;
+            for (int k = 0; k < flowers; ++k) {
+                const uint32_t hk = tile_hash(tx * 11 + k, ty * 3 - k);
+                const Vector2 f = at(0.1f + 0.8f * hash_unit(hk), 0.1f + 0.8f * hash_unit(hk >> 8), 3.5f);
+                const int kind = static_cast<int>((hk >> 16) % 4);
+                if (kind <= 1) {
+                    disc(f, 1.5f, {208, 36, 28, 255});
+                    DrawCircleV({f.x + 0.3f, f.y + 0.2f}, 0.5f, lit({40, 20, 20, 255}));
+                } else if (kind == 2) {
+                    disc(f, 1.3f, {72, 112, 206, 255});
+                } else {
+                    disc(f, 1.3f, {238, 236, 226, 255});
+                    DrawCircleV(f, 0.5f, lit({230, 190, 50, 255}));
                 }
             }
             break;
@@ -1293,12 +1442,15 @@ Color ground_colour(engine::Terrain t, Vector2 p) {
         return mix(grass, kBareEarth, 0.85f * smooth01((field(p, 9) - kBareFrom) / 0.1f));
     }
     if (t == engine::Terrain::Crops) {
-        // Under the sunflowers, their broad leaves.
-        return mix(shade({92, 110, 48, 255}, 0.9f + 0.2f * tone), {128, 128, 60, 255}, 0.35f * smooth01((field(p, 29) - 0.55f) / 0.2f));
+        // Under the sunflowers, their broad leaves; brown where they dried on the stalk.
+        const Color leaves = mix(shade({92, 110, 48, 255}, 0.9f + 0.2f * tone), {128, 128, 60, 255},
+                                 0.35f * smooth01((field(p, 29) - 0.55f) / 0.2f));
+        return mix({96, 78, 50, 255}, leaves, sunflower_bloom(p));
     }
     if (t == engine::Terrain::Wheat) {
-        // Ripe gold, paler and greener in patches.
-        return mix(shade(theme::terrain_color(t), 0.92f + 0.16f * tone), {170, 164, 86, 255}, 0.4f * smooth01((field(p, 23) - 0.6f) / 0.2f));
+        // Ripe gold, paler and greener in patches; the pale stubble where it's cut.
+        const Color standing = mix(shade(theme::terrain_color(t), 0.92f + 0.16f * tone), {170, 164, 86, 255}, 0.4f * wheat_unripe(p));
+        return mix(standing, shade({184, 168, 112, 255}, 0.92f + 0.16f * tone), wheat_cut(p));
     }
     if (t == engine::Terrain::Slag) {
         // Black rock (burnt rusty red up the top: see paint_ground).
