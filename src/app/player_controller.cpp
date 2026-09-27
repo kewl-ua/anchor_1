@@ -340,6 +340,7 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::Warehouse: return "Warehouse";
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
+        case engine::StructureType::Quarters: return "Quarters";
         default: return engine::structure_type(type).name;
     }
 }
@@ -408,7 +409,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
 
     if (def.worker && build_menu_) {
         // Barracks along the top and middle rows, depots along the bottom one.
-        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12};
+        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13};
         static_assert(std::size(kBuildSlots) >= std::size(engine::kBuildable));
         for (size_t i = 0; i < std::size(engine::kBuildable); ++i) {
             const engine::StructureDef& b = engine::structure_type(engine::kBuildable[i]);

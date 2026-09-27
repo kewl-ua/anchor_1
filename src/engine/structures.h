@@ -42,6 +42,7 @@ enum class StructureType : uint8_t {
     CellTower,         // a cell tower: a spotter up it sees far; it relays radio for whoever holds it
     GasStation,        // fuel in its tanks for whoever holds it: at the pumps, or hauled off
     Elevator,          // a grain elevator: food for whoever holds it, and a view from the top
+    Quarters,          // living barracks: bunks for the men, like AoE's houses
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -96,6 +97,7 @@ inline constexpr StructureType kBuildable[] = {
     StructureType::Warehouse,
     StructureType::AmmoDepot,
     StructureType::FuelDepot,
+    StructureType::Quarters,
 };
 
 inline constexpr PlayerId kNoOwner = 255;

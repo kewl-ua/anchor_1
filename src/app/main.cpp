@@ -502,7 +502,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
 
     if (options.scene == "build") {
         // Three rear troops put up an infantry barracks in front of the
-        // headquarters, two a warehouse towards the woodline.
+        // headquarters, two living quarters behind it.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const engine::TilePos b = engine::tile_of(base);
         const int32_t fwd = me == 0 ? 1 : -1;
@@ -512,15 +512,15 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         if (workers.size() < 5) return std::nullopt;
         const engine::TilePos barracks{b.x + 4 * fwd - 1, b.y - 6 * fwd - 1};
-        const engine::TilePos warehouse{b.x - 10 * fwd, b.y + 6 * fwd};
+        const engine::TilePos quarters{b.x - 10 * fwd, b.y + 6 * fwd};
         game.submit({.type = engine::CommandType::Build,
                      .units = {workers[0], workers[1], workers[2]},
                      .target = engine::tile_center(barracks),
                      .structure_type = static_cast<uint8_t>(engine::StructureType::InfantryBarracks)});
         game.submit({.type = engine::CommandType::Build,
                      .units = {workers[3], workers[4]},
-                     .target = engine::tile_center(warehouse),
-                     .structure_type = static_cast<uint8_t>(engine::StructureType::Warehouse)});
+                     .target = engine::tile_center(quarters),
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::Quarters)});
         return render::to_vector2(base);
     }
 

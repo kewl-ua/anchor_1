@@ -90,6 +90,15 @@ inline constexpr int32_t kRationPerMan = 1;
 inline constexpr int32_t kHungryAccuracyPercent = 75;
 inline constexpr int32_t kHungrySpeedPercent = 85;
 
+// --- Housing ---
+// Like AoE's houses: every man in service (a unit's crew, as hired) needs a
+// bunk. The headquarters has room for this many, each living quarters for
+// this many more, up to the cap. Hiring waits while there's no room; nobody
+// already in service is sent away if the quarters burn.
+inline constexpr int32_t kHeadquartersBunks = 30;
+inline constexpr int32_t kQuartersBunks = 10;
+inline constexpr int32_t kMaxPopulation = 200;
+
 // --- Village buildings ---
 // A building this big (tiles: a barn, a machine shed) is spacious enough for
 // rear troops to turn it into a depot, a forward one near the front: it

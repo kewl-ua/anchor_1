@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "engine/simulation.h"
@@ -316,6 +317,11 @@ void draw_wagon_icon(float x, float y, Color c) {
     DrawCircleV({x + 9, y + 9}, 1.5f, c);
 }
 
+void draw_bunk_icon(float x, float y, Color c) {
+    DrawTriangle({x + 6, y}, {x, y + 5}, {x + 12, y + 5}, c);
+    DrawRectangleRec({x + 1, y + 5, 10, 6}, c);
+}
+
 void draw_man_icon(float x, float y, Color c) {
     DrawCircleV({x + 4, y + 2}, 2.0f, c);
     DrawRectangleRec({x + 2, y + 5, 4, 6}, c);
@@ -350,7 +356,8 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
     const engine::Stock& stock = world.stock(state.local_player);
     const Logistics logistics = logistics_of(world, state.local_player);
     const engine::Structure* station = world.station_of(state.local_player);
-    std::array<const char*, 4> note{};
+    // Copied as it's made: TextFormat's few buffers are reused by the next resource.
+    std::array<std::string, 4> note{};
     size_t note_lines = 0;
     for (size_t r = 0; r < engine::kResourceCount; ++r) {
         const auto resource = static_cast<engine::Resource>(r);
@@ -365,6 +372,17 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
         if (starving) {
             draw_text("HUNGRY", x, y, kSmallFontSize, theme::kDanger);
             x += static_cast<float>(MeasureText("HUNGRY", kSmallFontSize)) + 8;
+        }
+        const int32_t housed = world.population(state.local_player);
+        const int32_t bunks = world.bunks(state.local_player);
+        if (resource == engine::Resource::Personnel) {
+            // Housing, AoE-style: in service / bunks, red when full.
+            const Color c = housed >= bunks ? theme::kDanger : theme::kTextDim;
+            draw_bunk_icon(x, y + 1, c);
+            x += 15;
+            const char* room = TextFormat("%d/%d", housed, bunks);
+            draw_text(room, x, y, kSmallFontSize, c);
+            x += static_cast<float>(MeasureText(room, kSmallFontSize));
         }
 
         const bool by_truck = engine::depot_for(resource).has_value();
@@ -401,6 +419,12 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
             if (resource == engine::Resource::Personnel) {
                 note[note_lines++] = TextFormat("+%d with every train: look after the men",
                                                 engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)]);
+                note[note_lines++] = TextFormat("In service %d, bunks %d (headquarters %d, living quarters %d each, up to %d)",
+                                                housed, bunks, engine::kHeadquartersBunks, engine::kQuartersBunks,
+                                                engine::kMaxPopulation);
+                note[note_lines++] = housed >= bunks && bunks < engine::kMaxPopulation
+                                         ? "No room: hiring waits. Rear troops build living quarters (Q, then V)"
+                                         : "Hiring waits when the bunks are full";
             } else if (resource == engine::Resource::Materials) {
                 note[note_lines++] = TextFormat("Rear troops cutting timber or quarrying stone: %d", logistics.gatherers);
                 note[note_lines++] = "They carry it to the headquarters or a warehouse";
@@ -472,7 +496,11 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
         put(TextFormat("Ping %d ms  ", state.net.ping_ms), theme::kTextDim);
     }
     put(TextFormat("Tick %u  FPS %d  Delay %u", world.tick(), GetFPS(), state.net.input_delay), theme::kTextDim);
-    if (note_lines > 0) draw_note({note.data(), note_lines}, mouse.x - 40, area.y + area.height + 4);
+    if (note_lines > 0) {
+        std::array<const char*, 4> lines{};
+        for (size_t i = 0; i < note_lines; ++i) lines[i] = note[i].c_str();
+        draw_note({lines.data(), note_lines}, mouse.x - 40, area.y + area.height + 4);
+    }
 }
 
 void Hud::draw_banner(const NetStatus& net) const {
@@ -677,6 +705,13 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
             draw_depot_trucks(world, s, line4, area);
             return;
+        case engine::StructureType::Quarters:
+            draw_text(TextFormat("Bunks for %d men.", engine::kQuartersBunks), area.x, line2, kCardFontSize,
+                      theme::kTextDim);
+            draw_text(TextFormat("In service: %d, bunks: %d (up to %d).", world.population(s.owner),
+                                 world.bunks(s.owner), engine::kMaxPopulation),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            return;
         case engine::StructureType::AmmoDepot:
             draw_text("Takes ammunition from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
@@ -803,6 +838,9 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             const float done = static_cast<float>(s.progress) / static_cast<float>(def_i.train_time);
             DrawRectangleRec({x + 3, line2 + kIconH - 7, (kIconW - 6) * done, 3}, {90, 210, 90, 255});
         }
+    }
+    if (world.waits_for_bunks(s)) {
+        draw_text("No bunks free: build living quarters", area.x, line2 + kIconH + 10, kCardFontSize, theme::kDanger);
     }
     if (def.roster_size > 0) {
         draw_text(TextFormat("queue %d/%d", static_cast<int>(s.queue.size()), static_cast<int>(engine::kMaxQueue)),

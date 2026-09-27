@@ -362,10 +362,49 @@ void World::update_building(Unit& u) {
 }
 
 // Every building works on the front of its queue; the unit walks out of the door.
+int32_t World::population(PlayerId player) const {
+    int32_t men = mouths(player);
+    for (const Structure& s : structures_) {
+        // The one in training has his bunk already.
+        if (s.owner == player && s.built && !s.queue.empty() && s.progress > 0) {
+            men += unit_type(s.queue.front()).cost[static_cast<size_t>(Resource::Personnel)];
+        }
+    }
+    return men;
+}
+
+int32_t World::bunks(PlayerId player) const {
+    int32_t room = 0;
+    for (const Structure& s : structures_) {
+        if (s.owner != player || !s.built) continue;
+        if (s.type == StructureType::Headquarters) room += kHeadquartersBunks;
+        if (s.type == StructureType::Quarters) room += kQuartersBunks;
+    }
+    return std::min(room, kMaxPopulation);
+}
+
+bool World::waits_for_bunks(const Structure& s) const {
+    if (s.queue.empty() || !s.built || s.progress > 0 || s.owner >= kMaxPlayers) return false;
+    const int32_t men = unit_type(s.queue.front()).cost[static_cast<size_t>(Resource::Personnel)];
+    return population(s.owner) + men > bunks(s.owner);
+}
+
 void World::update_production() {
+    // Hiring starts only with a bunk free for the man (the men) hired.
+    std::array<int32_t, kMaxPlayers> housed{};
+    std::array<int32_t, kMaxPlayers> room{};
+    for (size_t p = 0; p < kMaxPlayers; ++p) {
+        housed[p] = population(static_cast<PlayerId>(p));
+        room[p] = bunks(static_cast<PlayerId>(p));
+    }
     for (Structure& s : structures_) {
         if (s.queue.empty() || !s.built) continue;
         const UnitTypeId type = s.queue.front();
+        if (s.progress == 0 && s.owner < kMaxPlayers) {
+            const int32_t men = unit_type(type).cost[static_cast<size_t>(Resource::Personnel)];
+            if (housed[s.owner] + men > room[s.owner]) continue;  // no room: waits for quarters
+            housed[s.owner] += men;
+        }
         if (++s.progress < unit_type(type).train_time) continue;
         s.progress = 0;
         s.queue.erase(s.queue.begin());

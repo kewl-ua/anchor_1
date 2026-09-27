@@ -470,6 +470,11 @@ public:
     bool fixed_by(PlayerId player, const Unit& u) const;
     // Rations: the men `player` has to feed, and whether his army went hungry.
     int32_t mouths(PlayerId player) const;
+    // Housing: the men in service and in training, and the bunks there are for them.
+    int32_t population(PlayerId player) const;
+    int32_t bunks(PlayerId player) const;
+    // A building's hiring waits for room in the quarters.
+    bool waits_for_bunks(const Structure& s) const;
     bool hungry(PlayerId player) const { return player < kMaxPlayers && hungry_[player]; }
     // Setup and tests: an upgrade without the research.
     void upgrade_for_setup(PlayerId player, UpgradeId id) {

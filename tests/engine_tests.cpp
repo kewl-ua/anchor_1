@@ -1549,6 +1549,74 @@ void test_ifv_bail_out() {
     CHECK(sim.world().find_unit(hurt) == nullptr);
 }
 
+// Housing, like AoE's houses: the headquarters has bunks for 30 men, each
+// living quarters (built by rear troops) for 10 more, up to 200. Hiring
+// waits for a free bunk; the one in training has his already.
+void test_quarters_house_the_men() {
+    CHECK(std::find(std::begin(kBuildable), std::end(kBuildable), StructureType::Quarters) != std::end(kBuildable));
+    Simulation sim = economy_sim({50, 2000, 2000, 2000, 2000}, false);
+    World& w = sim.world_for_setup();
+    const EntityId hq = sim.world().structure_at({6, 10})->id;
+    const EntityId barracks = w.place_structure(StructureType::InfantryBarracks, 0, {20, 16}, 3, 3);
+    CHECK(sim.world().bunks(0) == kHeadquartersBunks && sim.world().population(0) == 0);
+    for (int i = 0; i < 28; ++i) w.spawn_unit(0, UnitTypeId::Rifleman, at(30 + i % 5, 2 + i / 5));
+    w.spawn_unit(0, UnitTypeId::Worker, at(10, 20));
+    CHECK(sim.world().population(0) == 29);
+
+    auto hire = [&](EntityId at_building, UnitTypeId type) {
+        issue(sim, Command{.type = CommandType::Train, .player = 0, .target_unit = at_building,
+                           .unit_type = static_cast<uint8_t>(type)});
+    };
+    auto count = [&](UnitTypeId type) {
+        int n = 0;
+        for (const Unit& u : sim.world().units()) n += u.type == type ? 1 : 0;
+        return n;
+    };
+    // One bunk left: the headquarters' rear trooper takes it; the barracks'
+    // rifleman, hired at the same time, and the second rear trooper wait.
+    hire(hq, UnitTypeId::Worker);
+    hire(hq, UnitTypeId::Worker);
+    hire(barracks, UnitTypeId::Rifleman);
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().population(0) == 30);  // the one in training has his bunk
+    CHECK(!sim.world().waits_for_bunks(*sim.world().find_structure(hq)));  // it's training him
+    CHECK(sim.world().waits_for_bunks(*sim.world().find_structure(barracks)));
+    for (Tick i = 0; i < 3 * unit_type(UnitTypeId::Rifleman).train_time; ++i) sim.step();
+    CHECK(count(UnitTypeId::Worker) == 2 && count(UnitTypeId::Rifleman) == 28);
+    CHECK(sim.world().population(0) == 30);  // the ones waiting have none yet
+    CHECK(sim.world().waits_for_bunks(*sim.world().find_structure(hq)));
+    CHECK(sim.world().waits_for_bunks(*sim.world().find_structure(barracks)));
+
+    // Living quarters: ten more bunks, and both come out.
+    const EntityId quarters = w.place_structure(StructureType::Quarters, 0, {26, 16}, 2, 2);
+    CHECK(sim.world().bunks(0) == kHeadquartersBunks + kQuartersBunks);
+    for (Tick i = 0; i < unit_type(UnitTypeId::Rifleman).train_time + 5; ++i) sim.step();
+    CHECK(count(UnitTypeId::Worker) == 3 && count(UnitTypeId::Rifleman) == 29);
+    CHECK(!sim.world().waits_for_bunks(*sim.world().find_structure(hq)));
+
+    // Burnt down: nobody is sent away, but no more hiring.
+    w.structure_for_setup(quarters)->hp = 0;
+    sim.step();
+    CHECK(sim.world().bunks(0) == kHeadquartersBunks && count(UnitTypeId::Worker) == 3);
+    hire(barracks, UnitTypeId::Rifleman);
+    for (Tick i = 0; i < 2 * unit_type(UnitTypeId::Rifleman).train_time; ++i) sim.step();
+    CHECK(count(UnitTypeId::Rifleman) == 29);
+
+    // Quarters still going up don't house anyone; the enemy's don't house ours.
+    const EntityId worker = w.spawn_unit(0, UnitTypeId::Worker, at(30, 20));
+    issue(sim, Command{.type = CommandType::Build, .player = 0, .units = {worker}, .target = tile_center({31, 20}),
+                       .structure_type = static_cast<uint8_t>(StructureType::Quarters)});
+    w.place_structure(StructureType::Quarters, 1, {36, 20}, 2, 2);
+    for (int i = 0; i < 100; ++i) sim.step();
+    bool site = false;
+    for (const Structure& s : sim.world().structures()) site = site || (s.type == StructureType::Quarters && !s.built);
+    CHECK(site && sim.world().bunks(0) == kHeadquartersBunks);
+
+    // Up to 200 at most.
+    for (int i = 0; i < 20; ++i) w.place_structure(StructureType::Quarters, 0, {2 + 2 * (i % 10), 20 + 2 * (i / 10)}, 2, 2);
+    CHECK(sim.world().bunks(0) == kMaxPopulation);
+}
+
 void test_rear_troops_quarry_stone() {
     Simulation sim = economy_sim({}, false);
     issue(sim, gather_at(spawn_workers(sim, 2, 9, 13), 5, 15));
@@ -3872,6 +3940,7 @@ void test_aviation_buildings() {
     // A new aircraft is rolled out onto a free spot of the runway.
     AirSetup a = air_setup();
     a.sim.world_for_setup().set_stock(0, {10, 0, 1000, 1000, 1000});
+    a.sim.world_for_setup().place_structure(StructureType::Quarters, 0, {4, 30}, 2, 2);  // bunks for the pilots
     Command train{.type = CommandType::Train, .player = 0, .target_unit = a.airfield,
                   .unit_type = static_cast<uint8_t>(UnitTypeId::Su25)};
     issue(a.sim, train);
@@ -4199,6 +4268,7 @@ int main() {
     test_rally_points();
     test_ifv_carries_squad();
     test_ifv_bail_out();
+    test_quarters_house_the_men();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();
