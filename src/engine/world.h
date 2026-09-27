@@ -55,6 +55,7 @@ inline constexpr Fixed kSectorDetection = Fixed::from_int(4);
 // of the man: bullets and fragments from the level or below, not from above
 // and not lobbed ones.
 inline constexpr int32_t kFoxholeCover = 50;
+inline constexpr int32_t kCraterCover = 40;  // a man lying in a shell crater
 inline constexpr int32_t kTrenchCover = 50;         // at a position in a trench...
 inline constexpr int32_t kTrenchWalkingCover = 10;  // ...walking along it
 inline constexpr int32_t kParapetCover = 25;        // on top, against fire from the front
@@ -121,6 +122,13 @@ inline constexpr Fixed kSalvoSpread = Fixed::from_int(3);
 inline constexpr Tick kSalvoInterval = 2;
 // A tank firing from a covered position wears its barrel: HP per shot.
 inline constexpr int32_t kBarrelWearPercent = 1;
+
+// Craters: a heavy shell or rocket bursting on open ground or a road leaves
+// one this often (percent), a medium one (a mortar bomb) less often.
+inline constexpr Fixed kHeavyBurst = Fixed::from_ratio(6, 5);
+inline constexpr Fixed kMediumBurst = Fixed::from_int(1);
+inline constexpr int32_t kHeavyCraterPercent = 60;
+inline constexpr int32_t kMediumCraterPercent = 25;
 
 // Engineering. A mine covers its tile: the first enemy of the right kind to
 // come onto it (infantry for an AP mine, vehicles for an AT one) sets it
@@ -671,6 +679,8 @@ private:
 
     void move_projectiles();
     void explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit);
+    // A burst on open ground may leave a crater there.
+    void maybe_crater(FixedVec2 at, const WeaponDef& weapon);
     void hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot);
     void apply_damage_and_remove_dead();
     void separate_units();

@@ -32,7 +32,8 @@ constexpr WeaponDef kChargeBlast{.name = "Demolition charge", .damage = 80, .dam
 void World::lay_mine(Unit& u, bool anti_tank) {
     const TilePos t = map_.clamp_tile(tile_of(u.order_point));
     const bool taken = std::any_of(mines_.begin(), mines_.end(), [&](const Mine& m) { return m.tile == t; });
-    if (taken || !map_.passable(t, MoveClass::Foot)) return finish_ability(u);
+    // Not in concrete: a mine needs earth to go into.
+    if (taken || !map_.passable(t, MoveClass::Foot) || map_.terrain(t) == Terrain::Road) return finish_ability(u);
     if ((tile_center(t) - u.pos).length_sq_raw() > square_raw(kWorkReach)) {
         navigate(u, tile_center(t), u.order_path, t, false);
         return;

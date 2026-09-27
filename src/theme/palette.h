@@ -44,6 +44,12 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Hedgehogs: return {90, 108, 66, 255};
         case engine::Terrain::Pillbox: return {96, 86, 66, 255};
         case engine::Terrain::Airstrip: return {118, 120, 116, 255};
+        case engine::Terrain::Road: return {98, 100, 102, 255};
+        case engine::Terrain::DirtRoad: return {138, 114, 80, 255};
+        case engine::Terrain::Plowed: return {110, 92, 66, 255};
+        case engine::Terrain::Crops: return {138, 140, 64, 255};
+        case engine::Terrain::Swamp: return {64, 86, 68, 255};
+        case engine::Terrain::Crater: return {92, 82, 68, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;

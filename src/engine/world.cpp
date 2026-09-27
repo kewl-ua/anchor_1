@@ -1018,6 +1018,7 @@ void World::move_projectiles() {
 void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
+    maybe_crater(at, weapon);
     const Shot blast{at, p.shooter_elevation, true, p.lobbed};
 
     // Thrown in through a window or down a dugout's entrance: the men
@@ -1079,12 +1080,31 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     if (direct_hit) hurt(*direct_hit, weapon, {p.origin, p.shooter_elevation, false, p.lobbed});
 }
 
+void World::maybe_crater(FixedVec2 at, const WeaponDef& weapon) {
+    if (weapon.damage_type != DamageType::Explosive || weapon.splash_radius < kMediumBurst) return;
+    const TilePos t = map_.clamp_tile(tile_of(at));
+    const Terrain ground = map_.terrain(t);
+    const bool open = ground == Terrain::Grass || ground == Terrain::Plowed || ground == Terrain::Crops ||
+                      ground == Terrain::DirtRoad || ground == Terrain::Road;
+    if (!open || structure_id_at(t) != 0) return;
+    const int32_t chance = weapon.splash_radius >= kHeavyBurst ? kHeavyCraterPercent : kMediumCraterPercent;
+    if (static_cast<int32_t>(rng_.next_below(100)) >= chance) return;
+    map_.set_terrain(t.x, t.y, Terrain::Crater);  // passable for all: no route goes stale
+}
+
 int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
     if (shot.plunging || victim.inside) return 0;
     if (shot.elevation > map_.elevation_at(victim.pos)) return 0;  // fired down into it
     const TilePos tile = map_.clamp_tile(tile_of(victim.pos));
     const Structure* works = structure_at(tile);
-    if (!works || !is_fieldwork(works->type)) return 0;
+    if (!works || !is_fieldwork(works->type)) {
+        // A shell crater hides a man lying in it, not a vehicle.
+        if (map_.terrain(tile) != Terrain::Crater || def_of(victim).vehicle || victim.airborne) return 0;
+        if (shot.blast ? tile_of(shot.from) == tile : (shot.from - victim.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {
+            return 0;
+        }
+        return kCraterCover;
+    }
     if (shot.blast) {
         if (tile_of(shot.from) == tile) return 0;  // burst right in it
     } else if ((shot.from - victim.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {

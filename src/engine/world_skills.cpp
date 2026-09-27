@@ -82,7 +82,9 @@ std::vector<TilePos> trench_line(TilePos a, TilePos b) {
 bool World::diggable(TilePos t) const {
     if (!map_.contains(t) || structure_id_at(t) != 0) return false;
     const Terrain terrain = map_.terrain(t);
-    return terrain == Terrain::Grass || terrain == Terrain::Urban || terrain == Terrain::Ruins;
+    return terrain == Terrain::Grass || terrain == Terrain::Urban || terrain == Terrain::Ruins ||
+           terrain == Terrain::Plowed || terrain == Terrain::Crops || terrain == Terrain::DirtRoad ||
+           terrain == Terrain::Crater;
 }
 
 EntityId World::place_fieldwork(StructureType type, PlayerId owner, TilePos t, FixedVec2 facing) {

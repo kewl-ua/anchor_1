@@ -97,7 +97,10 @@ bool World::can_place(StructureType type, TilePos origin) const {
             if (!map_.contains(t) || structure_id_at(t) != 0) return false;
             const Terrain terrain = map_.terrain(t);
             // Open ground: fields, village yards, ruins. Not in a forest, not on a road through it.
-            if (terrain != Terrain::Grass && terrain != Terrain::Urban && terrain != Terrain::Ruins) return false;
+            if (terrain != Terrain::Grass && terrain != Terrain::Urban && terrain != Terrain::Ruins &&
+                terrain != Terrain::Plowed && terrain != Terrain::Crops) {
+                return false;
+            }
         }
     }
     return true;

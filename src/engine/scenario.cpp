@@ -56,6 +56,10 @@ constexpr Segment kTrails[] = {
 constexpr Segment kTreeLines[] = {
     {18, 40, 32, 40}, {25, 50, 25, 72}, {30, 60, 48, 60}, {40, 62, 40, 80}, {45, 72, 60, 72},
 };
+// More tree lines along the fields and roads.
+constexpr Segment kMoreTreeLines[] = {
+    {10, 70, 22, 70}, {15, 53, 23, 53}, {48, 84, 62, 84}, {28, 83, 36, 83},
+};
 constexpr int32_t kTreeLineGapEvery = 10;  // tiles
 constexpr int32_t kTreeLineGapWidth = 2;
 
@@ -75,6 +79,21 @@ struct Barn {
 constexpr Barn kBarns[] = {{31, 65}, {37, 55}};
 constexpr int32_t kBarnWidth = 4;
 constexpr int32_t kBarnHeight = 2;
+
+// Fields: plowed land and tall crops (sunflowers, maize) between the tree lines.
+constexpr Rect kPlowed[] = {{28, 72, 8, 6}, {45, 76, 8, 5}, {12, 74, 7, 5}};
+constexpr Rect kCrops[] = {{42, 62, 6, 8}, {15, 40, 6, 5}, {26, 55, 6, 4}};
+// Swamps by the pond and the river.
+constexpr Blob kSwamps[] = {{19, 47, 2}, {40, 46, 2}};
+// The concrete highway runs from the base to the central bridge (and on,
+// mirrored, to the other base); dirt roads lead off it to the villages,
+// the farms and the fields.
+constexpr Segment kHighway = {18, 82, 50, 50};
+constexpr Segment kDirtRoads[] = {
+    {34, 53, 34, 64}, {14, 63, 27, 73}, {20, 78, 20, 56}, {34, 64, 40, 60},
+};
+// The old front line: craters in the middle of the map.
+constexpr Rect kShelledBelt = {35, 48, 15, 17};
 
 constexpr int32_t kRiverAmplitudePct = 5;
 constexpr int64_t kRiverHalfWidth = 2;   // in diagonal steps: ~3.5 tiles wide
@@ -257,6 +276,35 @@ TileMap make_demo_map(int32_t size) {
             }
         }
     }
+    for (const Segment& s : kMoreTreeLines) {
+        p.line(s, [&](int32_t x, int32_t y, int32_t i) {
+            if (i % kTreeLineGapEvery >= kTreeLineGapWidth && map.contains_tile(x, y) &&
+                map.terrain(x, y) == Terrain::Grass) {
+                p.paint(x, y, Terrain::Forest);
+            }
+        });
+    }
+    // Fields go only on open grass.
+    auto field = [&](const Rect& r, Terrain t) {
+        for (int32_t dy = 0; dy < std::max(3, p.at(r.h_pct)); ++dy) {
+            for (int32_t dx = 0; dx < std::max(3, p.at(r.w_pct)); ++dx) {
+                const int32_t x = p.at(r.x_pct) + dx;
+                const int32_t y = p.at(r.y_pct) + dy;
+                if (map.contains_tile(x, y) && map.terrain(x, y) == Terrain::Grass) p.paint(x, y, t);
+            }
+        }
+    };
+    for (const Rect& r : kPlowed) field(r, Terrain::Plowed);
+    for (const Rect& r : kCrops) field(r, Terrain::Crops);
+    for (const Blob& swamp : kSwamps) {
+        p.disc(p.at(swamp.x_pct), p.at(swamp.y_pct), std::max(2, p.at(swamp.radius_pct)),
+               [&](int32_t x, int32_t y, int32_t dist) {
+                   const auto ragged = static_cast<int32_t>(tile_noise(x, y) % 2);
+                   if (dist <= std::max(2, p.at(swamp.radius_pct)) - ragged && map.terrain(x, y) == Terrain::Grass) {
+                       p.paint(x, y, Terrain::Swamp);
+                   }
+               });
+    }
     for (const Blob& pond : kPonds) {
         p.disc(p.at(pond.x_pct), p.at(pond.y_pct), std::max(1, p.at(pond.radius_pct)),
                [&](int32_t x, int32_t y, int32_t dist) {
@@ -284,6 +332,35 @@ TileMap make_demo_map(int32_t size) {
     for (int32_t x = 0; x < station.x; ++x) p.paint(x, station.y, Terrain::Rail);
     for (int32_t dy = 0; dy < kStationHeight; ++dy) {
         for (int32_t dx = 0; dx < kStationWidth; ++dx) p.paint(station.x + dx, station.y + dy, Terrain::Grass);
+    }
+
+    // Roads last on the ground, over fields and through the woods, but not
+    // through houses, rocks, water or the railway (the river gets its bridge).
+    auto road = [&](int32_t x, int32_t y, Terrain t) {
+        if (!map.contains_tile(x, y)) return;
+        const Terrain under = map.terrain(x, y);
+        const bool open = under == Terrain::Grass || under == Terrain::Forest || under == Terrain::Trail ||
+                          under == Terrain::Urban || under == Terrain::Plowed || under == Terrain::Crops ||
+                          under == Terrain::Swamp || under == Terrain::DirtRoad;
+        if (open) p.paint(x, y, t);
+    };
+    for (const Segment& s : kDirtRoads) p.line(s, [&](int32_t x, int32_t y, int32_t) { road(x, y, Terrain::DirtRoad); });
+    p.line(kHighway, [&](int32_t x, int32_t y, int32_t) {
+        road(x, y, Terrain::Road);
+        road(x + 1, y, Terrain::Road);  // two lanes
+    });
+    // Craters of the old shelling in the middle: on open ground and roads.
+    for (int32_t dy = 0; dy < p.at(kShelledBelt.h_pct); ++dy) {
+        for (int32_t dx = 0; dx < p.at(kShelledBelt.w_pct); ++dx) {
+            const int32_t x = p.at(kShelledBelt.x_pct) + dx;
+            const int32_t y = p.at(kShelledBelt.y_pct) + dy;
+            if (!map.contains_tile(x, y) || tile_noise(x, y) % 23 != 0) continue;
+            const Terrain under = map.terrain(x, y);
+            if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops ||
+                under == Terrain::DirtRoad || under == Terrain::Road) {
+                p.paint(x, y, Terrain::Crater);
+            }
+        }
     }
 
     for (const Hill& hill : kHills) raise_hill(map, p, hill);

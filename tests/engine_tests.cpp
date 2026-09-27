@@ -3505,6 +3505,135 @@ Trip drive(Simulation& sim, EntityId id, int32_t x, int32_t y, int max_ticks) {
     return trip;
 }
 
+// A 40 x 10 strip of one terrain; how long a unit takes to cross 30 tiles of it.
+int crossing(Terrain ground, UnitTypeId who) {
+    TileMap map(40, 10);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 40; ++x) map.set_terrain(x, y, ground);
+    }
+    Simulation sim(1, map);
+    const EntityId id = sim.world_for_setup().spawn_unit(0, who, at(4, 5));
+    const Trip trip = drive(sim, id, 34, 5, 20000);
+    return trip.arrived ? trip.ticks : 1000000;
+}
+
+// Roads are fast (concrete faster than dirt), plowed land slows wheels,
+// a swamp swallows tracks and stops wheels; the route finder takes the road.
+void test_roads_fields_and_swamps() {
+    const int tank_field = crossing(Terrain::Grass, UnitTypeId::Tank);
+    const int tank_dirt = crossing(Terrain::DirtRoad, UnitTypeId::Tank);
+    const int tank_road = crossing(Terrain::Road, UnitTypeId::Tank);
+    CHECK(tank_road < tank_dirt && tank_dirt < tank_field);
+    CHECK(crossing(Terrain::Road, UnitTypeId::Truck) * 100 < crossing(Terrain::Grass, UnitTypeId::Truck) * 70);
+    CHECK(crossing(Terrain::Plowed, UnitTypeId::Truck) > crossing(Terrain::Grass, UnitTypeId::Truck));
+    CHECK(crossing(Terrain::Swamp, UnitTypeId::Tank) > 4 * tank_field);
+    CHECK(crossing(Terrain::Swamp, UnitTypeId::Truck) == 1000000);  // never gets in
+    CHECK(crossing(Terrain::Swamp, UnitTypeId::Rifleman) > 2 * crossing(Terrain::Grass, UnitTypeId::Rifleman));
+
+    // Across a plowed field, a road looping round is the quicker way for a truck.
+    TileMap map(40, 30);
+    for (int y = 0; y < 30; ++y) {
+        for (int x = 0; x < 40; ++x) map.set_terrain(x, y, Terrain::Plowed);
+    }
+    for (int x = 2; x <= 36; ++x) map.set_terrain(x, 20, Terrain::Road);
+    for (int y = 5; y <= 20; ++y) {
+        map.set_terrain(2, y, Terrain::Road);
+        map.set_terrain(36, y, Terrain::Road);
+    }
+    Simulation sim(1, map);
+    const EntityId truck = sim.world_for_setup().spawn_unit(0, UnitTypeId::Truck, tile_center({2, 5}));
+    issue(sim, make_move(0, {truck}, 36, 5));
+    bool on_road_far = false;
+    for (int i = 0; i < 2000; ++i) {
+        sim.step();
+        on_road_far = on_road_far || sim.world().find_unit(truck)->pos.y > Fixed::from_int(15);
+    }
+    CHECK(on_road_far);
+}
+
+// Sunflowers, reeds and a crater hide a man, not a vehicle; a crater also
+// takes some of the hits for him. No mine goes into concrete.
+void test_crops_swamps_and_craters() {
+    auto hidden = [](Terrain ground, UnitTypeId who) {
+        TileMap map(40, 20);
+        map.set_terrain(20, 10, ground);
+        Simulation sim(1, map);
+        const EntityId man = sim.world_for_setup().spawn_unit(1, who, tile_center({20, 10}));
+        sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(15, 10));  // 5 tiles off: in sight
+        sim.step();
+        return !seen(sim, 0, man);
+    };
+    CHECK(!hidden(Terrain::Grass, UnitTypeId::Rifleman));
+    CHECK(hidden(Terrain::Crops, UnitTypeId::Rifleman));
+    CHECK(hidden(Terrain::Swamp, UnitTypeId::Rifleman));
+    CHECK(hidden(Terrain::Crater, UnitTypeId::Rifleman));
+    CHECK(!hidden(Terrain::Crops, UnitTypeId::Tank));
+
+    auto damage = [](Terrain ground) {
+        int32_t total = 0;
+        for (uint64_t seed = 1; seed <= 20; ++seed) {
+            TileMap map(30, 20);
+            map.set_terrain(15, 10, ground);
+            Simulation sim(seed, map);
+            const EntityId man = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, tile_center({15, 10}));
+            sim.world_for_setup().unit_for_setup(man)->hp = 100000;
+            sim.world_for_setup().unit_for_setup(man)->rounds = 0;  // just takes it
+            const EntityId gun = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, at(21, 10));
+            Command fire = make_order(CommandType::AttackGround, 1, {gun}, 0, 0);
+            fire.target = tile_center({15, 10});
+            sim.schedule(0, fire);
+            for (int i = 0; i < 200; ++i) sim.step();
+            total += 100000 - hp_of(sim, man);
+        }
+        return total;
+    };
+    const int32_t open = damage(Terrain::Grass);
+    const int32_t crater = damage(Terrain::Crater);
+    CHECK(crater < open && crater * 100 >= open * (100 - kCraterCover - 12) && crater * 100 <= open * (100 - kCraterCover + 12));
+
+    TileMap road(30, 20);
+    for (int x = 0; x < 30; ++x) road.set_terrain(x, 10, Terrain::Road);
+    Simulation sim(1, road);
+    const EntityId sapper = sim.world_for_setup().spawn_unit(0, UnitTypeId::Sapper, at(10, 12));
+    sim.world_for_setup().set_stock(0, {0, 0, 0, 100, 0});
+    issue(sim, use_ability(0, {sapper}, AbilityId::LayApMine, 10, 10));
+    for (int i = 0; i < 400; ++i) sim.step();
+    issue(sim, use_ability(0, {sapper}, AbilityId::LayApMine, 12, 12));
+    for (int i = 0; i < 400; ++i) sim.step();
+    CHECK(sim.world().mines().size() == 1 && (sim.world().mines().front().tile == TilePos{12, 12}));
+}
+
+// Heavy shells bursting on open ground leave craters behind.
+void test_shelling_leaves_craters() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(4, 10));
+    sim.world_for_setup().unit_for_setup(gun)->rounds = 30;
+    issue(sim, fire_at(0, {gun}, 30, 10));
+    for (int i = 0; i < 2400; ++i) sim.step();
+    int craters = 0;
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 20; x < 40; ++x) craters += sim.world().map().terrain(x, y) == Terrain::Crater ? 1 : 0;
+    }
+    CHECK(craters >= 3);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 15; ++x) CHECK(sim.world().map().terrain(x, y) == Terrain::Grass);  // only where they burst
+    }
+
+    // Into a wood, none: craters are for open ground and roads.
+    TileMap wood(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) wood.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation forest(1, wood);
+    const EntityId other = forest.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(4, 10));
+    issue(forest, fire_at(0, {other}, 30, 10));
+    for (int i = 0; i < 2400; ++i) forest.step();
+    CHECK(forest.world().find_unit(other)->rounds < unit_type(UnitTypeId::Howitzer).rounds_capacity);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) CHECK(forest.world().map().terrain(x, y) == Terrain::Forest);
+    }
+}
+
 void test_vehicle_drives_around_forest() {
     Simulation sim(1, forest_wall_map());
     const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 5));
@@ -3678,6 +3807,9 @@ int main() {
     test_building_placement_rules();
     test_warehouse_takes_in_materials();
     test_vehicle_drives_around_forest();
+    test_roads_fields_and_swamps();
+    test_crops_swamps_and_craters();
+    test_shelling_leaves_craters();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
     test_group_moves_at_slowest_speed();

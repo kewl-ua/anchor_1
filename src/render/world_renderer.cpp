@@ -499,6 +499,87 @@ void draw_barn(const engine::TileMap& map, const engine::Structure& s, float dam
     fill_quad(d0, d1, {d1.x, d1.y - kWall * 0.8f}, {d0.x, d0.y - kWall * 0.8f}, {60, 54, 46, 255});
 }
 
+// Roads, fields, bogs and craters: marks on the ground of a tile whose
+// corners on screen are top, right, bottom, left.
+void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terrain terrain, Vector2 top, Vector2 right,
+                        Vector2 bottom, Vector2 left) {
+    const auto fx = static_cast<float>(tx);
+    const auto fy = static_cast<float>(ty);
+    const uint32_t h = tile_hash(tx, ty);
+    auto at = [&](float u, float v, float lift = 0.0f) { return on_terrain(map, {fx + u, fy + v}, lift); };
+    auto same = [&](int x, int y) {
+        return map.contains_tile(x, y) && (map.terrain(x, y) == terrain ||
+                                           (terrain == engine::Terrain::Road && map.terrain(x, y) == engine::Terrain::Bridge));
+    };
+    const bool along_x = same(tx - 1, ty) || same(tx + 1, ty);
+    switch (terrain) {
+        case engine::Terrain::Road: {
+            // Concrete slabs: seams across, a pale edge.
+            const Color seam = lit({70, 72, 74, 255});
+            if (along_x) {
+                DrawLineV(lerp(top, right, 0.5f), lerp(left, bottom, 0.5f), seam);
+            } else {
+                DrawLineV(lerp(top, left, 0.5f), lerp(right, bottom, 0.5f), seam);
+            }
+            break;
+        }
+        case engine::Terrain::DirtRoad: {
+            // Two ruts along the road.
+            const Color rut = lit({104, 84, 58, 255});
+            for (const float k : {0.35f, 0.65f}) {
+                if (along_x) {
+                    DrawLineEx(at(0.0f, k), at(1.0f, k), 1.5f, rut);
+                } else {
+                    DrawLineEx(at(k, 0.0f), at(k, 1.0f), 1.5f, rut);
+                }
+            }
+            break;
+        }
+        case engine::Terrain::Plowed: {
+            // Furrows.
+            const Color furrow = lit({84, 70, 50, 255});
+            for (int i = 1; i <= 4; ++i) {
+                const float k = static_cast<float>(i) / 5.0f;
+                DrawLineV(at(k, 0.0f), at(k, 1.0f), furrow);
+            }
+            break;
+        }
+        case engine::Terrain::Crops: {
+            // Rows of sunflowers: a stalk and a yellow head each.
+            for (int i = 0; i < 6; ++i) {
+                const float u = 0.15f + 0.7f * static_cast<float>((h >> (i * 3)) & 7) / 7.0f;
+                const float v = 0.12f + 0.15f * static_cast<float>(i);
+                const Vector2 base = at(u, v);
+                const Vector2 head{base.x, base.y - 7.0f};
+                DrawLineV(base, head, lit({70, 96, 40, 255}));
+                DrawCircleV(head, 1.8f, lit({220, 180, 40, 255}));
+            }
+            break;
+        }
+        case engine::Terrain::Swamp: {
+            // Standing water and reeds.
+            fill_ground_ellipse(at(0.35f + 0.1f * static_cast<float>(h & 3) / 3.0f, 0.4f), 0.18f, {52, 74, 82, 220});
+            fill_ground_ellipse(at(0.7f, 0.7f - 0.1f * static_cast<float>((h >> 2) & 3) / 3.0f), 0.12f, {52, 74, 82, 200});
+            for (int i = 0; i < 4; ++i) {
+                const Vector2 base = at(0.2f + 0.2f * static_cast<float>(i), 0.8f - 0.15f * static_cast<float>((h >> i) & 3));
+                DrawLineV(base, {base.x + 1.0f, base.y - 6.0f}, lit({92, 116, 60, 255}));
+            }
+            break;
+        }
+        case engine::Terrain::Crater: {
+            fill_ground_ellipse(at(0.5f, 0.5f), 0.32f, {120, 108, 88, 255});  // thrown-up earth
+            fill_ground_ellipse(at(0.5f, 0.5f), 0.2f, {58, 50, 42, 255});    // the hole
+            break;
+        }
+        default:
+            break;
+    }
+    (void)top;
+    (void)right;
+    (void)bottom;
+    (void)left;
+}
+
 // How high a structure is drawn above its tiles, pixels: what a click on it may hit.
 float drawn_height(const engine::Structure& s) {
     switch (s.type) {
@@ -1213,6 +1294,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
                 return t == engine::Terrain::Trench || t == engine::Terrain::Foxhole || t == engine::Terrain::Dugout;
             });
         }
+        draw_ground_detail(map, tx, ty, terrain, top, right, bottom, left);
         if (terrain == engine::Terrain::Airstrip) {
             // Concrete slabs; a dashed centre line down the middle row of the runway.
             const Color seam = shade(theme::terrain_color(terrain), 0.8f);
