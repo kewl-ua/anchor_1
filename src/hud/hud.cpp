@@ -288,7 +288,7 @@ Logistics logistics_of(const engine::World& world, engine::PlayerId player) {
         if (u.owner != player) continue;
         if (engine::idle_hand(u)) ++l.idle;
         if (u.order == engine::Order::Gather) ++l.gatherers;
-        if (u.type != engine::UnitTypeId::Truck || u.order != engine::Order::Haul) continue;
+        if (u.order != engine::Order::Haul) continue;
         if (u.haul_cargo == engine::Resource::Count) {
             ++l.auto_trucks;
         } else {
@@ -604,7 +604,7 @@ void draw_depot_trucks(const engine::World& world, const engine::Structure& s, f
     if (!cargo || !s.built) return;
     int here = 0;
     for (const engine::Unit& u : world.units()) {
-        if (u.owner != s.owner || u.type != engine::UnitTypeId::Truck || u.order != engine::Order::Haul) continue;
+        if (u.owner != s.owner || u.order != engine::Order::Haul) continue;
         if (u.haul_cargo == *cargo && world.haul_destination(u, *cargo) == &s) ++here;
     }
     draw_text(TextFormat("Trucks bringing %s here: %d. RMB with trucks: assign them to this depot.",
@@ -993,7 +993,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                             thirsty && armed ? "    " : "",
                             armed ? TextFormat("Rounds %d / %d", u.rounds, def.rounds_capacity) : "");
         if ((thirsty && u.fuel.raw <= 0) || (armed && u.rounds <= 0)) supply_color = theme::kDanger;
-    } else if (u.type == engine::UnitTypeId::Truck) {
+    } else if (u.type == engine::UnitTypeId::Truck ||
+               (def.supplies != engine::Resource::Count && u.order == engine::Order::Haul)) {
         std::tie(supply, supply_color) = truck_status(world, u);
     } else if (def.supplies != engine::Resource::Count) {
         // Standing by it sees to whoever is near; attached or called, to one unit.

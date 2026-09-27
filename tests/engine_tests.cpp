@@ -1961,6 +1961,31 @@ void test_taking_over_rules() {
     CHECK(stock_of(ours, Resource::Fuel) == 100 - 100 * kFuelDepotLossPercent / 100);
 }
 
+// A tanker or an ammunition truck put on the supply run hauls only its own
+// freight, a whole tank or bed of it at a time, whatever it's told; with no
+// depot for it, it waits.
+void test_service_vehicles_on_the_rail_run() {
+    Simulation sim = logistics_sim({});
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::Warehouse, 0, {20, 12}, 2, 2);
+    w.place_structure(StructureType::FuelDepot, 0, {24, 12}, 2, 2);
+    const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(22, 8));
+    const EntityId ammo = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(23, 8));
+    w.unit_for_setup(tanker)->carrying = 0;
+    w.unit_for_setup(ammo)->carrying = 0;
+    issue(sim, haul_cargo({tanker}, haul_code(Resource::Food)));  // told food: still fuel
+    issue(sim, haul_cargo({ammo}, kHaulAuto));
+    for (Tick i = 0; i < kTrainInterval + 400 && sim.world().find_unit(tanker)->carrying == 0; ++i) sim.step();
+    const Unit* t = sim.world().find_unit(tanker);
+    CHECK(t->order == Order::Haul && t->carrying_type == Resource::Fuel);
+    CHECK(t->carrying == kTrainCargo[static_cast<size_t>(Resource::Fuel)]);  // the whole 60 at once, more than a truck's 40
+    for (int i = 0; i < 3000 && sim.world().find_unit(tanker)->carrying > 0; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Fuel) == kTrainCargo[static_cast<size_t>(Resource::Fuel)]);
+    CHECK(stock_of(sim, Resource::Ammo) == 0 && sim.world().station_of(0)->cargo[kAmmo] > 0);  // no ammo depot: none moved
+    CHECK(sim.world().find_unit(ammo)->carrying == 0 && sim.world().find_unit(ammo)->order == Order::Haul);
+    CHECK(stock_of(sim, Resource::Food) == 0);  // nobody hauls food here
+}
+
 // Rear troops and trucks with nothing to do are idle; on the supply run or at work they aren't.
 void test_idle_hands() {
     Simulation sim = logistics_sim({});
@@ -3500,6 +3525,7 @@ int main() {
     test_trucks_haul_what_they_are_told();
     test_trucks_assigned_to_a_depot();
     test_idle_hands();
+    test_service_vehicles_on_the_rail_run();
     test_demo_map_has_barns();
     test_take_over_a_village_building();
     test_taking_over_rules();

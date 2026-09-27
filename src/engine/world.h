@@ -345,6 +345,9 @@ inline const WeaponDef& weapon_of(const Unit& u) {
     return u.round_type == 1 && def.alt_weapon.damage > 0 ? def.alt_weapon : def.weapon;
 }
 
+// How much a vehicle takes on at the station for the supply run.
+int32_t haul_capacity(const Unit& u);
+
 // Rear troops and supply trucks with nothing to do: AoE's idle villagers.
 inline bool idle_hand(const Unit& u) {
     const UnitTypeDef& def = unit_type(u.type);

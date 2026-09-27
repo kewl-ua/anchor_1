@@ -153,17 +153,24 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 // Tankers to the fuel depot, ammunition trucks to the ammunition depot: load up.
                 engine::Command refill{.type = engine::CommandType::Ability,
                                        .ability = static_cast<uint8_t>(engine::AbilityId::Refill)};
+                engine::Command haul{.type = engine::CommandType::Haul, .target_unit = structure->id};
                 engine::Command move{.type = engine::CommandType::Move, .target = render::to_fixed_vec2(ground)};
                 for (engine::EntityId id : selection_) {
                     const engine::Unit* u = world.find_unit(id);
                     if (!u) continue;
-                    (depot_for_refill(u->type) == engine::role_of(*structure) ? refill : move).units.push_back(id);
+                    if (depot_for_refill(u->type) == engine::role_of(*structure)) {
+                        refill.units.push_back(id);
+                    } else {
+                        (u->type == engine::UnitTypeId::Truck ? haul : move).units.push_back(id);
+                    }
                 }
                 if (!refill.units.empty()) lockstep.submit(std::move(refill));
+                if (!haul.units.empty()) lockstep.submit(std::move(haul));
                 if (!move.units.empty()) lockstep.submit(std::move(move));
                 renderer.add_order_ping(ground, false);
             } else if (structure && structure->owner == player_ && is_supply_point(engine::role_of(*structure)) &&
-                       has_trucks(world)) {
+                       (has_trucks(world) ||
+                        (structure->type == engine::StructureType::Station && has_service_vehicles(world)))) {
                 // Trucks go back on the supply run (to this depot); anyone else selected just goes there.
                 order_haul(lockstep, world, renderer, ground, structure->id);
             } else if (structure && engine::is_shelter(engine::role_of(*structure))) {
@@ -223,6 +230,11 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
     const engine::StructureType role = s ? engine::role_of(*s) : engine::StructureType::Count;
     if (s && s->owner == player_ && refills_at(world, role)) {
         hint_ = "RMB: load up here from the stock";
+        return;
+    }
+    if (s && s->type == engine::StructureType::Station && s->owner == player_ && !has_trucks(world) &&
+        has_service_vehicles(world)) {
+        hint_ = "RMB: haul what they carry from the station to the depots (the rail run)";
         return;
     }
     if (s && s->owner == player_ && is_supply_point(role) && has_trucks(world)) {
@@ -401,6 +413,18 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         retrain[static_cast<size_t>(engine::Resource::Ammo)] = 20;
         put(1, Action::Retrain, 0, "Retrain", "Retrain as riflemen at the headquarters", retrain);
     }
+    if (def.supplies != engine::Resource::Count) {
+        // Tankers and ammunition trucks can do the rail run for their own freight too.
+        bool all = true;
+        for (engine::EntityId id : selection_) {
+            const engine::Unit* u = world.find_unit(id);
+            if (u && u->type == *lead) all = all && u->order == engine::Order::Haul;
+        }
+        put(1, Action::Haul, engine::kHaulKeep, "Rail run",
+            TextFormat("Rail run: %s from the station to the nearest %s, again and again (RMB on the station does the same)",
+                       engine::resource_name(def.supplies), engine::structure_type(*engine::depot_for(def.supplies)).name))
+            .active = all;
+    }
     if (*lead == engine::UnitTypeId::Truck) {
         // What the trucks haul: whatever piles up at the station, or one kind of freight.
         struct Choice {
@@ -540,7 +564,10 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             engine::Command haul{.type = engine::CommandType::Haul, .cargo = cell.param};
             for (engine::EntityId id : selection_) {
                 const engine::Unit* u = world.find_unit(id);
-                if (u && u->type == engine::UnitTypeId::Truck) haul.units.push_back(id);
+                if (u && (u->type == engine::UnitTypeId::Truck ||
+                          engine::unit_type(u->type).supplies != engine::Resource::Count)) {
+                    haul.units.push_back(id);
+                }
             }
             if (!haul.units.empty()) lockstep.submit(std::move(haul));
             break;
@@ -711,7 +738,8 @@ void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& 
     for (engine::EntityId id : selection_) {
         const engine::Unit* u = world.find_unit(id);
         if (!u) continue;
-        (u->type == engine::UnitTypeId::Truck ? haul : move).units.push_back(id);
+        const bool hauls = u->type == engine::UnitTypeId::Truck || engine::unit_type(u->type).supplies != engine::Resource::Count;
+        (hauls ? haul : move).units.push_back(id);
     }
     if (!haul.units.empty()) lockstep.submit(std::move(haul));
     if (!move.units.empty()) lockstep.submit(std::move(move));

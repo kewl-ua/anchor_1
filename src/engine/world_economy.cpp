@@ -407,8 +407,15 @@ void World::apply_haul(const Command& cmd) {
     }
     for (EntityId id : cmd.units) {
         Unit* u = find_unit_mut(id);
-        if (!u || u->owner != cmd.player || u->type != UnitTypeId::Truck) continue;
-        if (depot_takes) {
+        if (!u || u->owner != cmd.player) continue;
+        const Resource own = unit_type(u->type).supplies;
+        if (u->type != UnitTypeId::Truck && own == Resource::Count) continue;
+        if (own != Resource::Count) {
+            // A tanker or an ammunition truck hauls only what it carries: fuel
+            // to a fuel depot, ammunition to an ammunition depot.
+            u->haul_cargo = own;
+            u->haul_depot = depot_takes == own ? depot->id : 0;
+        } else if (depot_takes) {
             u->haul_cargo = *depot_takes;
             u->haul_depot = depot->id;
         } else if (cargo) {
@@ -425,6 +432,13 @@ void World::apply_haul(const Command& cmd) {
         u->engaged = 0;
         u->work = 0;
     }
+}
+
+// A supply truck takes kTruckCapacity; a tanker or an ammunition truck on
+// the run fills its own tank or bed.
+int32_t haul_capacity(const Unit& u) {
+    const UnitTypeDef& def = unit_type(u.type);
+    return def.supplies != Resource::Count ? def.cargo_capacity : kTruckCapacity;
 }
 
 const Structure* World::haul_destination(const Unit& truck, Resource cargo) const {
@@ -461,7 +475,7 @@ void World::update_hauling(Unit& u) {
         u.work = 0;
         Structure* s = find_structure_mut(station->id);
         const auto i = static_cast<size_t>(*pick);
-        const int32_t load = std::min(kTruckCapacity, s->cargo[i]);
+        const int32_t load = std::min(haul_capacity(u), s->cargo[i]);
         s->cargo[i] -= load;
         u.carrying = load;
         u.carrying_type = *pick;
