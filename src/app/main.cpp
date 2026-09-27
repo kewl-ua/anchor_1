@@ -399,6 +399,47 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
+    if (options.scene == "units" && options.mode == Options::Mode::Offline) {
+        // Offline: one of every kind of unit ahead of the base, to look at:
+        // a row of riflemen facing all eight ways, the rest of the infantry,
+        // a squad walking, the vehicles in a row behind.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        using engine::UnitTypeId;
+        for (int i = 0; i < 8; ++i) {
+            const float a = static_cast<float>(i) * 0.7853982f;
+            const engine::EntityId id = w.spawn_unit(me, UnitTypeId::Rifleman, ahead(9.0f, -4.0f + 0.9f * static_cast<float>(i)));
+            w.unit_for_setup(id)->facing = render::to_fixed_vec2({std::cos(a), std::sin(a)});
+        }
+        const UnitTypeId infantry[] = {UnitTypeId::MachineGunner, UnitTypeId::Grenadier, UnitTypeId::Assault, UnitTypeId::Scout,
+                                       UnitTypeId::Sapper,        UnitTypeId::Signaler,  UnitTypeId::Worker,  UnitTypeId::Mortar,
+                                       UnitTypeId::Ags,           UnitTypeId::Manpads};
+        for (size_t i = 0; i < std::size(infantry); ++i) {
+            const engine::EntityId id = w.spawn_unit(me, infantry[i], ahead(10.5f, -4.5f + 0.9f * static_cast<float>(i)));
+            w.unit_for_setup(id)->facing = render::to_fixed_vec2({0.7071f * fwd, 0.7071f * fwd});
+        }
+        std::vector<engine::EntityId> squad;
+        for (int i = 0; i < 4; ++i) {
+            squad.push_back(w.spawn_unit(me, UnitTypeId::Rifleman, ahead(7.0f, -3.0f + 0.8f * static_cast<float>(i))));
+        }
+        game.submit({.type = engine::CommandType::Move, .units = squad, .target = ahead(7.0f, 12.0f)});
+        const UnitTypeId vehicles[] = {UnitTypeId::Tank,     UnitTypeId::Ifv,        UnitTypeId::Spg,        UnitTypeId::Shilka,
+                                       UnitTypeId::Truck,    UnitTypeId::FuelTanker, UnitTypeId::AmmoTruck,  UnitTypeId::Mlrs,
+                                       UnitTypeId::Howitzer, UnitTypeId::FieldHq,    UnitTypeId::DfStation,  UnitTypeId::AirRadar};
+        for (size_t i = 0; i < std::size(vehicles); ++i) {
+            const engine::EntityId id =
+                w.spawn_unit(me, vehicles[i], ahead(13.5f + 1.6f * static_cast<float>(i % 2), -7.0f + 1.3f * static_cast<float>(i)));
+            w.unit_for_setup(id)->facing = render::to_fixed_vec2({fwd, 0.0f});  // three-quarters on to the camera
+            w.unit_for_setup(id)->hull = w.unit_for_setup(id)->facing;
+        }
+        return render::to_vector2(ahead(10.5f, 0.0f));
+    }
+
     if (options.scene == "bridge" && options.mode == Options::Mode::Offline) {
         // Offline: a squad and a tank on the central bridge, on the deck
         // over the river.

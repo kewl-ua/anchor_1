@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include <rlgl.h>
@@ -3754,208 +3755,646 @@ void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u,
     }
 }
 
+// A soldier, drawn by hand like the rest: boots, trousers and a jacket in a
+// camouflage tinted with his side's colour, the side's tape round his arm and
+// thigh (as the sides marked themselves there), a load vest, a steel helmet
+// (a scout a floppy hat, a rear trooper a cap), his face or his back as he
+// turns, his weapon in his hands (an AK, a PKM, an RPG-7 on the shoulder, a
+// Dragunov, an Igla...). Walking, his legs swing; standing and shooting, a
+// rifleman goes down on one knee.
 void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const {
-    const Color color = theme::player_color(u.owner);
-    const Color dark = shade(color, 0.55f);
+    using engine::UnitTypeId;
+    const auto now = static_cast<float>(GetTime());
+    Vector2 fs = iso_offset(facing);
+    {
+        const float l = std::hypot(fs.x, fs.y);
+        fs = l > 0.0f ? Vector2{fs.x / l, fs.y / l} : Vector2{1.0f, 0.0f};
+    }
+    const float side = fs.x >= 0.0f ? 1.0f : -1.0f;  // which way he faces on screen
+    const bool away = fs.y < -0.3f;                  // his back to us
+    const Color team = theme::player_color(u.owner);
+    const Color uniform = mix({92, 100, 66, 255}, team, 0.33f);
+    const Color trousers = shade(uniform, 0.86f);
+    const Color rig = shade(mix(uniform, {70, 74, 52, 255}, 0.5f), 0.8f);
+    const Color skin{204, 162, 128, 255};
+    const Color boots{38, 34, 30, 255};
+    const UnitTypeId type = u.type;
+    const bool walking = u.moving;
+    const bool shooter = type == UnitTypeId::Rifleman || type == UnitTypeId::MachineGunner || type == UnitTypeId::Grenadier ||
+                         type == UnitTypeId::Assault || type == UnitTypeId::Scout || type == UnitTypeId::Sapper ||
+                         type == UnitTypeId::Manpads;
+    const bool crew_set = (type == UnitTypeId::Mortar || type == UnitTypeId::Ags) && (u.deployed || (u.engaged && !walking));
+    const bool kneel = !walking && ((shooter && u.engaged != 0) || crew_set);
+    const float drop = kneel ? 3.0f : 0.0f;
+    const float phase = now * 9.0f + static_cast<float>(u.id % 13);
+    const float hip_y = feet.y - 8.0f + drop;
+    const float shoulder_y = feet.y - 14.0f + drop;
+    const float head_y = feet.y - 16.6f + drop;
+    const float x = feet.x;
 
-    if (u.type == engine::UnitTypeId::Mortar) {
-        // The tube on its base plate in front of the crewman: up when set up, on his back when not.
-        const Vector2 plate = {feet.x + iso_offset(facing).x * 0.25f, feet.y + iso_offset(facing).y * 0.25f};
-        if (u.deployed) {
-            DrawEllipse(static_cast<int>(plate.x), static_cast<int>(plate.y), 4.0f, 2.0f, {50, 52, 48, 255});
-            const Vector2 muzzle{plate.x + iso_offset(facing).x * 0.12f, plate.y - 10.0f};
-            DrawLineEx(plate, muzzle, 3.0f, {60, 66, 56, 255});
+    // Things in front of him on the ground: a mortar's tube on its plate, an AGS on its tripod.
+    auto ahead_px = [&](float px) { return Vector2{x + fs.x * px, feet.y + fs.y * px}; };
+    auto crew_weapon = [&] {
+        if (type == UnitTypeId::Mortar && crew_set) {
+            const Vector2 plate = ahead_px(6.0f);
+            DrawEllipse(static_cast<int>(plate.x), static_cast<int>(plate.y), 3.5f, 1.6f, lit({54, 56, 50, 255}));
+            const Vector2 muzzle{plate.x + fs.x * 3.0f, plate.y - 11.0f};
+            DrawLineEx({plate.x + fs.x * 4.0f + 1.0f, plate.y}, {plate.x + fs.x * 1.5f, plate.y - 6.0f}, 1.0f, lit({46, 48, 44, 255}));
+            DrawLineEx(plate, muzzle, 2.6f, lit({66, 72, 58, 255}));
+            DrawLineEx({plate.x - 0.6f, plate.y}, {muzzle.x - 0.6f, muzzle.y}, 0.8f, lit({100, 108, 88, 255}));
+        }
+        if (type == UnitTypeId::Ags && crew_set) {
+            const Vector2 base = ahead_px(6.0f);
+            for (const float k : {-1.0f, 1.0f, 0.0f}) {
+                DrawLineEx({base.x, base.y - 4.0f}, {base.x + k * 3.5f - fs.x * (k == 0.0f ? 3.0f : 0.0f), base.y + (k == 0.0f ? 1.0f : 0.5f)},
+                           1.0f, lit({50, 52, 48, 255}));
+            }
+            const Vector2 body{base.x, base.y - 5.0f};
+            DrawLineEx({body.x - fs.x * 3.0f, body.y - fs.y * 1.5f}, {body.x + fs.x * 4.0f, body.y + fs.y * 2.0f}, 3.2f, lit({64, 70, 56, 255}));
+            DrawLineEx({body.x + fs.x * 4.0f, body.y + fs.y * 2.0f}, {body.x + fs.x * 7.0f, body.y + fs.y * 3.2f}, 1.4f, lit({40, 42, 38, 255}));
+            disc({body.x - fs.x * 0.5f + side * 0.5f, body.y + 2.0f}, 2.2f, {58, 66, 48, 255});  // the drum
+        }
+    };
+    if (!away) crew_weapon();
+
+    // Legs.
+    Vector2 foot_front{x + side * 1.3f, feet.y};
+    Vector2 foot_back{x - side * 1.1f, feet.y};
+    Vector2 knee_front{x + side * 1.2f, feet.y - 4.0f + drop * 0.5f};
+    Vector2 knee_back{x - side * 0.9f, feet.y - 4.0f + drop * 0.5f};
+    if (walking) {
+        const float swing = std::sin(phase) * 2.6f;
+        foot_front = {x + side * swing, feet.y - std::max(0.0f, std::cos(phase)) * 1.2f};
+        foot_back = {x - side * swing, feet.y - std::max(0.0f, -std::cos(phase)) * 1.2f};
+        knee_front = {x + side * swing * 0.6f + side * 0.6f, feet.y - 4.2f};
+        knee_back = {x - side * swing * 0.6f + side * 0.6f, feet.y - 4.2f};
+    } else if (kneel) {
+        knee_front = {x + side * 3.0f, feet.y - 3.2f};
+        foot_front = {x + side * 3.2f, feet.y};
+        knee_back = {x - side * 0.5f, feet.y - 0.3f};
+        foot_back = {x - side * 4.0f, feet.y - 0.3f};
+    }
+    const Vector2 hip{x, hip_y};
+    for (const auto& [knee, foot, k] : {std::tuple{knee_back, foot_back, 0.72f}, std::tuple{knee_front, foot_front, 1.0f}}) {
+        DrawLineEx(hip, knee, 2.4f, lit(shade(trousers, k)));
+        DrawLineEx(knee, foot, 2.1f, lit(shade(trousers, k * 0.92f)));
+        DrawRectangleRec({foot.x - 1.3f + side * 0.4f, foot.y - 1.3f, 2.8f, 1.6f}, lit(boots));
+    }
+    // The side's tape round the front thigh.
+    DrawLineEx({hip.x + (knee_front.x - hip.x) * 0.45f - 1.2f, hip.y + (knee_front.y - hip.y) * 0.45f},
+               {hip.x + (knee_front.x - hip.x) * 0.45f + 1.2f, hip.y + (knee_front.y - hip.y) * 0.45f}, 1.2f, lit(team));
+
+    // What he holds: a weapon from the hands along where he faces.
+    const Vector2 hands{x + side * 1.8f + fs.x * 1.0f, feet.y - 10.6f + drop};
+    auto gun = [&](float front, float back, float width, Color metal, Color stock) {
+        const Vector2 tip{hands.x + fs.x * front, hands.y + fs.y * front * 0.6f};
+        const Vector2 butt{hands.x - fs.x * back, hands.y - fs.y * back * 0.6f - 0.5f};
+        DrawLineEx(butt, hands, width + 0.4f, lit(stock));
+        DrawLineEx(hands, tip, width, lit(metal));
+        return tip;
+    };
+    auto held = [&] {
+        switch (type) {
+            case UnitTypeId::MachineGunner: {  // a PKM, its box under it
+                gun(9.0f, 4.0f, 2.2f, {34, 34, 34, 255}, {96, 70, 46, 255});
+                DrawRectangleRec({hands.x + fs.x * 1.5f - 1.4f, hands.y + 0.5f, 2.8f, 2.4f}, lit({70, 80, 56, 255}));
+                break;
+            }
+            case UnitTypeId::Grenadier: {  // an RPG-7 on the shoulder, or slung across the back while walking
+                if (walking && !u.engaged) {
+                    DrawLineEx({x - side * 3.0f, shoulder_y - 3.0f}, {x + side * 3.5f, hip_y + 1.0f}, 2.2f, lit({92, 84, 58, 255}));
+                    disc({x - side * 3.4f, shoulder_y - 3.6f}, 1.8f, {84, 98, 56, 255});
+                } else {
+                    const Vector2 sh{x + side * 0.6f, shoulder_y + 0.6f};
+                    const Vector2 tip{sh.x + fs.x * 6.0f, sh.y + fs.y * 3.6f};
+                    DrawLineEx({sh.x - fs.x * 6.0f, sh.y - fs.y * 3.6f}, tip, 2.3f, lit({92, 84, 58, 255}));
+                    disc(tip, 2.0f, {84, 98, 56, 255});
+                    fill_triangle({tip.x + fs.x * 1.5f, tip.y - 1.8f}, {tip.x + fs.x * 1.5f, tip.y + 1.8f}, {tip.x + fs.x * 4.5f, tip.y + fs.y * 1.0f},
+                                  {84, 98, 56, 255});
+                    DrawLineEx(sh, {hands.x, hands.y}, 1.4f, lit(uniform));
+                }
+                break;
+            }
+            case UnitTypeId::Scout: gun(10.5f, 3.5f, 1.2f, {30, 30, 30, 255}, {110, 78, 50, 255}); break;  // a Dragunov
+            case UnitTypeId::Manpads: {  // an Igla on the shoulder
+                const Vector2 sh{x + side * 0.6f, shoulder_y + 0.4f};
+                DrawLineEx({sh.x - fs.x * 7.0f, sh.y - fs.y * 4.2f}, {sh.x + fs.x * 7.0f, sh.y + fs.y * 4.2f}, 2.4f, lit({88, 98, 70, 255}));
+                disc({sh.x + fs.x * 7.0f, sh.y + fs.y * 4.2f}, 1.4f, {60, 66, 50, 255});
+                DrawRectangleRec({sh.x + fs.x * 1.0f - 1.0f, sh.y + 1.0f, 2.0f, 2.2f}, lit({50, 54, 46, 255}));  // the grip and battery
+                break;
+            }
+            case UnitTypeId::Worker: {
+                if (u.order == engine::Order::Gather && u.work > 0) {
+                    // At work: an axe (or a pick) swinging up and down, a stroke a second.
+                    const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
+                    const float lift = 7.0f * std::cos(stroke * 6.2831853f);
+                    const Vector2 head{hands.x + fs.x * 6.0f, hands.y + fs.y * 3.0f - lift};
+                    DrawLineEx(hands, head, 1.5f, lit({110, 84, 54, 255}));
+                    DrawRectangleRec({head.x - 2.0f, head.y - 2.0f, 4.0f, 3.0f}, lit({150, 150, 150, 255}));
+                } else if (u.carrying == 0) {  // a spade over the shoulder
+                    DrawLineEx({x - side * 3.5f, shoulder_y - 4.0f}, {x + side * 3.0f, hip_y}, 1.2f, lit({120, 90, 58, 255}));
+                    DrawRectangleRec({x - side * 4.2f - 1.2f, shoulder_y - 6.0f, 2.4f, 3.0f}, lit({120, 124, 118, 255}));
+                }
+                break;
+            }
+            case UnitTypeId::Mortar:
+            case UnitTypeId::Ags:
+                if (!crew_set) {  // carried on the back: the tube, the gun
+                    DrawLineEx({x - side * 3.0f, shoulder_y - 4.0f}, {x + side * 2.0f, hip_y + 0.5f}, type == UnitTypeId::Mortar ? 2.6f : 3.2f,
+                               lit({64, 70, 56, 255}));
+                }
+                break;
+            case UnitTypeId::Sapper:
+            case UnitTypeId::Signaler: gun(5.5f, 2.5f, 1.4f, {34, 34, 34, 255}, {104, 76, 50, 255}); break;  // a short carbine
+            default: {  // an AK: wooden furniture, the curved magazine
+                gun(7.5f, 3.5f, 1.5f, {34, 34, 34, 255}, {126, 80, 44, 255});
+                DrawLineEx({hands.x + fs.x * 2.2f, hands.y + 0.4f}, {hands.x + fs.x * 1.6f, hands.y + 2.6f}, 1.2f, lit({50, 44, 36, 255}));
+                break;
+            }
+        }
+        // The arms holding it.
+        DrawLineEx({x + side * 1.4f, shoulder_y + 1.0f}, hands, 1.7f, lit(shade(uniform, 1.05f)));
+    };
+    if (away) held();
+
+    // His back: whatever he carries on it.
+    auto backpack = [&](float k) {
+        if (type == UnitTypeId::Signaler) {  // the radio, its whip aerial
+            const Vector2 set{x - side * 2.2f, shoulder_y + 1.0f};
+            DrawRectangleRec({set.x - 2.3f, set.y - 1.0f, 4.6f, 5.5f}, lit(shade({70, 78, 58, 255}, k)));
+            DrawLineEx({set.x, set.y - 1.0f}, {set.x - side * 2.5f, set.y - 20.0f}, 0.9f, lit({30, 30, 30, 255}));
+        } else if (type == UnitTypeId::Sapper || type == UnitTypeId::Assault) {
+            DrawRectangleRec({x - side * 2.4f - 2.0f, shoulder_y + 0.5f, 4.0f, 5.0f}, lit(shade(rig, k)));
+        } else if (type == UnitTypeId::Grenadier && !walking) {  // spare rockets
+            for (const float d : {-0.8f, 0.8f}) {
+                DrawLineEx({x - side * 2.6f + d, shoulder_y + 5.0f}, {x - side * 2.6f + d, shoulder_y - 1.5f}, 1.3f, lit({92, 84, 58, 255}));
+                disc({x - side * 2.6f + d, shoulder_y - 2.2f}, 1.3f, {84, 98, 56, 255});
+            }
+        }
+    };
+    if (!away) backpack(0.85f);
+
+    // The body: a jacket lit on the left, the vest over it with its pouches, the tape on the arm.
+    const float w = type == UnitTypeId::Assault ? 3.0f : 2.6f;
+    fill_quad({x - w, shoulder_y}, {x + w, shoulder_y}, {x + w * 0.85f, hip_y}, {x - w * 0.85f, hip_y}, uniform);
+    fill_quad({x, shoulder_y}, {x + w, shoulder_y}, {x + w * 0.85f, hip_y}, {x, hip_y}, shade(uniform, 0.82f));
+    if (type != UnitTypeId::Worker) {
+        const float vw = w * (type == UnitTypeId::Assault ? 0.95f : 0.8f);
+        fill_quad({x - vw, shoulder_y + 1.2f}, {x + vw, shoulder_y + 1.2f}, {x + vw, hip_y - 1.0f}, {x - vw, hip_y - 1.0f}, rig);
+        if (!away) {
+            for (const float d : {-1.2f, 0.2f, 1.6f}) DrawRectangleRec({x + d - 0.5f, hip_y - 3.4f, 1.2f, 1.8f}, lit(shade(rig, 0.75f)));
         }
     }
-
-    DrawRectangleRounded({feet.x - 3.0f, feet.y - 13.0f, 6.0f, 12.0f}, 0.6f, 4, color);
-    DrawCircleV({feet.x, feet.y - 15.5f}, 3.0f, shade(color, 1.25f));
-
-    // The weapon, pointing where the soldier faces; its shape tells the type.
-    const Vector2 hands{feet.x, feet.y - 9.0f};
-    float length = 0.22f;
-    float thickness = 1.5f;
-    Color weapon = {35, 35, 35, 255};
-    switch (u.type) {
-        case engine::UnitTypeId::MachineGunner:
-            length = 0.28f;
-            thickness = 2.5f;
-            break;
-        case engine::UnitTypeId::Grenadier:
-            length = 0.27f;
-            thickness = 3.0f;
-            weapon = {85, 95, 60, 255};
-            break;
-        case engine::UnitTypeId::Worker:
-            length = 0.15f;
-            thickness = 1.2f;
-            break;
-        case engine::UnitTypeId::Mortar:
-            length = u.deployed ? 0.1f : 0.2f;
-            thickness = u.deployed ? 1.2f : 3.0f;
-            weapon = {60, 66, 56, 255};
-            break;
-        case engine::UnitTypeId::Ags:
-            length = 0.3f;
-            thickness = 4.0f;
-            weapon = {58, 62, 54, 255};
-            break;
-        default:
-            break;
-    }
-    const Vector2 offset = iso_offset({facing.x * length, facing.y * length});
-    if (u.type == engine::UnitTypeId::Worker && u.order == engine::Order::Gather && u.work > 0) {
-        // At work: an axe (or a pick) swinging up and down, a stroke a second.
-        const float phase = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
-        const float lift = 7.0f * std::cos(phase * 6.2831853f);
-        const Vector2 head{hands.x + offset.x * 1.3f, hands.y + offset.y * 1.3f - lift};
-        DrawLineEx(hands, head, 1.5f, {110, 84, 54, 255});
-        DrawRectangleRec({head.x - 2.0f, head.y - 2.0f, 4.0f, 3.0f}, {150, 150, 150, 255});
-    } else {
-        DrawLineEx(hands, {hands.x + offset.x, hands.y + offset.y}, thickness, weapon);
-    }
+    DrawRectangleRec({x - side * w - 1.0f, shoulder_y + 1.6f, 2.0f, 1.4f}, lit(team));  // the tape on the arm
+    DrawLineEx({x - w * 0.6f, hip_y - 0.3f}, {x + w * 0.6f, hip_y - 0.3f}, 0.8f, lit({48, 40, 32, 255}));  // the belt
+    if (away) backpack(1.0f);
     if (u.carrying > 0) {
         // A bundle of timber or stone on the back, as big as it's got.
         const float size = 0.4f + 0.6f * std::min(1.0f, static_cast<float>(u.carrying) / engine::kCarryCapacity);
-        const Vector2 back = iso_offset({-facing.x * 0.12f, -facing.y * 0.12f});
-        DrawRectangleRec({hands.x + back.x - 3.5f * size, hands.y + back.y - 6.0f * size, 7.0f * size, 6.0f * size},
-                         {120, 88, 52, 255});
+        DrawRectangleRec({x - side * 3.0f - 3.5f * size, shoulder_y - 3.0f * size, 7.0f * size, 6.0f * size}, lit({120, 88, 52, 255}));
     }
-    DrawRectangleRoundedLines({feet.x - 3.0f, feet.y - 13.0f, 6.0f, 12.0f}, 0.6f, 4, dark);
-    if (u.type == engine::UnitTypeId::Signaler) {
-        const Vector2 back = iso_offset({-facing.x * 0.1f, -facing.y * 0.1f});
-        const Vector2 set{hands.x + back.x, hands.y + back.y - 2.0f};
-        DrawRectangleRec({set.x - 2.5f, set.y - 3.0f, 5.0f, 6.0f}, {70, 78, 58, 255});
-        DrawLineEx({set.x + 1.5f, set.y - 3.0f}, {set.x + 4.0f, set.y - 22.0f}, 1.0f, {30, 30, 30, 255});
+
+    // The head: a steel helmet, a scout's floppy hat, a rear trooper's cap; the face unless he's turned away.
+    const Vector2 head{x + side * 0.3f, head_y};
+    disc(head, 2.1f, skin);
+    if (!away) {
+        DrawPixelV({head.x + side * 1.1f, head.y + 0.2f}, lit({50, 40, 34, 255}));  // an eye
+        DrawLineV({head.x + side * 0.2f, head.y + 1.6f}, {head.x + side * 1.8f, head.y + 1.6f}, lit(shade(skin, 0.8f)));
+    }
+    if (type == UnitTypeId::Scout) {
+        const Color hat{124, 118, 80, 255};
+        DrawEllipse(static_cast<int>(head.x), static_cast<int>(head.y - 1.0f), 3.6f, 1.2f, lit(shade(hat, 0.85f)));
+        disc({head.x, head.y - 1.8f}, 2.0f, hat);
+    } else if (type == UnitTypeId::Worker) {
+        const Color cap = shade(uniform, 0.9f);
+        disc({head.x - side * 0.2f, head.y - 1.2f}, 2.0f, cap);
+        DrawLineEx({head.x, head.y - 0.6f}, {head.x + side * 3.0f, head.y - 0.4f}, 1.0f, lit(shade(cap, 0.7f)));
+    } else {
+        const Color helmet = type == UnitTypeId::Assault ? Color{62, 70, 52, 255} : Color{80, 92, 62, 255};
+        disc({head.x, head.y - 1.1f}, 2.7f, helmet);
+        disc({head.x - 0.8f, head.y - 2.0f}, 1.0f, shade(helmet, 1.3f));
+        DrawLineEx({head.x - 2.9f, head.y + 0.2f}, {head.x + 2.9f, head.y + 0.2f}, 0.9f, lit(shade(helmet, 0.7f)));
+        if (!away) disc({head.x + side * 1.0f, head.y + 1.0f}, 1.2f, skin);
+    }
+    if (!away) held();
+    if (away) crew_weapon();
+}
+
+// --- Vehicles, drawn by hand ---------------------------------------------------
+
+// A vehicle's own frame on screen: points by how far along it (tiles, +
+// ahead), across it (tiles, + to its left) and up (pixels). It is drawn
+// rigid, level with the ground under its middle.
+struct Frame {
+    Vector2 o;  // its middle on the ground, on screen
+    Vector2 F;  // a tile ahead, on screen
+    Vector2 S;  // a tile to its left, on screen
+    Vector2 f;  // ahead, on the ground
+    Vector2 s;  // to its left, on the ground
+    Vector2 at(float a, float c, float z = 0.0f) const { return {o.x + F.x * a + S.x * c, o.y + F.y * a + S.y * c - z}; }
+    // Turned to `dir` about the point (a, c) of this frame: a turret on its hull.
+    Frame turned(Vector2 dir, float a, float c) const {
+        const Vector2 left{-dir.y, dir.x};
+        return {at(a, c), iso_offset(dir), iso_offset(left), dir, left};
+    }
+    // Whether a side facing `n` (along, across) is turned towards the viewer, and how it's lit.
+    Vector2 ground_of(float na, float nc) const { return {f.x * na + s.x * nc, f.y * na + s.y * nc}; }
+};
+
+Frame make_frame(const engine::TileMap& map, Vector2 ground, Vector2 f) {
+    const Vector2 left{-f.y, f.x};
+    return {on_terrain(map, ground), iso_offset(f), iso_offset(left), f, left};
+}
+
+// A solid of the vehicle: a polygon (along, across) standing from z0 up to
+// z1, its top the polygon `top` (the same corners moved: a sloped front, a
+// rounded turret). Its sides turned towards the viewer are drawn, each shaded
+// by the way it faces (lit on the right, as the houses are), then its top.
+void solid(const Frame& fr, const Vector2* base, const Vector2* top, int n, float z0, float z1, Color color) {
+    Vector2 mid{0.0f, 0.0f};
+    for (int i = 0; i < n; ++i) mid = {mid.x + base[i].x / static_cast<float>(n), mid.y + base[i].y / static_cast<float>(n)};
+    for (int i = 0; i < n; ++i) {
+        const int j = (i + 1) % n;
+        Vector2 nrm{base[j].y - base[i].y, -(base[j].x - base[i].x)};
+        const Vector2 half{(base[i].x + base[j].x) * 0.5f - mid.x, (base[i].y + base[j].y) * 0.5f - mid.y};
+        if (nrm.x * half.x + nrm.y * half.y < 0.0f) nrm = {-nrm.x, -nrm.y};
+        const Vector2 g = fr.ground_of(nrm.x, nrm.y);
+        const float len = std::hypot(g.x, g.y);
+        if (len <= 0.0f) continue;
+        const Vector2 gn{g.x / len, g.y / len};
+        if (gn.x + gn.y <= 0.02f) continue;  // turned away
+        const float k = 0.7f + 0.2f * gn.x - 0.08f * gn.y;
+        fill_quad(fr.at(base[i].x, base[i].y, z0), fr.at(base[j].x, base[j].y, z0), fr.at(top[j].x, top[j].y, z1),
+                  fr.at(top[i].x, top[i].y, z1), shade(color, k));
+    }
+    const Vector2 t0 = fr.at(top[0].x, top[0].y, z1);
+    for (int i = 1; i + 1 < n; ++i) fill_triangle(t0, fr.at(top[i].x, top[i].y, z1), fr.at(top[i + 1].x, top[i + 1].y, z1), color);
+}
+
+// A box of the vehicle from a0 to a1 along it and c0 to c1 across, z0 to z1
+// up; its top drawn in by `front`, `back` and `sides` (tiles): a sloped plate.
+void block(const Frame& fr, float a0, float a1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f,
+           float back = 0.0f, float sides = 0.0f) {
+    const Vector2 base[4] = {{a1, c1}, {a1, c0}, {a0, c0}, {a0, c1}};
+    const Vector2 top[4] = {{a1 - front, c1 - sides}, {a1 - front, c0 + sides}, {a0 + back, c0 + sides}, {a0 + back, c1 - sides}};
+    solid(fr, base, top, 4, z0, z1, color);
+}
+
+// A round solid: a turret, a cupola, a drum; `taper` draws its top in.
+void round_solid(const Frame& fr, float a, float c, float ra, float rc, float z0, float z1, Color color, float taper = 0.0f,
+                 int sides = 10) {
+    Vector2 base[16];
+    Vector2 top[16];
+    sides = std::min(sides, 16);
+    for (int i = 0; i < sides; ++i) {
+        const float t = static_cast<float>(i) * 6.2831853f / static_cast<float>(sides);
+        base[i] = {a + std::cos(t) * ra, c + std::sin(t) * rc};
+        top[i] = {a + std::cos(t) * ra * (1.0f - taper), c + std::sin(t) * rc * (1.0f - taper)};
+    }
+    solid(fr, base, top, sides, z0, z1, color);
+}
+
+// A patch of paint lying on a top at height z: camouflage, a marking.
+void patch(const Frame& fr, float a, float c, float ra, float rc, float z, Color color, uint32_t seed) {
+    constexpr int kPoints = 7;
+    Vector2 ring[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+        const float k = 0.75f + 0.5f * hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i * 7, i * 11));
+        ring[i] = fr.at(a + std::cos(t) * ra * k, c + std::sin(t) * rc * k, z);
+    }
+    const Vector2 mid = fr.at(a, c, z);
+    for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], color);
+}
+
+// A wheel standing along the vehicle at (a, c), `r` pixels high: the tyre, the hub.
+void wheel(const Frame& fr, float a, float c, float r, Color tyre, Color hub) {
+    constexpr int kPoints = 12;
+    const float ra = r / 32.0f;  // tiles along the hull
+    Vector2 ring[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+        ring[i] = fr.at(a + std::cos(t) * ra, c, r + std::sin(t) * r);
+    }
+    const Vector2 mid = fr.at(a, c, r);
+    for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], tyre);
+    for (int i = 0; i < kPoints; ++i) {
+        const Vector2 p{mid.x + (ring[i].x - mid.x) * 0.5f, mid.y + (ring[i].y - mid.y) * 0.5f};
+        const Vector2 q{mid.x + (ring[(i + 1) % kPoints].x - mid.x) * 0.5f, mid.y + (ring[(i + 1) % kPoints].y - mid.y) * 0.5f};
+        fill_triangle(mid, p, q, hub);
     }
 }
 
+// Tracks along both sides from a0 to a1: the far one, then (after the
+// hull, see near_track) the near one with its road wheels and the links
+// running round when it drives.
+bool left_is_near(const Frame& fr) { return fr.s.x + fr.s.y > 0.0f; }
+void track(const Frame& fr, float a0, float a1, float c_in, float c_out, float high, int wheels, bool near, bool moving) {
+    const float side = left_is_near(fr) == near ? 1.0f : -1.0f;
+    const Color steel{50, 50, 46, 255};
+    block(fr, a0, a1, side > 0 ? c_in : -c_out, side > 0 ? c_out : -c_in, 0.0f, high, steel, 0.04f, 0.04f);
+    if (!near) return;
+    const float c = side * c_out;
+    for (int i = 0; i < wheels; ++i) {
+        const float a = a0 + 0.08f + (a1 - a0 - 0.16f) * static_cast<float>(i) / static_cast<float>(wheels - 1);
+        wheel(fr, a, c, high * 0.42f, {40, 40, 38, 255}, {104, 106, 96, 255});
+    }
+    // The links along the top, running back as it drives.
+    const float run = moving ? std::fmod(static_cast<float>(GetTime()) * 1.6f, 0.08f) : 0.0f;
+    for (float a = a0 + 0.04f + run; a < a1 - 0.04f; a += 0.08f) {
+        DrawLineV(fr.at(a, side * c_in, high), fr.at(a, side * c_out, high), lit({30, 30, 28, 255}));
+    }
+}
+
+// A gun barrel from `from` along the frame's front: a round tube, the lit
+// line along its top, bands, a muzzle; drawn a little up when elevated.
+void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, float width, Color color, bool brake = false) {
+    const Vector2 p0 = fr.at(a0, c, z);
+    const Vector2 p1 = fr.at(a1, c, z + rise);
+    DrawLineEx(p0, p1, width, lit(color));
+    DrawLineEx({p0.x, p0.y - width * 0.3f}, {p1.x, p1.y - width * 0.3f}, std::max(0.8f, width * 0.35f), lit(shade(color, 1.35f)));
+    if (brake) {
+        const Vector2 m0 = fr.at(a1 - 0.06f, c, z + rise * (1.0f - 0.06f / (a1 - a0)));
+        DrawLineEx(m0, p1, width * 1.7f, lit(shade(color, 0.8f)));
+    }
+    disc(p1, width * 0.45f, {20, 20, 20, 255});
+}
+
+// A vehicle, drawn by hand in its own frame (see Frame): tracks with their
+// road wheels or tyred wheels, the hull with its sloped plates, a turret
+// turned where it aims, the gun; painted olive with the side's colour in it
+// and camouflage patches, the side's stripe round the turret.
 void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground,
                                  Vector2 facing) const {
-    const Color color = shade(theme::player_color(u.owner), 0.85f);
-    if (u.type == engine::UnitTypeId::Truck) {
-        // Load bed behind, cab in front, the freight on the bed.
-        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
-        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 4.0f, shade(color, 0.7f));
-        if (u.carrying > 0) {
-            const float load = 3.0f + 5.0f * static_cast<float>(u.carrying) / static_cast<float>(engine::kTruckCapacity);
-            draw_box(map, at(-0.12f), facing, 0.5f, 0.38f, load, cargo_color(u.carrying_type), 4.0f);
+    using engine::UnitTypeId;
+    Vector2 hull_dir = to_vector2(u.hull);
+    {
+        const float l = std::hypot(hull_dir.x, hull_dir.y);
+        hull_dir = l > 0.0f ? Vector2{hull_dir.x / l, hull_dir.y / l} : facing;
+    }
+    const UnitTypeId type = u.type;
+    const bool tracked = type == UnitTypeId::Tank || type == UnitTypeId::Ifv || type == UnitTypeId::Spg || type == UnitTypeId::Shilka;
+    const bool gun_leads = type == UnitTypeId::Howitzer;  // no hull apart from the gun
+    const Frame fr = make_frame(map, ground, tracked || gun_leads ? hull_dir : facing);
+    const Color team = theme::player_color(u.owner);
+    const Color olive{98, 104, 70, 255};
+    const Color paint = mix(olive, team, 0.3f);
+    const Color dark = shade(paint, 0.62f);
+    const Color metal{58, 60, 54, 255};
+    const uint32_t h = static_cast<uint32_t>(u.id) * 2654435761u;
+    auto camo = [&](float a0, float a1, float c0, float c1, float z, int n) {
+        for (int i = 0; i < n; ++i) {
+            const uint32_t hi = tile_hash(static_cast<int>(h >> 8) + i * 13, i * 7);
+            patch(fr, a0 + (a1 - a0) * hash_unit(hi), c0 + (c1 - c0) * hash_unit(hi >> 16), 0.07f, 0.05f, z,
+                  i % 2 == 0 ? shade(paint, 0.72f) : mix(paint, {150, 132, 92, 255}, 0.45f), hi);
         }
-        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
-        return;
-    }
-    if (u.type == engine::UnitTypeId::FuelTanker || u.type == engine::UnitTypeId::AmmoTruck) {
-        // A cab and behind it a silver tank, or a covered bed of olive crates.
-        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
-        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 3.0f, shade(color, 0.7f));
-        const bool fuel = u.type == engine::UnitTypeId::FuelTanker;
-        const Color body = fuel ? Color{176, 178, 172, 255} : Color{98, 106, 70, 255};
-        draw_box(map, at(-0.12f), facing, 0.52f, fuel ? 0.34f : 0.4f, fuel ? 7.0f : 6.0f, body, 3.0f);
-        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
-        return;
-    }
+    };
 
-    if (u.type == engine::UnitTypeId::Mlrs) {
-        // A truck with a pack of launch tubes: raised when set up.
-        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
-        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 4.0f, shade(color, 0.7f));
-        const float raise = u.deployed ? 8.0f : 4.0f;
-        const auto top = draw_box(map, at(-0.14f), facing, 0.46f, 0.38f, u.deployed ? 7.0f : 4.0f, {74, 82, 60, 255}, raise);
-        for (int i = 0; i < 3; ++i) {  // the tube ends
-            const float k = static_cast<float>(i + 1) / 4.0f;
-            DrawLineV(lerp(top[0], top[1], k), lerp(top[3], top[2], k), {40, 44, 34, 255});
-        }
-        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
-        return;
-    }
-
-    if (u.type == engine::UnitTypeId::Howitzer) {
-        // A carriage on two wheels and a long barrel: set up, the trails
-        // spread behind and the barrel points up; packed, it trails behind
-        // for towing.
-        const Color steel = shade(color, 0.6f);
-        draw_box(map, ground, facing, 0.34f, 0.46f, 5.0f, shade(color, 0.8f));
-        const Vector2 hub = on_terrain(map, ground, 6.0f);
-        if (u.deployed) {
-            const Vector2 side{-facing.y, facing.x};
-            for (const float k : {-0.35f, 0.35f}) {
-                const Vector2 tail{ground.x - facing.x * 0.55f + side.x * k, ground.y - facing.y * 0.55f + side.y * k};
-                DrawLineEx(on_terrain(map, ground, 2.0f), on_terrain(map, tail), 2.0f, steel);
-            }
-            const Vector2 tip = on_terrain(map, {ground.x + facing.x * 0.45f, ground.y + facing.y * 0.45f}, 20.0f);
-            DrawLineEx(hub, tip, 3.0f, steel);
-            if (u.camouflaged) {  // nets and branches over it
-                fill_ground_ellipse(on_terrain(map, ground, 8.0f), 0.55f, {64, 88, 52, 170});
-                draw_ground_ellipse(on_terrain(map, ground, 8.0f), 0.55f, {46, 66, 38, 200});
+    if (tracked) {
+        const bool tank = type == UnitTypeId::Tank;
+        const bool ifv = type == UnitTypeId::Ifv;
+        const float track_h = ifv ? 4.5f : 5.0f;
+        const int wheels = ifv ? 6 : type == UnitTypeId::Spg ? 7 : 6;
+        track(fr, -0.5f, 0.48f, 0.19f, 0.29f, track_h, wheels, false, u.moving);
+        // The hull: a low box, the front plate sloped (an IFV's long ribbed nose).
+        const float deck = ifv ? 7.5f : 8.0f;
+        if (ifv) {
+            block(fr, -0.5f, 0.2f, -0.21f, 0.21f, 2.0f, deck, paint);
+            block(fr, 0.2f, 0.52f, -0.21f, 0.21f, 2.0f, deck, shade(paint, 1.05f), 0.32f);
+            for (const float k : {0.3f, 0.5f, 0.7f}) {  // the ribs on the nose
+                const float a = 0.2f + 0.32f * k;
+                const float z = deck - (deck - 2.0f) * k;
+                DrawLineV(fr.at(a, -0.2f, z), fr.at(a, 0.2f, z), lit(shade(paint, 0.8f)));
             }
         } else {
-            const Vector2 tip = on_terrain(map, {ground.x - facing.x * 0.6f, ground.y - facing.y * 0.6f}, 7.0f);
-            DrawLineEx(hub, tip, 3.0f, steel);
+            block(fr, -0.48f, 0.36f, -0.2f, 0.2f, 2.0f, deck, paint);
+            block(fr, 0.36f, 0.5f, -0.2f, 0.2f, 2.0f, deck, shade(paint, 1.06f), 0.14f);
+        }
+        // Fenders over the tracks.
+        for (const float sgn : {-1.0f, 1.0f}) {
+            block(fr, -0.5f, 0.46f, sgn > 0 ? 0.2f : -0.3f, sgn > 0 ? 0.3f : -0.2f, track_h, track_h + 0.8f, shade(paint, 0.9f));
+        }
+        camo(-0.4f, 0.3f, -0.17f, 0.17f, deck, 3);
+        if (tank) {
+            // The engine deck's grille, two fuel drums across the back.
+            for (const float a : {-0.4f, -0.34f, -0.28f}) DrawLineV(fr.at(a, -0.14f, deck), fr.at(a, 0.14f, deck), lit(shade(paint, 0.7f)));
+            for (const float c : {-0.1f, 0.1f}) round_solid(fr, -0.47f, c, 0.04f, 0.08f, deck, deck + 2.5f, {86, 84, 70, 255}, 0.0f, 8);
+        }
+        if (ifv) {  // the troop doors at the back
+            const Vector2 bk = fr.ground_of(-1.0f, 0.0f);
+            if (bk.x + bk.y > 0.0f) {
+                for (const float c : {-0.12f, 0.06f}) {
+                    fill_quad(fr.at(-0.5f, c, 2.5f), fr.at(-0.5f, c + 0.07f, 2.5f), fr.at(-0.5f, c + 0.07f, 6.5f), fr.at(-0.5f, c, 6.5f),
+                              shade(paint, 0.5f));
+                }
+            }
+        }
+        track(fr, -0.5f, 0.48f, 0.19f, 0.29f, track_h, wheels, true, u.moving);
+
+        // The turret, turned where it aims.
+        const float ta = tank ? -0.04f : type == UnitTypeId::Spg ? -0.16f : type == UnitTypeId::Shilka ? -0.06f : 0.0f;
+        const Frame tf = fr.turned(facing, ta, 0.0f);
+        const bool gun_front = tf.f.x + tf.f.y > 0.0f;  // the gun comes towards us: drawn over the turret
+        float gun_z = deck + 3.0f;
+        float gun_a0 = 0.15f;
+        float gun_a1 = 0.8f;
+        float gun_w = 2.6f;
+        float rise = 0.0f;
+        bool brake = false;
+        auto guns = [&] {
+            if (type == UnitTypeId::Shilka) {  // four barrels in two pairs
+                for (const float c : {-0.09f, -0.05f, 0.05f, 0.09f}) barrel(tf, 0.18f, 0.5f, c, deck + 4.5f, 2.0f, 1.2f, metal);
+                return;
+            }
+            barrel(tf, gun_a0, gun_a1, 0.0f, gun_z, rise, gun_w, tank ? shade(paint, 0.8f) : metal, brake);
+            if (tank) {  // the thermal sleeve's bands, the fume extractor
+                for (const float k : {0.35f, 0.62f}) {
+                    const float a = gun_a0 + (gun_a1 - gun_a0) * k;
+                    DrawLineEx(tf.at(a - 0.02f, 0.0f, gun_z), tf.at(a + 0.02f, 0.0f, gun_z), gun_w + 1.2f, lit(shade(paint, 0.7f)));
+                }
+            }
+        };
+        if (tank) {
+            gun_z = deck + 3.2f;
+        } else if (ifv) {
+            gun_a0 = 0.08f;
+            gun_a1 = 0.55f;
+            gun_w = 1.4f;
+            gun_z = deck + 2.4f;
+        } else if (type == UnitTypeId::Spg) {
+            gun_a0 = 0.16f;
+            gun_a1 = u.deployed ? 0.62f : 0.72f;
+            gun_w = 2.4f;
+            gun_z = deck + 3.0f;
+            rise = u.deployed ? 12.0f : 0.0f;
+            brake = true;
+        }
+        if (!gun_front) guns();
+        if (tank) {
+            // A low round turret, the side's stripe round it, the commander's cupola and its machine gun.
+            round_solid(tf, 0.0f, 0.0f, 0.2f, 0.17f, deck, deck + 2.2f, paint, 0.0f, 12);
+            round_solid(tf, 0.0f, 0.0f, 0.2f, 0.17f, deck + 2.2f, deck + 3.2f, team, 0.02f, 12);
+            round_solid(tf, 0.0f, 0.0f, 0.196f, 0.167f, deck + 3.2f, deck + 5.0f, paint, 0.3f, 12);
+            camo(-0.1f, 0.08f, -0.08f, 0.08f, deck + 5.0f, 2);
+            round_solid(tf, -0.06f, 0.07f, 0.045f, 0.045f, deck + 5.0f, deck + 6.5f, shade(paint, 0.92f), 0.2f, 8);
+            DrawLineEx(tf.at(-0.06f, 0.07f, deck + 7.0f), tf.at(0.06f, 0.07f, deck + 7.5f), 1.0f, lit({34, 34, 34, 255}));
+        } else if (ifv) {
+            round_solid(tf, 0.0f, 0.02f, 0.12f, 0.12f, deck, deck + 1.5f, team, 0.0f, 10);
+            round_solid(tf, 0.0f, 0.02f, 0.118f, 0.118f, deck + 1.5f, deck + 3.5f, paint, 0.3f, 10);
+            if (u.missiles > 0) block(tf, -0.1f, 0.12f, -0.1f, -0.06f, deck + 3.5f, deck + 5.0f, {84, 92, 62, 255});  // the ATGM tube
+        } else if (type == UnitTypeId::Spg) {
+            block(tf, -0.18f, 0.17f, -0.17f, 0.17f, deck, deck + 2.0f, team, 0.0f, 0.0f, 0.0f);
+            block(tf, -0.18f, 0.17f, -0.17f, 0.17f, deck + 2.0f, deck + 5.5f, paint, 0.05f, 0.02f, 0.03f);
+            camo(-0.12f, 0.1f, -0.12f, 0.12f, deck + 5.5f, 2);
+        } else {  // Shilka: a big flat turret, its radar dish turning at the back
+            block(tf, -0.2f, 0.18f, -0.19f, 0.19f, deck, deck + 2.0f, team);
+            block(tf, -0.2f, 0.18f, -0.19f, 0.19f, deck + 2.0f, deck + 6.0f, paint, 0.03f, 0.0f, 0.02f);
+            const Vector2 mast = tf.at(-0.16f, 0.0f, deck + 6.0f);
+            DrawLineEx(mast, {mast.x, mast.y - 5.0f}, 1.2f, lit(metal));
+            const float spin = std::cos(static_cast<float>(GetTime()) * 2.5f);
+            DrawEllipse(static_cast<int>(mast.x), static_cast<int>(mast.y - 7.0f), 1.0f + 5.0f * std::fabs(spin), 3.2f, lit({86, 92, 80, 255}));
+            DrawEllipseLines(static_cast<int>(mast.x), static_cast<int>(mast.y - 7.0f), 1.0f + 5.0f * std::fabs(spin), 3.2f, lit(metal));
+        }
+        if (gun_front) guns();
+        if (u.camouflaged) {  // nets and branches over it
+            fill_ground_ellipse(fr.at(0.0f, 0.0f, deck + 3.0f), 0.6f, {64, 88, 52, 170});
+            draw_ground_ellipse(fr.at(0.0f, 0.0f, deck + 3.0f), 0.6f, {46, 66, 38, 200});
         }
         return;
     }
 
-    if (u.type == engine::UnitTypeId::FieldHq) {
-        // A long eight-wheeled hull with a shelter on top and whip antennas.
-        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
-        draw_box(map, ground, facing, 0.9f, 0.46f, 8.0f, color);
-        draw_box(map, at(-0.12f), facing, 0.4f, 0.34f, 5.0f, shade(color, 1.12f), 8.0f);
-        const Vector2 side{-facing.y * 0.16f, facing.x * 0.16f};
-        for (const float k : {-1.0f, 1.0f}) {
-            const Vector2 base{ground.x - facing.x * 0.3f + side.x * k, ground.y - facing.y * 0.3f + side.y * k};
-            const Vector2 foot = on_terrain(map, base, 12.0f);
-            DrawLineEx(foot, {foot.x + 3.0f * k, foot.y - 26.0f}, 1.2f, {30, 32, 30, 255});
-        }
-        return;
-    }
-
-    if (u.type == engine::UnitTypeId::DfStation) {
-        // A truck with a closed van body; set up, a mast with a loop antenna
-        // stands up from it, packed it lies along the roof.
-        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
-        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 3.0f, shade(color, 0.7f));
-        draw_box(map, at(-0.12f), facing, 0.52f, 0.4f, 8.0f, {104, 110, 88, 255}, 3.0f);
-        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
-        const Vector2 foot = on_terrain(map, at(-0.2f), 11.0f);
-        const Color mast = {40, 42, 38, 255};
+    if (type == UnitTypeId::Howitzer) {
+        // A D-30: set up, its three trails spread round it, the wheels up,
+        // the barrel over its shield rising to fire; packed, the trails
+        // folded under the barrel, which points back the way it's towed.
+        const Color gun_metal = shade(paint, 0.78f);
         if (u.deployed) {
-            const Vector2 top{foot.x, foot.y - 26.0f};
-            DrawLineEx(foot, top, 1.5f, mast);
-            DrawEllipseLines(static_cast<int>(top.x), static_cast<int>(top.y - 4.0f), 3.0f, 5.0f, mast);
+            for (const float deg : {180.0f, 60.0f, -60.0f}) {
+                const float t = deg * 0.0174533f;
+                const Frame trail = fr.turned({fr.f.x * std::cos(t) - fr.f.y * std::sin(t), fr.f.y * std::cos(t) + fr.f.x * std::sin(t)}, 0.0f, 0.0f);
+                block(trail, 0.04f, 0.46f, -0.025f, 0.025f, 0.0f, 2.2f, dark);
+            }
+            block(fr, -0.08f, 0.08f, -0.08f, 0.08f, 0.0f, 6.0f, gun_metal, 0.0f, 0.0f, 0.02f);
+            for (const float c : {-0.18f, 0.18f}) wheel(fr, -0.02f, c, 3.0f, {36, 36, 34, 255}, {96, 98, 88, 255});
+            block(fr, 0.06f, 0.09f, -0.15f, 0.15f, 3.0f, 10.0f, paint);  // the shield
+            barrel(fr, -0.1f, 0.62f, 0.0f, 7.0f, u.engaged ? 14.0f : 6.0f, 2.8f, gun_metal, true);
+            if (u.camouflaged) {
+                fill_ground_ellipse(fr.at(0.0f, 0.0f, 8.0f), 0.55f, {64, 88, 52, 170});
+                draw_ground_ellipse(fr.at(0.0f, 0.0f, 8.0f), 0.55f, {46, 66, 38, 200});
+            }
         } else {
-            DrawLineEx(foot, on_terrain(map, at(0.2f), 12.0f), 1.5f, mast);
+            block(fr, 0.02f, 0.5f, -0.04f, 0.04f, 0.5f, 2.5f, dark);  // the trails folded together: the towing bar
+            for (const float c : {-0.17f, 0.17f}) wheel(fr, 0.0f, c, 3.5f, {36, 36, 34, 255}, {96, 98, 88, 255});
+            block(fr, -0.06f, 0.06f, -0.14f, 0.14f, 3.0f, 9.0f, paint);
+            barrel(fr, 0.0f, -0.62f, 0.0f, 7.0f, 0.0f, 2.8f, gun_metal, true);
         }
         return;
     }
 
-    if (u.type == engine::UnitTypeId::Spg) {
-        draw_box(map, ground, facing, 0.9f, 0.56f, 6.0f, color);
-        const Vector2 turret{ground.x - facing.x * 0.1f, ground.y - facing.y * 0.1f};
-        draw_box(map, turret, facing, 0.42f, 0.42f, 5.0f, shade(color, 1.1f), 6.0f);
-        const Vector2 hub = on_terrain(map, turret, 9.0f);
-        const float reach = u.deployed ? 0.4f : 0.75f;
-        const Vector2 tip = on_terrain(map, {turret.x + facing.x * reach, turret.y + facing.y * reach},
-                                       u.deployed ? 22.0f : 10.0f);
-        DrawLineEx(hub, tip, 3.0f, shade(color, 0.4f));
-        if (u.camouflaged) {
-            fill_ground_ellipse(on_terrain(map, ground, 10.0f), 0.6f, {64, 88, 52, 170});
+    // Wheeled: a Ural truck, a BTR-type command vehicle.
+    const bool btr = type == UnitTypeId::FieldHq;
+    const Color tyre{34, 34, 32, 255};
+    const Color hub{92, 94, 84, 255};
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    if (btr) {
+        const float axles[4] = {0.34f, 0.12f, -0.12f, -0.34f};
+        for (const float a : axles) wheel(fr, a, -near * 0.2f, 3.4f, tyre, hub);
+        block(fr, -0.5f, 0.36f, -0.21f, 0.21f, 3.0f, 10.0f, paint, 0.0f, 0.04f, 0.03f);
+        block(fr, 0.36f, 0.54f, -0.21f, 0.21f, 3.0f, 10.0f, shade(paint, 1.06f), 0.16f, 0.0f, 0.03f);
+        for (const float a : axles) wheel(fr, a, near * 0.21f, 3.4f, tyre, hub);
+        camo(-0.4f, 0.3f, -0.15f, 0.15f, 10.0f, 3);
+        round_solid(fr, 0.12f, 0.0f, 0.07f, 0.07f, 10.0f, 11.5f, team, 0.0f, 8);
+        round_solid(fr, 0.12f, 0.0f, 0.068f, 0.068f, 11.5f, 13.5f, paint, 0.3f, 8);
+        DrawLineEx(fr.at(0.18f, 0.0f, 12.5f), fr.at(0.34f, 0.0f, 12.8f), 1.2f, lit(metal));
+        for (const float c : {-0.15f, 0.15f}) {  // whip aerials
+            const Vector2 foot = fr.at(-0.36f, c, 10.0f);
+            DrawLineEx(foot, {foot.x + 2.0f * c * 10.0f, foot.y - 28.0f}, 1.0f, lit({30, 32, 30, 255}));
         }
         return;
     }
-
-    const bool tank = u.type == engine::UnitTypeId::Tank;
-    const float length = tank ? 0.95f : 0.85f;
-    const float width = tank ? 0.58f : 0.5f;
-    const float hull = tank ? 6.0f : 8.0f;  // hull height, pixels
-    draw_box(map, ground, facing, length, width, hull, color);
-
-    // Turret and gun.
-    const Vector2 center = on_terrain(map, ground, hull + 2.0f);
-    const float barrel = tank ? 0.75f : 0.5f;
-    const Vector2 muzzle = iso_offset({facing.x * barrel, facing.y * barrel});
-    DrawLineEx(center, {center.x + muzzle.x, center.y + muzzle.y}, tank ? 3.0f : 2.0f, shade(color, 0.4f));
-    DrawCircleV(center, tank ? 6.0f : 4.0f, shade(color, 1.15f));
-    DrawCircleLinesV(center, tank ? 6.0f : 4.0f, shade(color, 0.45f));
+    // A Ural: three axles, a bonneted cab, what's on the back by what it is.
+    const float axles[3] = {0.34f, -0.14f, -0.36f};
+    for (const float a : axles) wheel(fr, a, -near * 0.17f, 3.4f, tyre, hub);
+    block(fr, -0.5f, 0.46f, -0.13f, 0.13f, 2.6f, 4.6f, {44, 44, 40, 255});  // the frame
+    // The bonnet, the cab with its windscreen and side window.
+    block(fr, 0.3f, 0.52f, -0.14f, 0.14f, 4.0f, 9.5f, paint, 0.03f);
+    block(fr, 0.08f, 0.3f, -0.19f, 0.19f, 4.0f, 13.0f, paint, 0.0f, 0.0f, 0.01f);
+    {
+        const Vector2 fw = fr.ground_of(1.0f, 0.0f);
+        if (fw.x + fw.y > 0.0f) {
+            fill_quad(fr.at(0.3f, -0.15f, 8.8f), fr.at(0.3f, 0.15f, 8.8f), fr.at(0.3f, 0.15f, 12.2f), fr.at(0.3f, -0.15f, 12.2f),
+                      {74, 92, 104, 255});
+        }
+        const float c = near * 0.19f;
+        fill_quad(fr.at(0.13f, c, 8.8f), fr.at(0.26f, c, 8.8f), fr.at(0.26f, c, 12.0f), fr.at(0.13f, c, 12.0f), {80, 98, 110, 255});
+    }
+    DrawRectangleRec({fr.at(0.19f, 0.0f, 13.0f).x - 2.0f, fr.at(0.19f, 0.0f, 13.0f).y - 1.0f, 4.0f, 1.2f}, lit(team));  // a marking on the roof
+    const float bed0 = -0.5f;
+    const float bed1 = 0.06f;
+    switch (type) {
+        case UnitTypeId::FuelTanker: {  // a silver tank, a red band, a ladder
+            block(fr, bed0, bed1, -0.16f, 0.16f, 4.6f, 11.5f, {176, 178, 172, 255}, 0.02f, 0.02f, 0.07f);
+            block(fr, bed0 + 0.2f, bed0 + 0.26f, -0.165f, 0.165f, 7.0f, 8.2f, {176, 60, 50, 255});
+            break;
+        }
+        case UnitTypeId::AmmoTruck: {  // a tarpaulin over the crates
+            block(fr, bed0, bed1, -0.2f, 0.2f, 4.6f, 7.0f, dark);
+            block(fr, bed0, bed1, -0.2f, 0.2f, 7.0f, 12.0f, {92, 100, 66, 255}, 0.0f, 0.0f, 0.05f);
+            break;
+        }
+        case UnitTypeId::Mlrs: {  // the launcher: forty tubes, raised to fire
+            block(fr, bed0, bed1, -0.2f, 0.2f, 4.6f, 6.0f, dark);
+            const float up = u.deployed ? 6.0f : 0.0f;
+            const Vector2 base[4] = {{bed1 - 0.02f, 0.17f}, {bed1 - 0.02f, -0.17f}, {bed0 + 0.02f, -0.17f}, {bed0 + 0.02f, 0.17f}};
+            const Vector2 top[4] = {{bed1 - 0.02f, 0.17f}, {bed1 - 0.02f, -0.17f}, {bed0 + 0.02f, -0.17f}, {bed0 + 0.02f, 0.17f}};
+            solid(fr, base, top, 4, 6.0f + up, 11.0f + up, {74, 82, 60, 255});
+            const Vector2 bk = fr.ground_of(-1.0f, 0.0f);
+            if (bk.x + bk.y > 0.0f) {  // the tube ends
+                for (int row = 0; row < 3; ++row) {
+                    for (int k = 0; k < 6; ++k) {
+                        disc(fr.at(bed0 + 0.02f, -0.14f + 0.056f * static_cast<float>(k), 7.2f + up + 1.4f * static_cast<float>(row)), 0.8f,
+                             {24, 26, 22, 255});
+                    }
+                }
+            }
+            break;
+        }
+        case UnitTypeId::DfStation:
+        case UnitTypeId::AirRadar: {  // a box body; a mast with a loop, or a radar turning
+            const Color box{112, 118, 96, 255};
+            block(fr, bed0, bed1, -0.2f, 0.2f, 4.6f, 14.0f, box);
+            DrawLineV(fr.at(bed0 + 0.1f, near * 0.2f, 5.0f), fr.at(bed0 + 0.1f, near * 0.2f, 13.0f), lit(shade(box, 0.6f)));
+            const Vector2 foot = fr.at(bed0 + 0.2f, 0.0f, 14.0f);
+            if (type == UnitTypeId::AirRadar) {
+                DrawLineEx(foot, {foot.x, foot.y - 8.0f}, 1.5f, lit(metal));
+                const float spin = static_cast<float>(GetTime()) * 1.8f + static_cast<float>(u.id);
+                const Frame rf = fr.turned({std::cos(spin), std::sin(spin)}, bed0 + 0.2f, 0.0f);
+                fill_quad(rf.at(0.0f, -0.28f, 22.0f), rf.at(0.0f, 0.28f, 22.0f), rf.at(0.03f, 0.28f, 30.0f), rf.at(0.03f, -0.28f, 30.0f),
+                          {150, 156, 146, 255});
+                for (int k = 1; k < 6; ++k) {
+                    const float c = -0.28f + 0.56f * static_cast<float>(k) / 6.0f;
+                    DrawLineV(rf.at(0.0f, c, 22.0f), rf.at(0.03f, c, 30.0f), lit({96, 100, 92, 255}));
+                }
+            } else if (u.deployed) {
+                const Vector2 top{foot.x, foot.y - 26.0f};
+                DrawLineEx(foot, top, 1.5f, lit(metal));
+                DrawEllipseLines(static_cast<int>(top.x), static_cast<int>(top.y - 4.0f), 3.0f, 5.0f, lit(metal));
+            } else {
+                DrawLineEx(foot, fr.at(0.2f, 0.0f, 14.5f), 1.5f, lit(metal));
+            }
+            break;
+        }
+        default: {  // a supply truck: the open bed, its load on it
+            block(fr, bed0, bed1, -0.2f, 0.2f, 4.6f, 8.0f, paint);
+            block(fr, bed0 + 0.02f, bed1 - 0.02f, -0.18f, 0.18f, 5.0f, 7.6f, shade(paint, 0.55f));
+            if (u.carrying > 0) {
+                const float load = 2.0f + 5.0f * std::min(1.0f, static_cast<float>(u.carrying) / static_cast<float>(engine::kTruckCapacity));
+                block(fr, bed0 + 0.04f, bed1 - 0.04f, -0.16f, 0.16f, 6.0f, 8.0f + load, cargo_color(u.carrying_type), 0.0f, 0.0f, 0.02f);
+            }
+            break;
+        }
+    }
+    for (const float a : axles) wheel(fr, a, near * 0.17f, 3.4f, tyre, hub);
 }
 
 void WorldRenderer::draw_projectile(const engine::Projectile& p, float alpha) const {
