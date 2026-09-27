@@ -495,6 +495,34 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return std::nullopt;
     }
 
+    if (options.scene == "rear" && options.mode == Options::Mode::Offline) {
+        // Offline: a workshop with two battered tanks parked by it, and a
+        // field hospital the wounded riflemen go into. The hospital's card.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const engine::TilePos b = engine::tile_of(base);
+        const int32_t fwd = me == 0 ? 1 : -1;
+        engine::World& w = game.world_for_setup();
+        const engine::TilePos shop{b.x - 8 * fwd, b.y - 2 * fwd};
+        const engine::TilePos ward{b.x - 3 * fwd, b.y - 7 * fwd};
+        w.place_structure(engine::StructureType::Workshop, me, shop, 3, 3);
+        const engine::EntityId hospital = w.place_structure(engine::StructureType::Hospital, me, ward, 2, 2);
+        std::vector<engine::EntityId> tanks;
+        std::vector<engine::EntityId> riflemen;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me) continue;
+            if (u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+            if (u.type == engine::UnitTypeId::Rifleman && riflemen.size() < 4) riflemen.push_back(u.id);
+        }
+        for (size_t i = 0; i < tanks.size(); ++i) {
+            w.unit_for_setup(tanks[i])->hp = 120;
+            game.submit({.type = engine::CommandType::Move, .units = {tanks[i]},
+                         .target = engine::tile_center({shop.x + 1 + static_cast<int32_t>(i), shop.y + 4})});
+        }
+        for (engine::EntityId id : riflemen) w.unit_for_setup(id)->hp = 12;
+        game.submit({.type = engine::CommandType::Garrison, .units = riflemen, .target_unit = hospital});
+        return render::to_vector2(base);
+    }
+
     if (options.scene == "rally") {
         // The headquarters' rally point ahead of it, two rear troops hired to go there.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
@@ -719,10 +747,12 @@ int main(int argc, char** argv) {
                 smoke_ordered = true;
             }
             game->update(GetFrameTime());
-            if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally")) {
-                // Show the barracks', the station's or the headquarters' card on the command panel.
+            if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally" ||
+                          options->scene == "rear")) {
+                // Show the barracks', the station's, the headquarters' or the hospital's card on the command panel.
                 const engine::StructureType shown = options->scene == "build"       ? engine::StructureType::InfantryBarracks
                                                     : options->scene == "logistics" ? engine::StructureType::Station
+                                                    : options->scene == "rear"      ? engine::StructureType::Hospital
                                                                                     : engine::StructureType::Headquarters;
                 for (const engine::Structure& s : game->world().structures()) {
                     if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);

@@ -197,6 +197,9 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                         (structure->type == engine::StructureType::Station && has_service_vehicles(world)))) {
                 // Trucks go back on the supply run (to this depot); anyone else selected just goes there.
                 order_haul(lockstep, world, renderer, ground, structure->id);
+            } else if (structure && structure->type == engine::StructureType::Hospital && structure->owner == player_ &&
+                       structure->built && has_foot_soldiers(world)) {
+                order_garrison(lockstep, structure->id);  // the wounded to their beds
             } else if (structure && engine::is_shelter(engine::role_of(*structure))) {
                 // Our infantry moves in; a house or dugout the enemy holds gets shelled.
                 if (structure->owner == engine::kNoOwner || structure->owner == player_) {
@@ -278,6 +281,15 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
                       : "RMB: back on the supply run";
         return;
     }
+    if (s && s->type == engine::StructureType::Hospital && s->owner == player_ && s->built && has_foot_soldiers(world)) {
+        hint_ = TextFormat("RMB: into the hospital beds (%d / %d): healed, out when well",
+                           static_cast<int>(s->garrison.size()), engine::structure_type(s->type).capacity);
+        return;
+    }
+    if (s && s->type == engine::StructureType::Workshop && s->owner == player_ && s->built && has_vehicles(world)) {
+        hint_ = "RMB: to the workshop: parked by it, vehicles get repaired (a material a second each)";
+        return;
+    }
     if (s && engine::is_shelter(role)) {
         hint_ = s->owner == engine::kNoOwner || s->owner == player_ ? "RMB: go in" : "RMB: shell it";
         return;
@@ -341,6 +353,8 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
         case engine::StructureType::Quarters: return "Quarters";
+        case engine::StructureType::Workshop: return "Workshop";
+        case engine::StructureType::Hospital: return "Hospital";
         default: return engine::structure_type(type).name;
     }
 }
@@ -376,7 +390,8 @@ void PlayerController::rebuild_grid(const engine::World& world) {
                 engine::kDugoutCost)
                 .enabled = !s->upgrading;
         }
-        if (engine::is_shelter(engine::role_of(*s)) && !s->garrison.empty()) {
+        if ((engine::is_shelter(engine::role_of(*s)) || s->type == engine::StructureType::Hospital) &&
+            !s->garrison.empty()) {
             put(0, Action::Unload, 0, "Leave", "Everyone out");
         }
         // Research: the bottom row, then the middle one, whatever this building can research.
@@ -410,7 +425,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
 
     if (def.worker && build_menu_) {
         // Barracks along the top and middle rows, depots along the bottom one.
-        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13};
+        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 8, 9};
         static_assert(std::size(kBuildSlots) >= std::size(engine::kBuildable));
         for (size_t i = 0; i < std::size(engine::kBuildable); ++i) {
             const engine::StructureDef& b = engine::structure_type(engine::kBuildable[i]);
@@ -847,6 +862,20 @@ void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& 
     if (!haul.units.empty()) lockstep.submit(std::move(haul));
     if (!move.units.empty()) lockstep.submit(std::move(move));
     renderer.add_order_ping(ground, false);
+}
+
+bool PlayerController::has_foot_soldiers(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && !engine::unit_type(u->type).vehicle;
+    });
+}
+
+bool PlayerController::has_vehicles(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::unit_type(u->type).vehicle && !engine::unit_type(u->type).aircraft;
+    });
 }
 
 bool PlayerController::has_riders(const engine::World& world) const {

@@ -705,6 +705,22 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
             draw_depot_trucks(world, s, line4, area);
             return;
+        case engine::StructureType::Workshop:
+            draw_text(TextFormat("Repairs our vehicles parked by it (%d tiles), armor and wheels.", engine::kRepairReach.to_int()),
+                      area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text(TextFormat("%d at a time, the worst first: %d HP a second each,", static_cast<int>(engine::kRepairBays),
+                                 engine::kRepairPerInterval),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("for a material a second each in spare parts.", area.x, line4, kCardFontSize, theme::kTextDim);
+            return;
+        case engine::StructureType::Hospital:
+            draw_text(TextFormat("Beds: %d / %d. RMB with the wounded on it: in to be healed.",
+                                 static_cast<int>(s.garrison.size()), engine::structure_type(s.type).capacity),
+                      area.x, line2, kCardFontSize, theme::kText);
+            draw_text(TextFormat("%d HP a second each; the well come out by themselves.",
+                                 static_cast<int>(engine::kTicksPerSecond / engine::kHealTicks)),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            return;
         case engine::StructureType::Quarters:
             draw_text(TextFormat("Bunks for %d men.", engine::kQuartersBunks), area.x, line2, kCardFontSize,
                       theme::kTextDim);

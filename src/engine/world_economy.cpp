@@ -363,6 +363,30 @@ void World::update_building(Unit& u) {
 }
 
 // Every building works on the front of its queue; the unit walks out of the door.
+// Workshops fix our vehicles parked by them, a few at a time, the worst
+// damaged first, with spare parts (materials) from the stock.
+void World::update_repairs() {
+    if (tick_ % kRepairInterval != 0) return;
+    for (const Structure& s : structures_) {
+        if (s.type != StructureType::Workshop || !s.built || s.owner >= kMaxPlayers) continue;
+        std::vector<Unit*> bay;
+        for (Unit& u : units_) {
+            const UnitTypeDef& def = unit_type(u.type);
+            if (u.owner != s.owner || !def.vehicle || def.aircraft || u.inside || u.moving || u.hp >= def.max_hp) continue;
+            if (distance_sq_to(s, u.pos) <= square_raw(kRepairReach)) bay.push_back(&u);
+        }
+        std::stable_sort(bay.begin(), bay.end(), [](const Unit* a, const Unit* b) {
+            return static_cast<int64_t>(a->hp) * unit_type(b->type).max_hp <
+                   static_cast<int64_t>(b->hp) * unit_type(a->type).max_hp;
+        });
+        Stock& stock = stock_[s.owner];
+        for (size_t i = 0; i < bay.size() && i < kRepairBays && can_afford(stock, kRepairCost); ++i) {
+            pay(stock, kRepairCost);
+            bay[i]->hp = std::min(unit_type(bay[i]->type).max_hp, bay[i]->hp + kRepairPerInterval);
+        }
+    }
+}
+
 int32_t World::population(PlayerId player) const {
     int32_t men = mouths(player);
     for (const Structure& s : structures_) {

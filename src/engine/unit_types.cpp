@@ -732,6 +732,12 @@ constexpr StructureDef kStructureTypes[] = {
     // A long hut of bunks: cheap, quick, and every one of them counts.
     {.name = "Living quarters", .max_hp = 700, .armor = {0, 10, 50},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 50, 0, 0}, .build_time = seconds(20)},
+    // Sheds, a pit, a crane: armor and wheels alike are fixed here.
+    {.name = "Workshop", .max_hp = 1500, .armor = {0, 10, 60},
+     .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 150, 0, 0}, .build_time = seconds(30)},
+    // Ten beds; the red cross on the roof.
+    {.name = "Field hospital", .max_hp = 800, .armor = {0, 10, 50}, .capacity = 10,
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 50, 100, 0, 0}, .build_time = seconds(25)},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

@@ -424,6 +424,7 @@ struct BuildingStyle {
     int window_rows;
     bool big_doors = false;  // a tank hangar, a warehouse
     bool tanks = false;      // fuel tanks on the pad
+    bool cross = false;      // a red cross on the roof
 };
 
 BuildingStyle style_of(engine::StructureType type) {
@@ -437,6 +438,8 @@ BuildingStyle style_of(engine::StructureType type) {
         case engine::StructureType::AmmoDepot: return {8.0f, {112, 118, 90, 255}, {96, 104, 72, 255}, 0, true};
         case engine::StructureType::FuelDepot: return {5.0f, {128, 126, 118, 255}, {110, 108, 100, 255}, 0, false, true};
         case engine::StructureType::Quarters: return {11.0f, {156, 140, 112, 255}, {104, 90, 74, 255}, 1};
+        case engine::StructureType::Workshop: return {15.0f, {120, 128, 134, 255}, {84, 90, 96, 255}, 0, true};
+        case engine::StructureType::Hospital: return {12.0f, {214, 212, 200, 255}, {180, 178, 168, 255}, 1, false, false, true};
         default: return {24.0f, {168, 164, 150, 255}, {142, 140, 128, 255}, 2};  // headquarters
     }
 }
@@ -784,6 +787,12 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
         }
     }
 
+    if (style.cross) {
+        // A red cross on the roof.
+        const Vector2 c{(top[0].x + top[2].x) * 0.5f, (top[0].y + top[2].y) * 0.5f};
+        DrawRectangleRec({c.x - 7.0f, c.y - 2.0f, 14.0f, 4.0f}, lit({200, 40, 40, 255}));
+        DrawRectangleRec({c.x - 2.0f, c.y - 5.0f, 4.0f, 10.0f}, lit({200, 40, 40, 255}));
+    }
     if (style.tanks) {
         // Two upright tanks on the pad.
         for (const float t : {0.3f, 0.7f}) {

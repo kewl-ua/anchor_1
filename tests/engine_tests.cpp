@@ -4719,6 +4719,104 @@ void test_artillery_shells() {
     CHECK(wp.sim.world().fires().size() == 1 && wp.sim.world().fires().front().radius == kPhosphorusFireRadius);
 }
 
+// A workshop fixes our vehicles parked by it: three at a time, the worst
+// damaged first, a material a second each, up to full health. Not the
+// enemy's, not men, not one driving past, not without materials, not while
+// it's still going up.
+void test_workshop() {
+    CHECK(std::find(std::begin(kBuildable), std::end(kBuildable), StructureType::Workshop) != std::end(kBuildable));
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {0, 0, 1000, 0, 0});
+    const EntityId shop = w.place_structure(StructureType::Workshop, 0, {10, 10}, 3, 3);
+    // Four of our tanks by it, the first the least damaged; worse off than
+    // any of them: an enemy truck by it, one of ours far off, one of ours
+    // driving past it.
+    std::vector<EntityId> tanks;
+    for (int i = 0; i < 4; ++i) {
+        tanks.push_back(w.spawn_unit(0, UnitTypeId::Tank, at_half(19 + 2 * i, 28)));
+        w.unit_for_setup(tanks.back())->rounds = 0;
+        w.unit_for_setup(tanks.back())->hp = 130 - 10 * i;
+    }
+    const EntityId truck = w.spawn_unit(1, UnitTypeId::Truck, at_half(27, 23));
+    const EntityId far = w.spawn_unit(0, UnitTypeId::Truck, at(30, 4));
+    const EntityId passing = w.spawn_unit(0, UnitTypeId::Truck, at_half(15, 17));
+    for (EntityId id : {truck, far, passing}) w.unit_for_setup(id)->hp = 10;
+    const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(18, 23));
+    w.unit_for_setup(man)->hp = 10;
+    w.unit_for_setup(man)->rounds = 0;
+    issue(sim, make_move(0, {passing}, 38, 8));
+    for (Tick i = 0; i < 2 * kRepairInterval; ++i) sim.step();
+    CHECK(hp_of(sim, tanks[0]) == 130);  // the least damaged waits its turn
+    for (int i = 1; i < 4; ++i) CHECK(hp_of(sim, tanks[static_cast<size_t>(i)]) == 130 - 10 * i + 2 * kRepairPerInterval);
+    CHECK(hp_of(sim, truck) == 10 && hp_of(sim, far) == 10 && hp_of(sim, passing) == 10);
+    CHECK(hp_of(sim, man) == 10);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Materials)] ==
+          1000 - 2 * 3 * kRepairCost[static_cast<size_t>(Resource::Materials)]);
+
+    // Out of spare parts: nothing more.
+    const int32_t before = hp_of(sim, tanks[0]);
+    w.set_stock(0, {});
+    for (Tick i = 0; i < 3 * kRepairInterval; ++i) sim.step();
+    CHECK(hp_of(sim, tanks[0]) == before);
+    // With them again, all the way up and no further.
+    w.set_stock(0, {0, 0, 1000, 0, 0});
+    for (int i = 0; i < 60 * kRepairInterval; ++i) sim.step();
+    for (EntityId id : tanks) CHECK(hp_of(sim, id) == unit_type(UnitTypeId::Tank).max_hp);
+    // A workshop still going up repairs nothing.
+    w.structure_for_setup(shop)->built = false;
+    w.unit_for_setup(tanks[0])->hp = 200;
+    for (Tick i = 0; i < 3 * kRepairInterval; ++i) sim.step();
+    CHECK(hp_of(sim, tanks[0]) == 200);
+}
+
+// A field hospital: our wounded go into its beds (vehicles and the enemy's
+// men don't), heal there without firing a shot, and come out when well.
+// "Leave" lets them out at once.
+void test_field_hospital() {
+    CHECK(std::find(std::begin(kBuildable), std::end(kBuildable), StructureType::Hospital) != std::end(kBuildable));
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const EntityId ward = w.place_structure(StructureType::Hospital, 0, {10, 10}, 2, 2);
+    const EntityId hurt = w.spawn_unit(0, UnitTypeId::Rifleman, at(8, 11));
+    w.unit_for_setup(hurt)->hp = 10;
+    const EntityId other = w.spawn_unit(0, UnitTypeId::MachineGunner, at(8, 13));
+    w.unit_for_setup(other)->hp = 5;
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(7, 15));
+    w.unit_for_setup(tank)->rounds = 0;
+    const EntityId stranger = w.spawn_unit(1, UnitTypeId::Rifleman, at(35, 3));
+    issue(sim, garrison(0, {hurt, other, tank}, ward));
+    issue(sim, garrison(1, {stranger}, ward));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(hurt)->inside == ward && sim.world().find_unit(other)->inside == ward);
+    CHECK(sim.world().find_unit(tank)->inside == 0);
+    CHECK(sim.world().find_unit(stranger)->inside == 0 && sim.world().find_unit(stranger)->order != Order::Garrison);
+    CHECK(sim.world().find_structure(ward)->owner == 0);
+
+    // An enemy walks by: the patients don't fire.
+    const EntityId passer = w.spawn_unit(1, UnitTypeId::Rifleman, at(14, 11));
+    w.unit_for_setup(passer)->rounds = 0;
+    const int32_t healing = hp_of(sim, hurt);
+    for (Tick i = 0; i < 5 * kTicksPerSecond; ++i) sim.step();
+    CHECK(sim.world().find_unit(hurt)->last_shot_tick == kNeverFired);
+    CHECK(hp_of(sim, hurt) == healing + 5 * kTicksPerSecond / kHealTicks);
+    w.unit_for_setup(passer)->hp = 0;
+
+    // Well again: out by himself, and the bed is free.
+    for (Tick i = 0; i < 40 * kTicksPerSecond && sim.world().find_unit(hurt)->inside; ++i) sim.step();
+    CHECK(sim.world().find_unit(hurt)->inside == 0);
+    CHECK(hp_of(sim, hurt) == unit_type(UnitTypeId::Rifleman).max_hp);
+    CHECK(sim.world().find_structure(ward)->garrison.size() == 1);
+    CHECK(sim.world().find_structure(ward)->owner == 0);  // an empty hospital stays ours
+
+    // "Leave": out at once, not yet well.
+    issue(sim, Command{.type = CommandType::Unload, .player = 0, .target_unit = ward});
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(other)->inside == 0);
+    CHECK(hp_of(sim, other) < unit_type(UnitTypeId::MachineGunner).max_hp);
+    CHECK(sim.world().find_structure(ward)->owner == 0);
+}
+
 // Every upgrade is researched in its own building, as offered on its card.
 void test_upgrade_buildings() {
     const std::pair<UpgradeId, StructureType> where[] = {
@@ -4864,6 +4962,8 @@ int main() {
     test_upgrade_buildings();
     test_armor_upgrades_more();
     test_artillery_shells();
+    test_workshop();
+    test_field_hospital();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

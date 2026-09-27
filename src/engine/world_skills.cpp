@@ -123,7 +123,7 @@ void World::apply_unload(const Command& cmd) {
         }
     }
     const Structure* s = find_structure(cmd.target_unit);
-    if (!s || s->owner != cmd.player || !is_shelter(role_of(*s))) return;
+    if (!s || s->owner != cmd.player || (!is_shelter(role_of(*s)) && s->type != StructureType::Hospital)) return;
     const std::vector<EntityId> inside = s->garrison;
     for (EntityId id : inside) {
         if (Unit* u = find_unit_mut(id)) {

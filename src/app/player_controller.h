@@ -121,6 +121,8 @@ private:
     bool has_service_vehicles(const engine::World& world) const;
     // Foot soldiers among the selection, who can mount up in an IFV.
     bool has_riders(const engine::World& world) const;
+    bool has_foot_soldiers(const engine::World& world) const;
+    bool has_vehicles(const engine::World& world) const;
     void order_board(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                      const engine::Unit& carrier);
     bool has_ammo_trucks(const engine::World& world) const;

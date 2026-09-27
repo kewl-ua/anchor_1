@@ -221,7 +221,9 @@ void World::build_structures() {
 void World::apply_garrison(const Command& cmd) {
     if (const Unit* carrier = find_unit(cmd.target_unit)) return apply_board(cmd, *carrier);
     const Structure* s = find_structure(cmd.target_unit);
-    if (!s || !is_shelter(role_of(*s))) return;
+    // A house, a dugout...; or our own field hospital, to be healed.
+    const bool ward = s && s->type == StructureType::Hospital && s->built && s->owner == cmd.player;
+    if (!s || (!is_shelter(role_of(*s)) && !ward)) return;
     const TilePos goal = map_.clamp_tile(tile_of(s->center));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
         if (def_of(*u).vehicle || u->inside == s->id) continue;  // only infantry goes in
@@ -361,6 +363,16 @@ void World::update_garrisoned(Unit& u) {
     if (find_unit(u.inside)) return;  // riding in an IFV
     if (u.order == Order::Retrain) return update_retrain(u);  // at drill in the headquarters
     const Structure* home = find_structure(u.inside);
+    if (home && home->type == StructureType::Hospital) {
+        // In a hospital bed: healing, not fighting; out when well.
+        const int32_t full = def_of(u).max_hp;
+        if (tick_ % kHealTicks == 0) u.hp = std::min(full, u.hp + 1);
+        if (u.hp >= full) {
+            leave_structure(u);
+            u.order = Order::Idle;
+        }
+        return;
+    }
     if (home && home->type == StructureType::Dugout) return;  // sheltering
     const Unit* target = home && home->type == StructureType::Pillbox ? find_enemy_in_slit(u, *home) : find_enemy_in_sight(u);
     if (!target) return;
@@ -605,6 +617,7 @@ void World::step() {
 
     for (Unit& u : units_) update_unit(u);
     for (Unit& u : units_) u.still = u.moving ? 0 : u.still + 1;
+    update_repairs();
     // Projectiles move after units, so a unit that stepped aside this tick dodges.
     move_projectiles();
     update_fires();

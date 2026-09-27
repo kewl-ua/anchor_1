@@ -103,6 +103,18 @@ inline constexpr int32_t kEnginePercent = 115;         // of a tank's, an IFV's 
 inline constexpr int32_t kAddOnArmorPercent = 80;      // of shells, fragments, bullets a tank or an IFV takes
 inline constexpr int32_t kFastReloadPercent = 75;      // of a tank's, an IFV's reload
 
+// A workshop fixes our vehicles parked this close to it (not driving), a
+// few at a time, the worst damaged first: this much a second each, for
+// this much in spare parts from the stock.
+inline constexpr Fixed kRepairReach = Fixed::from_int(2);
+inline constexpr size_t kRepairBays = 3;
+inline constexpr Tick kRepairInterval = kTicksPerSecond;
+inline constexpr int32_t kRepairPerInterval = 8;
+inline constexpr Stock kRepairCost = {0, 0, 1, 0, 0};
+// A field hospital heals the wounded in its beds a point this often; the
+// well come out by themselves.
+inline constexpr Tick kHealTicks = kTicksPerSecond / 2;
+
 // An IFV carries its squad: foot soldiers get in this close to it, ride
 // unseen and unhurt, and get out at the back. Knocked out with them aboard,
 // they bail out, each losing this share of his health.
@@ -717,6 +729,7 @@ private:
     void splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon);
     void burst_shell(const Projectile& p, FixedVec2 at);
     void update_fires();
+    void update_repairs();
     bool out_of_rounds(const Unit& u) const;
     // Service vehicles: look after our vehicles nearby; load up at a depot.
     void serve(Unit& u);
