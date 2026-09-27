@@ -336,34 +336,145 @@ void for_each_visible_tile(const engine::TileMap& map, Rectangle view, Fn fn) {
     }
 }
 
-// Two trees per forest tile, placed by a hash so they never move.
+// A filled circle with as few sides as its size needs (a forest is many of them).
+void disc(Vector2 centre, float radius, Color color) {
+    const int sides = std::clamp(static_cast<int>(radius * 1.6f), 6, 18);
+    DrawCircleSector(centre, radius, 0.0f, 360.0f, sides, lit(color));
+}
+
+float hash_unit(uint32_t h) { return static_cast<float>(h & 0xFFFF) / 65536.0f; }
+
+// Trees of a forest tile, placed by a hash so they never move: pine stands,
+// broadleaf and birch groves in patches, poplars along a tree line. As the
+// wood is cut they come down one by one, leaving stumps.
+enum class TreeKind : uint8_t { Broadleaf, Birch, Pine, Poplar };
+
 struct Tree {
     Vector2 ground;
     float size;
     float tint;
+    TreeKind kind = TreeKind::Broadleaf;
+    bool stump = false;
 };
 
-std::array<Tree, 2> trees_on_tile(int tx, int ty) {
-    std::array<Tree, 2> trees{};
-    uint32_t h = tile_hash(tx, ty);
-    for (Tree& t : trees) {
-        const float fx = 0.2f + static_cast<float>(h & 0xFF) / 255.0f * 0.6f;
-        const float fy = 0.2f + static_cast<float>((h >> 8) & 0xFF) / 255.0f * 0.6f;
-        t = {{static_cast<float>(tx) + fx, static_cast<float>(ty) + fy},
-             0.85f + static_cast<float>((h >> 16) & 0xFF) / 255.0f * 0.35f,
-             0.85f + static_cast<float>((h >> 24) & 0xFF) / 255.0f * 0.3f};
+// `line`: the tile is part of a tree line running along x (1) or y (2), or
+// not (0). `left`: the share of the wood still standing (0..1).
+std::array<Tree, 3> trees_on_tile(int tx, int ty, int line, float left, size_t& count) {
+    std::array<Tree, 3> trees{};
+    const uint32_t base = tile_hash(tx, ty);
+    // The stand: pines here, broadleaf there, birch groves, a little of each everywhere.
+    auto stand_at = [&](float x, float y) {
+        auto value = [](int ix, int iy) { return hash_unit(tile_hash(ix * 5 + 17, iy * 3 - 41)); };
+        const float gx = x / 9.0f;
+        const float gy = y / 9.0f;
+        const int x0 = static_cast<int>(std::floor(gx));
+        const int y0 = static_cast<int>(std::floor(gy));
+        const float fx = gx - static_cast<float>(x0);
+        const float fy = gy - static_cast<float>(y0);
+        const float a = value(x0, y0) + (value(x0 + 1, y0) - value(x0, y0)) * fx;
+        const float b = value(x0, y0 + 1) + (value(x0 + 1, y0 + 1) - value(x0, y0 + 1)) * fx;
+        return a + (b - a) * fy;
+    };
+    const float stand = stand_at(static_cast<float>(tx) + 0.5f, static_cast<float>(ty) + 0.5f);
+    count = line ? 2 : 3;
+    static constexpr Vector2 kSpots[3] = {{0.27f, 0.3f}, {0.73f, 0.36f}, {0.46f, 0.76f}};
+    const size_t standing = static_cast<size_t>(std::ceil(static_cast<float>(count) * left - 0.001f));
+    uint32_t h = base;
+    for (size_t i = 0; i < count; ++i) {
+        Tree& t = trees[i];
+        const float jx = (hash_unit(h) - 0.5f) * 0.22f;
+        const float jy = (hash_unit(h >> 16) - 0.5f) * 0.22f;
+        Vector2 spot = kSpots[i];
+        if (line == 1) spot = {0.25f + 0.5f * static_cast<float>(i), 0.5f};
+        if (line == 2) spot = {0.5f, 0.25f + 0.5f * static_cast<float>(i)};
+        t.ground = {static_cast<float>(tx) + spot.x + jx, static_cast<float>(ty) + spot.y + jy};
+        h = h * 2654435761u + 0x9E3779B9u;
+        t.size = 0.85f + hash_unit(h) * 0.35f;
+        t.tint = 0.88f + hash_unit(h >> 16) * 0.24f;
+        h = h * 2654435761u + 0x9E3779B9u;
+        const float pick = hash_unit(h);
+        if (line) {
+            t.kind = pick < 0.6f ? TreeKind::Poplar : TreeKind::Broadleaf;
+        } else if (stand < 0.36f) {
+            t.kind = pick < 0.85f ? TreeKind::Pine : TreeKind::Birch;
+        } else if (stand > 0.68f) {
+            t.kind = pick < 0.6f ? TreeKind::Birch : TreeKind::Broadleaf;
+        } else {
+            t.kind = pick < 0.8f ? TreeKind::Broadleaf : (pick < 0.9f ? TreeKind::Pine : TreeKind::Birch);
+        }
+        t.stump = i >= standing;
         h = h * 2654435761u + 0x9E3779B9u;
     }
     return trees;
 }
 
 void draw_tree(const engine::TileMap& map, const Tree& t) {
-    const Vector2 base = on_terrain(map, t.ground);
+    const Vector2 b = on_terrain(map, t.ground);
     const float s = t.size;
-    const Color leaf = shade({46, 94, 44, 255}, t.tint);
-    DrawLineEx(base, {base.x, base.y - 7.0f * s}, 2.0f, lit({72, 54, 38, 255}));
-    DrawCircleV({base.x, base.y - 13.0f * s}, 8.5f * s, lit(ColorAlpha(shade(leaf, 0.8f), 0.95f)));
-    DrawCircleV({base.x - 2.0f * s, base.y - 15.0f * s}, 5.5f * s, lit(ColorAlpha(shade(leaf, 1.15f), 0.9f)));
+    if (t.stump) {
+        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y), 2.6f * s, 1.3f * s, lit({70, 52, 36, 255}));
+        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 1.5f), 2.2f * s, 1.1f * s, lit({176, 150, 110, 255}));
+        return;
+    }
+    // Its shadow on the ground, away from the light (upper left).
+    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s, 3.4f * s,
+                lit({16, 24, 12, 70}));
+    auto crown = [&](Color leaf, float lift, float r) {
+        // Three tones: the shaded side low right, the body, the lit side high left.
+        const Color dark = shade(leaf, 0.72f * t.tint);
+        const Color body = shade(leaf, t.tint);
+        const Color lit_side = shade(leaf, 1.25f * t.tint);
+        const Color glint = shade(leaf, 1.45f * t.tint);
+        disc({b.x + 2.5f * s, b.y - (lift - 3.0f) * s}, r * 0.8f * s, dark);
+        disc({b.x + 3.5f * s, b.y - (lift + 1.0f) * s}, r * 0.7f * s, dark);
+        disc({b.x, b.y - lift * s}, r * s, body);
+        disc({b.x - 3.5f * s, b.y - (lift - 0.5f) * s}, r * 0.72f * s, body);
+        disc({b.x + 1.0f * s, b.y - (lift + 3.5f) * s}, r * 0.7f * s, body);
+        disc({b.x - 2.5f * s, b.y - (lift + 3.0f) * s}, r * 0.5f * s, lit_side);
+        disc({b.x - 1.0f * s, b.y - (lift + 5.5f) * s}, r * 0.34f * s, glint);
+    };
+    switch (t.kind) {
+        case TreeKind::Broadleaf: {
+            DrawLineEx(b, {b.x, b.y - 9.0f * s}, 2.6f * s, lit({70, 52, 36, 255}));
+            DrawLineEx({b.x - 0.6f * s, b.y}, {b.x - 0.6f * s, b.y - 8.0f * s}, 0.9f, lit({98, 76, 54, 255}));
+            crown({50, 96, 44, 255}, 15.0f, 7.5f);
+            break;
+        }
+        case TreeKind::Birch: {
+            // A white trunk with black marks, a light, airy crown.
+            DrawLineEx(b, {b.x, b.y - 10.0f * s}, 2.2f * s, lit({226, 224, 212, 255}));
+            for (const float k : {2.5f, 5.5f, 8.0f}) {
+                DrawLineEx({b.x - 1.0f * s, b.y - k * s}, {b.x + 0.8f * s, b.y - (k + 0.4f) * s}, 1.0f, lit({40, 40, 38, 255}));
+            }
+            crown({98, 138, 60, 255}, 15.5f, 6.8f);
+            break;
+        }
+        case TreeKind::Pine: {
+            // Tiers of needles on a short dark trunk, lit on the left.
+            DrawLineEx(b, {b.x, b.y - 6.0f * s}, 2.2f * s, lit({64, 46, 34, 255}));
+            const Color needles = shade({38, 74, 52, 255}, t.tint);
+            for (int k = 0; k < 3; ++k) {
+                const float w = (8.5f - 2.2f * static_cast<float>(k)) * s;
+                const float y0 = b.y - (4.0f + 6.0f * static_cast<float>(k)) * s;
+                const float top = y0 - (10.0f - static_cast<float>(k)) * s;
+                const Vector2 apex{b.x, top};
+                fill_triangle({b.x - w, y0}, {b.x, y0 + 1.5f * s}, apex, shade(needles, 1.2f));
+                fill_triangle({b.x, y0 + 1.5f * s}, {b.x + w, y0}, apex, shade(needles, 0.75f));
+            }
+            break;
+        }
+        case TreeKind::Poplar: {
+            // Tall and narrow, along a road or a field.
+            DrawLineEx(b, {b.x, b.y - 6.0f * s}, 2.2f * s, lit({72, 56, 40, 255}));
+            const Color leaf = shade({58, 100, 48, 255}, t.tint);
+            const float mid = b.y - 18.0f * s;
+            DrawEllipse(static_cast<int>(b.x + 0.8f * s), static_cast<int>(mid), 5.0f * s, 13.0f * s, lit(shade(leaf, 0.72f)));
+            DrawEllipse(static_cast<int>(b.x - 0.6f * s), static_cast<int>(mid - 1.0f * s), 3.8f * s, 11.5f * s, lit(leaf));
+            DrawEllipse(static_cast<int>(b.x - 1.8f * s), static_cast<int>(mid - 3.0f * s), 1.8f * s, 7.5f * s,
+                        lit(shade(leaf, 1.3f)));
+            break;
+        }
+    }
 }
 
 // A small house on one tile: walls and a hipped roof. Damage darkens it with
@@ -1046,19 +1157,78 @@ void draw_parapet(const engine::TileMap& map, const engine::Structure& s, float 
     g_light = 1.0f;
 }
 
-// Grey boulders of a stone outcrop, fewer as it is quarried away.
+// A boulder: an angular stone of facets, lit from the upper left, its
+// shadow to the lower right, moss on some.
+void draw_boulder(Vector2 base, float r, uint32_t h, float tint, bool warm) {
+    DrawEllipse(static_cast<int>(base.x + r * 0.45f), static_cast<int>(base.y + r * 0.1f), r * 1.15f, r * 0.42f,
+                lit({20, 20, 18, 70}));
+    constexpr int kPoints = 7;
+    const Vector2 c{base.x, base.y - r * 0.45f};
+    Vector2 ring[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const float angle = (static_cast<float>(i) + (hash_unit(h >> i) - 0.5f) * 0.5f) * 6.2831853f / kPoints;
+        const float k = 0.78f + 0.34f * hash_unit(h >> (i + 9));
+        ring[i] = {c.x + std::cos(angle) * r * k, c.y + std::sin(angle) * r * k * 0.72f};
+    }
+    const Color stone = shade(warm ? Color{142, 128, 106, 255} : Color{128, 128, 124, 255}, tint);
+    const Vector2 peak{c.x - r * 0.12f, c.y - r * 0.28f};  // the facets meet a little up and left
+    for (int i = 0; i < kPoints; ++i) {
+        const Vector2 a = ring[i];
+        const Vector2 d = ring[(i + 1) % kPoints];
+        // The facet faces the way its edge lies from the middle.
+        const float mx = (a.x + d.x) * 0.5f - c.x;
+        const float my = (a.y + d.y) * 0.5f - c.y;
+        const float len = std::max(0.001f, std::sqrt(mx * mx + my * my));
+        const float facing = (-0.6f * mx - 0.8f * my) / len;
+        fill_triangle(peak, a, d, shade(stone, 1.0f + 0.32f * facing));
+    }
+    if ((h >> 20) % 3 == 0) disc({c.x - r * 0.25f, c.y - r * 0.35f}, r * 0.18f, shade({104, 116, 72, 255}, tint));
+}
+
+// A stone outcrop: boulders and scree, laid out differently on every tile;
+// the big ones deep inside it, smaller at its edge; fewer and smaller as it
+// is quarried away.
 void draw_rock(const engine::TileMap& map, int tx, int ty, int32_t left) {
     const uint32_t h = tile_hash(tx, ty);
-    const int boulders = left > engine::kRockMaterials / 2 ? 3 : 2;
-    for (int i = 0; i < boulders; ++i) {
-        const float fx = 0.25f + static_cast<float>((h >> (i * 8)) & 0xFF) / 255.0f * 0.5f;
-        const float fy = 0.25f + static_cast<float>((h >> (i * 8 + 4)) & 0xFF) / 255.0f * 0.5f;
-        const Vector2 p = on_terrain(map, {static_cast<float>(tx) + fx, static_cast<float>(ty) + fy});
-        const float size = 7.0f + static_cast<float>((h >> (i * 5)) & 7);
-        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - size * 0.4f), size, size * 0.7f,
-                    lit({112, 114, 110, 255}));
-        DrawEllipse(static_cast<int>(p.x - size * 0.25f), static_cast<int>(p.y - size * 0.7f), size * 0.5f,
-                    size * 0.3f, lit({150, 152, 148, 255}));
+    const float share = std::clamp(static_cast<float>(left) / static_cast<float>(engine::kRockMaterials), 0.0f, 1.0f);
+    const auto x = static_cast<float>(tx);
+    const auto y = static_cast<float>(ty);
+    int around = 0;
+    for (const auto& d : {std::pair{0, -1}, std::pair{1, 0}, std::pair{0, 1}, std::pair{-1, 0}}) {
+        around += map.contains_tile(tx + d.first, ty + d.second) &&
+                          map.terrain(tx + d.first, ty + d.second) == engine::Terrain::Rock
+                      ? 1
+                      : 0;
+    }
+    const bool deep = around == 4;
+    // Scree first, under the boulders.
+    for (int i = 0; i < 7; ++i) {
+        const Vector2 p = on_terrain(map, {x + 0.05f + 0.9f * hash_unit(h >> i), y + 0.05f + 0.9f * hash_unit(h >> (i + 11))});
+        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 1.8f, 1.1f, lit({112, 108, 100, 255}));
+        DrawCircleV({p.x - 0.5f, p.y - 0.6f}, 0.7f, lit({158, 154, 146, 255}));
+    }
+    const int count = share > 0.75f ? 3 : share > 0.4f ? 2 : 1;
+    const float shrink = 0.7f + 0.3f * share;
+    struct Placed {
+        Vector2 at;
+        float size;
+        uint32_t h;
+    };
+    std::array<Placed, 3> stones{};
+    for (int i = 0; i < count; ++i) {
+        const uint32_t hi = tile_hash(tx * 31 + i * 7, ty * 17 - i * 13);
+        // The first is the tile's big one; the rest smaller, anywhere on it.
+        const float big = i == 0 ? (deep ? 13.0f : 9.5f) : (i == 1 ? 6.5f : 4.5f);
+        const float size = big * shrink * (0.8f + 0.4f * hash_unit(hi >> 16));
+        stones[static_cast<size_t>(i)] = {{x + 0.2f + 0.6f * hash_unit(hi), y + 0.2f + 0.6f * hash_unit(hi >> 8)}, size, hi};
+    }
+    // Back to front, so the nearer stone hides the farther.
+    std::sort(stones.begin(), stones.begin() + count,
+              [](const Placed& a, const Placed& b) { return a.at.x + a.at.y < b.at.x + b.at.y; });
+    for (int i = 0; i < count; ++i) {
+        const Placed& p = stones[static_cast<size_t>(i)];
+        // Grey granite to warm sandstone.
+        draw_boulder(on_terrain(map, p.at), p.size, p.h, 0.88f + 0.24f * hash_unit(p.h >> 24), hash_unit(p.h >> 4) < 0.3f);
     }
 }
 
@@ -1368,11 +1538,23 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         if (state == kUnexplored) return;
         const float light = state == kInView ? 1.0f : kFogLight;
         switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
-            case engine::Terrain::Forest:
-                for (const Tree& t : trees_on_tile(tx, ty)) {
+            case engine::Terrain::Forest: {
+                // A tree line (one tile wide, running along x or y) gets poplars in a row.
+                auto wood = [&](int x, int y) {
+                    return map.contains_tile(x, y) && seen_terrain_[static_cast<size_t>(y * map.width() + x)] == engine::Terrain::Forest;
+                };
+                const bool along_x = wood(tx - 1, ty) || wood(tx + 1, ty);
+                const bool along_y = wood(tx, ty - 1) || wood(tx, ty + 1);
+                const int line = along_x && !along_y ? 1 : along_y && !along_x ? 2 : 0;
+                const float left = state == kInView ? static_cast<float>(map.resource({tx, ty})) / engine::kForestMaterials : 1.0f;
+                size_t count = 0;
+                const std::array<Tree, 3> trees = trees_on_tile(tx, ty, line, std::clamp(left, 0.0f, 1.0f), count);
+                for (size_t i = 0; i < count; ++i) {
+                    const Tree& t = trees[i];
                     drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
                 }
                 break;
+            }
             case engine::Terrain::House: {
                 float damage = 0.0f;
                 const engine::Structure* s = world.structure_at({tx, ty});
