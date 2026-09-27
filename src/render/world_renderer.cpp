@@ -183,10 +183,10 @@ const engine::Structure* structure_on_screen(const RtsCamera& camera, const engi
 }
 
 std::optional<engine::TilePos> resource_on_screen(const RtsCamera& camera, const engine::World& world, Vector2 screen) {
-    return probe_below(camera, world, screen, 24.0f, [&](engine::TilePos t, float lift) -> std::optional<engine::TilePos> {
+    return probe_below(camera, world, screen, 36.0f, [&](engine::TilePos t, float lift) -> std::optional<engine::TilePos> {
         if (!world.map().contains(t) || world.map().resource(t) <= 0) return std::nullopt;
         const engine::Terrain terrain = world.map().terrain(t);
-        const float height = terrain == engine::Terrain::Forest ? 24.0f : terrain == engine::Terrain::Rock ? 12.0f : -1.0f;
+        const float height = terrain == engine::Terrain::Forest ? 34.0f : terrain == engine::Terrain::Rock ? 14.0f : -1.0f;
         return lift <= height ? std::optional<engine::TilePos>(t) : std::nullopt;
     });
 }
@@ -345,9 +345,10 @@ void disc(Vector2 centre, float radius, Color color) {
 float hash_unit(uint32_t h) { return static_cast<float>(h & 0xFFFF) / 65536.0f; }
 
 // Trees of a forest tile, placed by a hash so they never move: pine stands,
-// broadleaf and birch groves in patches, poplars along a tree line. As the
+// broadleaf and birch groves in patches, poplars along a tree line, an old
+// oak standing alone. Each its own height, girth and bow of the trunk. As the
 // wood is cut they come down one by one, leaving stumps.
-enum class TreeKind : uint8_t { Broadleaf, Birch, Pine, Poplar };
+enum class TreeKind : uint8_t { Broadleaf, Oak, Beech, Birch, Pine, Poplar };
 
 struct Tree {
     Vector2 ground;
@@ -355,10 +356,14 @@ struct Tree {
     float tint;
     TreeKind kind = TreeKind::Broadleaf;
     bool stump = false;
+    float height = 1.0f;  // of the trunk, a share of the kind's usual
+    float girth = 1.0f;
+    float bend = 0.0f;    // sideways bow of the trunk, pixels at size 1 (+: to the right)
+    uint32_t seed = 0;    // for the lumps of its crown
 };
 
-// `line`: the tile is part of a tree line running along x (1) or y (2), or
-// not (0). `left`: the share of the wood still standing (0..1).
+// `line`: 0 a forest tile, 1 or 2 a tree line along x or y, 3 a tile standing
+// alone. `left`: the share of the wood still standing (0..1).
 std::array<Tree, 3> trees_on_tile(int tx, int ty, int line, float left, size_t& count) {
     std::array<Tree, 3> trees{};
     const uint32_t base = tile_hash(tx, ty);
@@ -376,101 +381,189 @@ std::array<Tree, 3> trees_on_tile(int tx, int ty, int line, float left, size_t& 
         return a + (b - a) * fy;
     };
     const float stand = stand_at(static_cast<float>(tx) + 0.5f, static_cast<float>(ty) + 0.5f);
-    count = line ? 2 : 3;
+    count = line == 3 ? 1 : line ? 2 : 3;
     static constexpr Vector2 kSpots[3] = {{0.27f, 0.3f}, {0.73f, 0.36f}, {0.46f, 0.76f}};
     const size_t standing = static_cast<size_t>(std::ceil(static_cast<float>(count) * left - 0.001f));
     uint32_t h = base;
+    auto next = [&h] {
+        h = h * 2654435761u + 0x9E3779B9u;
+        return hash_unit(h >> 7);
+    };
     for (size_t i = 0; i < count; ++i) {
         Tree& t = trees[i];
-        const float jx = (hash_unit(h) - 0.5f) * 0.22f;
-        const float jy = (hash_unit(h >> 16) - 0.5f) * 0.22f;
+        const float jx = (next() - 0.5f) * 0.22f;
+        const float jy = (next() - 0.5f) * 0.22f;
         Vector2 spot = kSpots[i];
         if (line == 1) spot = {0.25f + 0.5f * static_cast<float>(i), 0.5f};
         if (line == 2) spot = {0.5f, 0.25f + 0.5f * static_cast<float>(i)};
+        if (line == 3) spot = {0.5f, 0.5f};
         t.ground = {static_cast<float>(tx) + spot.x + jx, static_cast<float>(ty) + spot.y + jy};
-        h = h * 2654435761u + 0x9E3779B9u;
-        t.size = 0.85f + hash_unit(h) * 0.35f;
-        t.tint = 0.88f + hash_unit(h >> 16) * 0.24f;
-        h = h * 2654435761u + 0x9E3779B9u;
-        const float pick = hash_unit(h);
-        if (line) {
-            t.kind = pick < 0.6f ? TreeKind::Poplar : TreeKind::Broadleaf;
+        t.size = 0.78f + next() * 0.42f;
+        t.tint = 0.88f + next() * 0.24f;
+        const float pick = next();
+        if (line == 3) {
+            t.kind = TreeKind::Oak;  // an old oak on its own in the field
+            t.size = 1.3f + 0.25f * next();
+        } else if (line) {
+            t.kind = pick < 0.6f ? TreeKind::Poplar : (pick < 0.8f ? TreeKind::Broadleaf : TreeKind::Oak);
         } else if (stand < 0.36f) {
             t.kind = pick < 0.85f ? TreeKind::Pine : TreeKind::Birch;
         } else if (stand > 0.68f) {
-            t.kind = pick < 0.6f ? TreeKind::Birch : TreeKind::Broadleaf;
+            t.kind = pick < 0.6f ? TreeKind::Birch : (pick < 0.8f ? TreeKind::Beech : TreeKind::Broadleaf);
         } else {
-            t.kind = pick < 0.8f ? TreeKind::Broadleaf : (pick < 0.9f ? TreeKind::Pine : TreeKind::Birch);
+            t.kind = pick < 0.3f   ? TreeKind::Oak
+                     : pick < 0.52f ? TreeKind::Beech
+                     : pick < 0.8f  ? TreeKind::Broadleaf
+                     : pick < 0.9f  ? TreeKind::Pine
+                                    : TreeKind::Birch;
         }
+        t.height = 0.75f + 0.55f * next();
+        t.girth = 0.8f + 0.45f * next();
+        t.bend = (next() - 0.5f) * (t.kind == TreeKind::Birch ? 7.0f : t.kind == TreeKind::Poplar ? 1.0f : 4.0f);
+        t.seed = h;
         t.stump = i >= standing;
-        h = h * 2654435761u + 0x9E3779B9u;
     }
     return trees;
+}
+
+// A trunk from `base` up `height` pixels, bowed sideways by `bend` at its
+// middle, tapering from `w0` to `w1`, flaring at the roots; lit on the left.
+// Returns its top, where the crown sits.
+Vector2 draw_trunk(Vector2 base, float height, float w0, float w1, float bend, Color bark) {
+    constexpr int kSteps = 5;
+    Vector2 p[kSteps + 1];
+    float w[kSteps + 1];
+    for (int i = 0; i <= kSteps; ++i) {
+        const float t = static_cast<float>(i) / kSteps;
+        p[i] = {base.x + bend * 4.0f * t * (1.0f - t) + bend * 0.3f * t, base.y - height * t};
+        w[i] = w0 + (w1 - w0) * t;
+    }
+    w[0] *= 1.45f;  // the roots
+    const Color light = shade(bark, 1.18f);
+    const Color dark = shade(bark, 0.72f);
+    for (int i = 0; i < kSteps; ++i) {
+        const Vector2 a{p[i].x - w[i] * 0.5f, p[i].y};
+        const Vector2 d{p[i + 1].x - w[i + 1] * 0.5f, p[i + 1].y};
+        const Vector2 b{p[i].x + w[i] * 0.5f, p[i].y};
+        const Vector2 c{p[i + 1].x + w[i + 1] * 0.5f, p[i + 1].y};
+        fill_quad(a, p[i], p[i + 1], d, light);
+        fill_quad(p[i], b, c, p[i + 1], dark);
+    }
+    return p[kSteps];
+}
+
+// A leafy crown: lumps inside a `w` x `h` oval about `c`, each tree lumpy its
+// own way, darker low on the right, lighter high on the left.
+void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint, uint32_t seed) {
+    struct Lump {
+        Vector2 at;
+        float r;
+        float k;
+    };
+    constexpr int kLumps = 8;
+    std::array<Lump, kLumps> lumps{};
+    for (int i = 0; i < kLumps; ++i) {
+        const float a = hash_unit(tile_hash(static_cast<int>(seed >> 3) + i * 7, i * 13)) * 6.2831853f;
+        const float r = std::sqrt(hash_unit(tile_hash(static_cast<int>(seed >> 5) - i * 11, i * 3 + 1)));
+        const Vector2 at{c.x + std::cos(a) * r * w * 0.5f, c.y + std::sin(a) * r * h * 0.5f};
+        const float k = 0.86f + 0.36f * ((c.x - at.x) / w + (c.y - at.y) / h);
+        lumps[static_cast<size_t>(i)] = {at, lump * (0.7f + 0.45f * hash_unit(tile_hash(i, static_cast<int>(seed)))), k};
+    }
+    std::sort(lumps.begin(), lumps.end(), [](const Lump& a, const Lump& b) { return a.k < b.k; });
+    disc({c.x + w * 0.16f, c.y + h * 0.2f}, lump * 1.15f, shade(leaf, 0.66f * tint));  // the shaded underside
+    for (const Lump& l : lumps) disc(l.at, l.r, shade(leaf, l.k * tint));
+    disc({c.x - w * 0.17f, c.y - h * 0.22f}, lump * 0.7f, shade(leaf, 1.25f * tint));
+    disc({c.x - w * 0.22f, c.y - h * 0.3f}, lump * 0.38f, shade(leaf, 1.45f * tint));
 }
 
 void draw_tree(const engine::TileMap& map, const Tree& t) {
     const Vector2 b = on_terrain(map, t.ground);
     const float s = t.size;
     if (t.stump) {
-        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y), 2.6f * s, 1.3f * s, lit({70, 52, 36, 255}));
-        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 1.5f), 2.2f * s, 1.1f * s, lit({176, 150, 110, 255}));
+        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y), 2.6f * s * t.girth, 1.3f * s, lit({70, 52, 36, 255}));
+        DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 1.5f), 2.2f * s * t.girth, 1.1f * s, lit({176, 150, 110, 255}));
         return;
     }
+    const float spread = t.kind == TreeKind::Oak ? 1.5f : t.kind == TreeKind::Poplar ? 0.6f : 1.0f;
     // Its shadow on the ground, away from the light (upper left).
-    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s, 3.4f * s,
+    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread, 3.4f * s,
                 lit({16, 24, 12, 70}));
-    auto crown = [&](Color leaf, float lift, float r) {
-        // Three tones: the shaded side low right, the body, the lit side high left.
-        const Color dark = shade(leaf, 0.72f * t.tint);
-        const Color body = shade(leaf, t.tint);
-        const Color lit_side = shade(leaf, 1.25f * t.tint);
-        const Color glint = shade(leaf, 1.45f * t.tint);
-        disc({b.x + 2.5f * s, b.y - (lift - 3.0f) * s}, r * 0.8f * s, dark);
-        disc({b.x + 3.5f * s, b.y - (lift + 1.0f) * s}, r * 0.7f * s, dark);
-        disc({b.x, b.y - lift * s}, r * s, body);
-        disc({b.x - 3.5f * s, b.y - (lift - 0.5f) * s}, r * 0.72f * s, body);
-        disc({b.x + 1.0f * s, b.y - (lift + 3.5f) * s}, r * 0.7f * s, body);
-        disc({b.x - 2.5f * s, b.y - (lift + 3.0f) * s}, r * 0.5f * s, lit_side);
-        disc({b.x - 1.0f * s, b.y - (lift + 5.5f) * s}, r * 0.34f * s, glint);
-    };
+    const float bend = t.bend * s;
     switch (t.kind) {
+        case TreeKind::Oak: {
+            // Old and thick, short and gnarled, limbs reaching into a wide lumpy crown.
+            const Color bark{78, 62, 46, 255};
+            const float height = 10.0f * s * t.height;
+            const Vector2 top = draw_trunk(b, height, 6.8f * s * t.girth, 3.8f * s * t.girth, bend, bark);
+            // Burls on the bark.
+            for (const float k : {0.35f, 0.62f}) {
+                const float x = b.x + bend * 4.0f * k * (1.0f - k) + bend * 0.3f * k;
+                DrawEllipse(static_cast<int>(x + 0.8f * s), static_cast<int>(b.y - height * k), 1.3f * s, 1.0f * s,
+                            lit(shade(bark, 0.6f)));
+            }
+            // Thick limbs forking out, then the wide crown above them.
+            const float w = 28.0f * s;
+            const Vector2 c{top.x, top.y - 11.0f * s};
+            for (const float side : {-1.0f, 1.0f, 0.2f}) {
+                const Vector2 elbow{top.x + side * w * 0.18f, top.y - 4.0f * s};
+                DrawLineEx(top, elbow, 2.6f * s * t.girth, lit(shade(bark, 0.95f)));
+                DrawLineEx(elbow, {c.x + side * w * 0.34f, c.y + 1.0f * s}, 1.8f * s * t.girth, lit(shade(bark, 0.85f)));
+            }
+            draw_crown(c, w, 14.0f * s, 6.5f * s, {54, 92, 44, 255}, t.tint, t.seed);
+            break;
+        }
+        case TreeKind::Beech: {
+            // Tall, slender and smooth grey, an upright crown.
+            const Vector2 top = draw_trunk(b, 14.0f * s * t.height, 3.6f * s * t.girth, 2.2f * s, bend, {146, 142, 134, 255});
+            draw_crown({top.x, top.y - 8.0f * s}, 16.0f * s, 20.0f * s, 5.5f * s, {70, 112, 50, 255}, t.tint, t.seed);
+            break;
+        }
         case TreeKind::Broadleaf: {
-            DrawLineEx(b, {b.x, b.y - 9.0f * s}, 2.6f * s, lit({70, 52, 36, 255}));
-            DrawLineEx({b.x - 0.6f * s, b.y}, {b.x - 0.6f * s, b.y - 8.0f * s}, 0.9f, lit({98, 76, 54, 255}));
-            crown({50, 96, 44, 255}, 15.0f, 7.5f);
+            // Linden, maple: a brown trunk, a round crown.
+            const Vector2 top = draw_trunk(b, 9.5f * s * t.height, 4.0f * s * t.girth, 2.4f * s, bend, {72, 54, 38, 255});
+            draw_crown({top.x, top.y - 7.0f * s}, 20.0f * s, 17.0f * s, 6.0f * s, {50, 96, 44, 255}, t.tint, t.seed);
             break;
         }
         case TreeKind::Birch: {
-            // A white trunk with black marks, a light, airy crown.
-            DrawLineEx(b, {b.x, b.y - 10.0f * s}, 2.2f * s, lit({226, 224, 212, 255}));
-            for (const float k : {2.5f, 5.5f, 8.0f}) {
-                DrawLineEx({b.x - 1.0f * s, b.y - k * s}, {b.x + 0.8f * s, b.y - (k + 0.4f) * s}, 1.0f, lit({40, 40, 38, 255}));
+            // Thin and often bowed, white with black marks, a light crown hanging a little.
+            const float height = 12.0f * s * t.height;
+            const Vector2 top = draw_trunk(b, height, 2.6f * s * t.girth, 1.6f * s, bend, {222, 220, 208, 255});
+            for (const float k : {0.25f, 0.5f, 0.72f}) {
+                const float x = b.x + bend * 4.0f * k * (1.0f - k) + bend * 0.3f * k;
+                const float y = b.y - height * k;
+                DrawLineEx({x - 1.0f * s, y}, {x + 0.8f * s, y - 0.4f * s}, 1.0f, lit({40, 40, 38, 255}));
             }
-            crown({98, 138, 60, 255}, 15.5f, 6.8f);
+            draw_crown({top.x + 0.5f * s, top.y - 4.0f * s}, 14.0f * s, 14.0f * s, 4.6f * s, {98, 138, 60, 255}, t.tint, t.seed);
             break;
         }
         case TreeKind::Pine: {
-            // Tiers of needles on a short dark trunk, lit on the left.
-            DrawLineEx(b, {b.x, b.y - 6.0f * s}, 2.2f * s, lit({64, 46, 34, 255}));
+            // Old pines: a tall bare reddish trunk, the needles up top; young ones in tiers near the ground.
+            const bool old = t.height > 1.0f;
+            const float bare = (old ? 11.0f : 4.0f) * s * t.height;
+            const Vector2 top = draw_trunk(b, bare + 6.0f * s, 3.0f * s * t.girth, 1.8f * s, bend * 0.5f,
+                                           old ? Color{146, 92, 62, 255} : Color{64, 46, 34, 255});
             const Color needles = shade({38, 74, 52, 255}, t.tint);
-            for (int k = 0; k < 3; ++k) {
-                const float w = (8.5f - 2.2f * static_cast<float>(k)) * s;
-                const float y0 = b.y - (4.0f + 6.0f * static_cast<float>(k)) * s;
-                const float top = y0 - (10.0f - static_cast<float>(k)) * s;
-                const Vector2 apex{b.x, top};
-                fill_triangle({b.x - w, y0}, {b.x, y0 + 1.5f * s}, apex, shade(needles, 1.2f));
-                fill_triangle({b.x, y0 + 1.5f * s}, {b.x + w, y0}, apex, shade(needles, 0.75f));
+            const int tiers = old ? 2 : 3;
+            for (int k = 0; k < tiers; ++k) {
+                const float wid = ((old ? 7.5f : 8.5f) - 2.2f * static_cast<float>(k)) * s;
+                const float y0 = b.y - bare - 6.0f * static_cast<float>(k) * s + (old ? 2.0f * s : 0.0f);
+                const float apex_y = y0 - (10.0f - static_cast<float>(k)) * s;
+                const float x = top.x;
+                fill_triangle({x - wid, y0}, {x, y0 + 1.5f * s}, {x, apex_y}, shade(needles, 1.2f));
+                fill_triangle({x, y0 + 1.5f * s}, {x + wid, y0}, {x, apex_y}, shade(needles, 0.75f));
             }
             break;
         }
         case TreeKind::Poplar: {
             // Tall and narrow, along a road or a field.
-            DrawLineEx(b, {b.x, b.y - 6.0f * s}, 2.2f * s, lit({72, 56, 40, 255}));
+            const Vector2 top = draw_trunk(b, 5.0f * s, 2.4f * s * t.girth, 1.8f * s, bend, {72, 56, 40, 255});
             const Color leaf = shade({58, 100, 48, 255}, t.tint);
-            const float mid = b.y - 18.0f * s;
-            DrawEllipse(static_cast<int>(b.x + 0.8f * s), static_cast<int>(mid), 5.0f * s, 13.0f * s, lit(shade(leaf, 0.72f)));
-            DrawEllipse(static_cast<int>(b.x - 0.6f * s), static_cast<int>(mid - 1.0f * s), 3.8f * s, 11.5f * s, lit(leaf));
-            DrawEllipse(static_cast<int>(b.x - 1.8f * s), static_cast<int>(mid - 3.0f * s), 1.8f * s, 7.5f * s,
+            const float tall = t.height;
+            const float mid = top.y - 13.0f * s * tall;
+            DrawEllipse(static_cast<int>(top.x + 0.8f * s), static_cast<int>(mid), 5.0f * s, 13.0f * s * tall,
+                        lit(shade(leaf, 0.72f)));
+            DrawEllipse(static_cast<int>(top.x - 0.6f * s), static_cast<int>(mid - 1.0f * s), 3.8f * s, 11.5f * s * tall, lit(leaf));
+            DrawEllipse(static_cast<int>(top.x - 1.8f * s), static_cast<int>(mid - 3.0f * s), 1.8f * s, 7.5f * s * tall,
                         lit(shade(leaf, 1.3f)));
             break;
         }
@@ -1545,7 +1638,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 };
                 const bool along_x = wood(tx - 1, ty) || wood(tx + 1, ty);
                 const bool along_y = wood(tx, ty - 1) || wood(tx, ty + 1);
-                const int line = along_x && !along_y ? 1 : along_y && !along_x ? 2 : 0;
+                const int line = along_x && !along_y ? 1 : along_y && !along_x ? 2 : !along_x && !along_y ? 3 : 0;
                 const float left = state == kInView ? static_cast<float>(map.resource({tx, ty})) / engine::kForestMaterials : 1.0f;
                 size_t count = 0;
                 const std::array<Tree, 3> trees = trees_on_tile(tx, ty, line, std::clamp(left, 0.0f, 1.0f), count);
