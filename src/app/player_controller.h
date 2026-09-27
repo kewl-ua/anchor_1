@@ -92,6 +92,7 @@ private:
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
     bool has_trucks(const engine::World& world) const;
+    bool has_engineers(const engine::World& world) const;
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);
     // Where a tanker or an ammunition truck loads up, and whether any selected one does there.

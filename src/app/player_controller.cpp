@@ -132,7 +132,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             if (resource && has_workers(world)) {
                 // Rear troops go to work; anyone else selected just goes there.
                 order_gather(lockstep, world, renderer, ground);
-            } else if (structure && structure->owner == player_ && !structure->built && has_workers(world)) {
+            } else if (structure && structure->owner == player_ && !structure->built &&
+                       (has_workers(world) || has_engineers(world))) {
                 order_help_build(lockstep, structure->id);
             } else if (structure && structure->owner == player_ && refills_at(world, structure->type)) {
                 // Tankers to the fuel depot, ammunition trucks to the ammunition depot: load up.
@@ -187,6 +188,7 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Howitzer: return "Howitzer";
         case engine::UnitTypeId::Ags: return "AGS";
         case engine::UnitTypeId::Mlrs: return "MLRS";
+        case engine::UnitTypeId::Sapper: return "Sapper";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -198,6 +200,7 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::ArmorBarracks: return "Armor";
         case engine::StructureType::ReconBarracks: return "Recon";
         case engine::StructureType::ArtilleryBarracks: return "Artillery";
+        case engine::StructureType::EngineerBarracks: return "Engineers";
         case engine::StructureType::Warehouse: return "Warehouse";
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
@@ -297,7 +300,9 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
         if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
         if (id == engine::AbilityId::DigGunPit) label = *lead == engine::UnitTypeId::Mortar ? "Position" : "Capunier";
-        hud::CommandButton& b = put(i, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
+        // Skills fill the top row, then the bottom one; the middle row is for orders.
+        const size_t slot = i < hud::kGridColumns ? i : 2 * hud::kGridColumns + (i - hud::kGridColumns);
+        hud::CommandButton& b = put(slot, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);
     }
@@ -434,6 +439,13 @@ bool PlayerController::refills_at(const engine::World& world, engine::StructureT
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
         return u && depot_for_refill(u->type) == depot;
+    });
+}
+
+bool PlayerController::has_engineers(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::unit_type(u->type).engineer;
     });
 }
 

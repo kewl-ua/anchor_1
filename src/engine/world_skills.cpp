@@ -344,6 +344,20 @@ void World::update_ability(Unit& u) {
             return;
         }
 
+        case AbilityId::LayApMine:
+        case AbilityId::LayAtMine:
+            return lay_mine(u, u.order_ability == AbilityId::LayAtMine);
+        case AbilityId::ClearMines:
+            return clear_mines(u);
+        case AbilityId::LayWire:
+            return put_up_obstacles(u, StructureType::Wire);
+        case AbilityId::PlaceHedgehogs:
+            return put_up_obstacles(u, StructureType::Hedgehogs);
+        case AbilityId::BuildPillbox:
+            return start_pillbox(u);
+        case AbilityId::Demolish:
+            return plant_charge(u);
+
         case AbilityId::SwitchAmmo:
         case AbilityId::Count:
             break;

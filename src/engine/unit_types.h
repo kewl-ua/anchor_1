@@ -57,10 +57,17 @@ enum class AbilityId : uint8_t {
     RapidFire,     // AGS: five grenades in a row along the front
     Salvo,         // MLRS: everything in the launcher at a point
     IndirectFire,  // tank: fire from a covered position, like artillery, wearing out the barrel
+    LayApMine,     // sapper: an anti-personnel mine
+    LayAtMine,     // sapper: an anti-tank mine
+    ClearMines,    // sapper: lift the enemy mines found around a point
+    LayWire,       // sapper: barbed wire along a line
+    PlaceHedgehogs,  // sapper: anti-tank obstacles along a line
+    BuildPillbox,  // sapper: a firing point facing a direction
+    Demolish,      // sapper: a charge against a building or a bridge
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
-inline constexpr size_t kMaxAbilities = 4;
+inline constexpr size_t kMaxAbilities = 8;  // the grid's top row and bottom row
 
 // How a skill is aimed.
 enum class AbilityTarget : uint8_t {
@@ -97,6 +104,7 @@ struct UnitTypeDef {
     Stock cost{};  // Personnel, Food, Materials, Ammo, Fuel
     Tick train_time = 0;
     bool worker = false;  // rear troops: gather, build, unload
+    bool engineer = false;  // sappers: mines, obstacles, firing points, demolition
     // Fuel and ammunition carried (0: doesn't run out). Fuel is in tiles of driving.
     Fixed fuel_capacity{};
     int32_t rounds_capacity = 0;
@@ -133,6 +141,7 @@ enum class UnitTypeId : uint8_t {
     Howitzer,    // 122mm towed howitzer: long range, needs spotters
     Ags,         // AGS-17 automatic grenade launcher crew
     Mlrs,        // BM-21 multiple rocket launcher
+    Sapper,      // mines, wire, obstacles, pillboxes, demolition
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

@@ -26,6 +26,9 @@ enum class Terrain : uint8_t {
     Foxhole,   // a dug-in firing position
     Dugout,    // a shelter dug into the ground, roofed with logs (a Dugout structure)
     GunPit,    // a gun's dug-in position: a capunier, a mortar's closed position
+    Wire,      // barbed wire: infantry crawls through, tracks crush it, wheels stop
+    Hedgehogs, // anti-tank obstacles: no vehicle gets through
+    Pillbox,   // a log-and-earth firing point (a Pillbox structure)
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -61,6 +64,9 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Foxhole", {80, 50, 0}},
     {"Dugout", {0, 0, 0}},
     {"Gun pit", {70, 40, 40}},
+    {"Barbed wire", {20, 80, 0}},
+    {"Hedgehogs", {60, 0, 0}},
+    {"Pillbox", {0, 0, 0}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

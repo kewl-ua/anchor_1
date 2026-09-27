@@ -500,6 +500,24 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                 draw_text("Parapet: +25% cover from the front.", area.x, line3, kCardFontSize, theme::kTextDim);
             }
             return;
+        case engine::StructureType::Wire:
+            draw_text("Barbed wire: infantry crawls through, tracks roll it flat,", area.x, line2, kCardFontSize,
+                      theme::kTextDim);
+            draw_text("wheels can't get past.", area.x, line3, kCardFontSize, theme::kTextDim);
+            return;
+        case engine::StructureType::Hedgehogs:
+            draw_text("Anti-tank hedgehogs: no vehicle gets through; infantry slowed.", area.x, line2, kCardFontSize,
+                      theme::kTextDim);
+            return;
+        case engine::StructureType::Pillbox:
+            draw_text(TextFormat("Firing point: %d / %d inside, firing only through the slit (%d degrees).",
+                                 static_cast<int>(s.garrison.size()), def.capacity, engine::kPillboxSectorDegrees),
+                      area.x, line2, fitting_font("Firing point: 3 / 3 inside, firing only through the slit (120 degrees).",
+                                                  kCardFontSize, area.width),
+                      theme::kText);
+            draw_text("Bullets and fragments don't get in; an RPG through the slit does.", area.x, line3,
+                      kCardFontSize, theme::kTextDim);
+            return;
         case engine::StructureType::GunPit:
             draw_text(TextFormat("A gun's dug-in position: %d%% of hits taken by the walls,", engine::kGunPitCover),
                       area.x, line2, kCardFontSize, theme::kTextDim);

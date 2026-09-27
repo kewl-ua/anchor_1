@@ -24,7 +24,9 @@ std::vector<Unit*> owned_workers(const Command& cmd, FindFn find) {
     std::vector<Unit*> group;
     for (EntityId id : cmd.units) {
         Unit* u = find(id);
-        if (u && u->owner == cmd.player && unit_type(u->type).worker) group.push_back(u);
+        if (u && u->owner == cmd.player && (unit_type(u->type).worker || unit_type(u->type).engineer)) {
+            group.push_back(u);
+        }
     }
     std::sort(group.begin(), group.end(), [](const Unit* a, const Unit* b) { return a->id < b->id; });
     group.erase(std::unique(group.begin(), group.end()), group.end());
@@ -59,6 +61,9 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
                 case StructureType::Foxhole: map_.set_terrain(t.x, t.y, Terrain::Foxhole); break;
                 case StructureType::Dugout: map_.set_terrain(t.x, t.y, Terrain::Dugout); break;
                 case StructureType::GunPit: map_.set_terrain(t.x, t.y, Terrain::GunPit); break;
+                case StructureType::Wire: map_.set_terrain(t.x, t.y, Terrain::Wire); break;
+                case StructureType::Hedgehogs: map_.set_terrain(t.x, t.y, Terrain::Hedgehogs); break;
+                case StructureType::Pillbox: map_.set_terrain(t.x, t.y, Terrain::Pillbox); break;
                 case StructureType::Parapet: break;  // a mound on the ground it stands on
                 default: map_.set_terrain(t.x, t.y, Terrain::Building); break;
             }
@@ -114,6 +119,7 @@ void World::apply_gather(const Command& cmd) {
 
 void World::apply_build(const Command& cmd) {
     std::vector<Unit*> builders = owned_workers(cmd, [this](EntityId id) { return find_unit_mut(id); });
+    if (cmd.target_unit == 0) std::erase_if(builders, [](const Unit* u) { return !unit_type(u->type).worker; });
     if (builders.empty()) return;
 
     EntityId site = cmd.target_unit;
@@ -286,7 +292,11 @@ void World::update_building(Unit& u) {
         ++s->build_progress;
         const int32_t after = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
         s->hp = std::min(def.max_hp, s->hp + after - before);
-        if (s->build_progress >= def.build_time) s->built = true;
+        if (s->build_progress >= def.build_time) {
+            s->built = true;
+            // A finished pillbox is held by whoever sits in it, like a house.
+            if (is_shelter(s->type) && s->garrison.empty()) s->owner = kNoOwner;
+        }
         return;
     }
     if (navigate(u, s->center, u.order_path, u.order_goal, false) == Step::Blocked &&

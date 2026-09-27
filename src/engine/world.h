@@ -114,6 +114,42 @@ inline constexpr Tick kSalvoInterval = 2;
 // A tank firing from a covered position wears its barrel: HP per shot.
 inline constexpr int32_t kBarrelWearPercent = 1;
 
+// Engineering. A mine covers its tile: the first enemy of the right kind to
+// come onto it (infantry for an AP mine, vehicles for an AT one) sets it
+// off. The enemy doesn't see it until one of his sappers comes this close.
+inline constexpr Fixed kMineDetection = Fixed::from_ratio(5, 2);
+inline constexpr Stock kApMineCost = {0, 0, 0, 5, 0};
+inline constexpr Stock kAtMineCost = {0, 0, 0, 10, 0};
+inline constexpr Tick kMineWork = 4 * kTicksPerSecond;
+inline constexpr Tick kClearWork = 5 * kTicksPerSecond;
+inline constexpr Fixed kClearRadius = Fixed::from_ratio(3, 2);
+inline constexpr Tick kWireWork = 3 * kTicksPerSecond;       // a tile
+inline constexpr Tick kHedgehogWork = 5 * kTicksPerSecond;   // a tile
+inline constexpr Stock kWireCost = {0, 0, 5, 0, 0};          // a tile
+inline constexpr Stock kHedgehogCost = {0, 0, 10, 0, 0};     // a tile
+// A pillbox's garrison fires only through its slit: this wide a sector.
+inline constexpr int32_t kPillboxSectorDegrees = 120;
+inline constexpr Tick kPlantWork = 8 * kTicksPerSecond;
+inline constexpr Tick kFuseTicks = 5 * kTicksPerSecond;
+inline constexpr Fixed kSapperRetreat = Fixed::from_int(3);  // runs this far from the charge
+
+// A mine on a tile.
+struct Mine {
+    uint32_t id = 0;
+    PlayerId owner = 0;
+    TilePos tile{};
+    bool anti_tank = false;
+    uint8_t found_by = 0;  // bit per player that knows where it is
+};
+
+// A demolition charge ticking against a structure.
+struct Charge {
+    PlayerId owner = 0;
+    EntityId target = 0;
+    FixedVec2 pos{};
+    Tick goes_off = 0;
+};
+
 // The tiles of a trench dug from a to b: a 4-connected line, so men can walk
 // along it, at most kMaxTrenchLength long.
 std::vector<TilePos> trench_line(TilePos a, TilePos b);
@@ -260,6 +296,12 @@ public:
     const Structure* station_of(PlayerId player) const;
     // Open ground a trench, foxhole or parapet can go on.
     bool diggable(TilePos t) const;
+    // Mines and charges. A player sees his own mines and the ones his sappers found.
+    const std::vector<Mine>& mines() const { return mines_; }
+    bool knows(PlayerId player, const Mine& m) const {
+        return m.owner == player || (player < kMaxPlayers && ((m.found_by >> player) & 1) != 0);
+    }
+    const std::vector<Charge>& charges() const { return charges_; }
 
     // Fog of war, updated every kVisionInterval ticks. A tile is visible when
     // one of the player's units or buildings has a line of sight to it;
@@ -408,6 +450,18 @@ private:
     // A fireball: fuel or ammunition going up.
     void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire);
 
+    // Engineering (world_engineering.cpp).
+    void lay_mine(Unit& u, bool anti_tank);
+    void clear_mines(Unit& u);
+    void put_up_obstacles(Unit& u, StructureType type);
+    void start_pillbox(Unit& u);
+    void plant_charge(Unit& u);
+    void update_mines();
+    void update_charges();
+    void find_mines();
+    // The nearest visible enemy a pillbox's garrison can fire at through its slit.
+    const Unit* find_enemy_in_slit(Unit& u, const Structure& pillbox);
+
     // Artillery (world_artillery.cpp). A step of setting up or packing up;
     // true once done.
     bool deploy_step(Unit& u);
@@ -474,6 +528,9 @@ private:
     uint32_t sight_cache_map_revision_ = 0;
     std::vector<Sector> sectors_;  // rebuilt with the fog
     std::map<int32_t, Tick> dig_work_;  // trench tiles being dug: tile index -> work done
+    std::vector<Mine> mines_;
+    uint32_t next_mine_id_ = 1;
+    std::vector<Charge> charges_;
 };
 
 }  // namespace engine

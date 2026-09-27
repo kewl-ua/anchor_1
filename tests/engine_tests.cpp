@@ -67,6 +67,7 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
     // Each side's guns shell the middle of the map all along.
     std::array<std::vector<EntityId>, 2> guns;
     std::array<EntityId, 2> rockets{};
+    std::array<EntityId, 2> sappers{};
     for (PlayerId p = 0; p < 2; ++p) {
         const FixedVec2 base = demo_base_position(sim.world().map().width(), p);
         const Fixed step = Fixed::from_int(p == 0 ? 8 : -8);
@@ -74,6 +75,7 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
         guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Mortar, {base.x + step, base.y}));
         guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Ags, {base.x, base.y - step}));
         rockets[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Mlrs, {base.x + step, base.y + step});
+        sappers[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Sapper, {base.x + step, base.y - step});
     }
 
     std::vector<uint64_t> checksums;
@@ -88,6 +90,10 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
                 Command salvo = make_order(CommandType::Ability, p, {rockets[p]}, center, center + (p == 0 ? 5 : -5));
                 salvo.ability = static_cast<uint8_t>(AbilityId::Salvo);
                 issue(sim, salvo);
+                // A mine where the armies will clash.
+                Command mine = make_order(CommandType::Ability, p, {sappers[p]}, center + (p == 0 ? -3 : 3), center);
+                mine.ability = static_cast<uint8_t>(AbilityId::LayApMine);
+                issue(sim, mine);
             }
         }
         if (t == 1) {
@@ -372,7 +378,8 @@ void test_demo_map_is_fair() {
             // Every kind of natural terrain is there; ruins, buildings and field works come later.
             const auto terrain = static_cast<Terrain>(t);
             const bool made = terrain == Terrain::Ruins || terrain == Terrain::Building || terrain == Terrain::Trench ||
-                              terrain == Terrain::Foxhole || terrain == Terrain::Dugout || terrain == Terrain::GunPit;
+                              terrain == Terrain::Foxhole || terrain == Terrain::Dugout || terrain == Terrain::GunPit ||
+                              terrain == Terrain::Wire || terrain == Terrain::Hedgehogs || terrain == Terrain::Pillbox;
             if (!made) CHECK(counts[t] > 0);
         }
         CHECK(counts[static_cast<size_t>(Terrain::Ruins)] == 0);  // nothing destroyed yet
@@ -2012,6 +2019,179 @@ void test_tank_indirect_fire() {
     CHECK(t->rounds == unit_type(UnitTypeId::Tank).rounds_capacity - static_cast<int32_t>(shells.size()));
 }
 
+// --- Engineering ---------------------------------------------------------------
+
+// A sapper of `player` lays a mine on (x, y), with the ammunition for it.
+void lay_a_mine(Simulation& sim, PlayerId player, bool anti_tank, int32_t x, int32_t y) {
+    World& w = sim.world_for_setup();
+    Stock stock = w.stock(player);
+    stock[static_cast<size_t>(Resource::Ammo)] += 10;
+    w.set_stock(player, stock);
+    const EntityId sapper = w.spawn_unit(player, UnitTypeId::Sapper, at_half(2 * x + 1, 2 * y + 3));
+    issue(sim, use_ability_at(player, {sapper}, anti_tank ? AbilityId::LayAtMine : AbilityId::LayApMine,
+                              at_half(2 * x + 1, 2 * y + 1)));
+    for (Tick i = 0; i < kMineWork + 60; ++i) sim.step();
+    // Out of the way, so it neither triggers nor finds anything.
+    w.unit_for_setup(sapper)->hp = 0;
+    sim.step();
+}
+
+// A mine goes off under the first enemy of its kind to come onto its tile;
+// the side that laid it walks over it safely.
+void test_mines() {
+    auto crossing = [](UnitTypeId who, PlayerId owner_of_walker, bool anti_tank) {
+        Simulation sim(1, TileMap(40, 20));
+        lay_a_mine(sim, 0, anti_tank, 15, 10);
+        CHECK(sim.world().mines().size() == 1);
+        const EntityId walker = sim.world_for_setup().spawn_unit(owner_of_walker, who, at_half(21, 21));
+        issue(sim, make_move(owner_of_walker, {walker}, 25, 10));
+        for (int i = 0; i < 600; ++i) sim.step();
+        struct Result {
+            bool blown;
+            int32_t hp_lost;
+        };
+        return Result{sim.world().mines().empty(), unit_type(who).max_hp - hp_of(sim, walker)};
+    };
+    const auto enemy_on_ap = crossing(UnitTypeId::Rifleman, 1, false);
+    CHECK(enemy_on_ap.blown && enemy_on_ap.hp_lost > 0);
+    const auto own_on_ap = crossing(UnitTypeId::Rifleman, 0, false);
+    CHECK(!own_on_ap.blown && own_on_ap.hp_lost == 0);
+    const auto tank_on_ap = crossing(UnitTypeId::Tank, 1, false);
+    CHECK(!tank_on_ap.blown && tank_on_ap.hp_lost == 0);  // too little to set off
+    const auto tank_on_at = crossing(UnitTypeId::Tank, 1, true);
+    CHECK(tank_on_at.blown && tank_on_at.hp_lost >= 100);
+    const auto man_on_at = crossing(UnitTypeId::Rifleman, 1, true);
+    CHECK(!man_on_at.blown);
+
+    // Paid for from the stock: 5 ammunition an AP mine.
+    Simulation sim(1, TileMap(40, 20));
+    lay_a_mine(sim, 0, false, 15, 10);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Ammo)] == 10 - kApMineCost[static_cast<size_t>(Resource::Ammo)]);
+}
+
+// The enemy doesn't know a mine is there until one of his sappers comes
+// close; then a sapper can lift it.
+void test_sappers_find_and_clear_mines() {
+    Simulation sim(1, TileMap(40, 20));
+    lay_a_mine(sim, 1, true, 15, 10);
+    CHECK(!sim.world().knows(0, sim.world().mines().front()));
+    CHECK(sim.world().knows(1, sim.world().mines().front()));
+
+    sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(14, 10));  // right next to it
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!sim.world().knows(0, sim.world().mines().front()));
+
+    const EntityId far_sapper = sim.world_for_setup().spawn_unit(0, UnitTypeId::Sapper, at(12, 13));
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!sim.world().knows(0, sim.world().mines().front()));  // too far to find it
+    const EntityId sapper = sim.world_for_setup().spawn_unit(0, UnitTypeId::Sapper, at(14, 12));
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(sim.world().knows(0, sim.world().mines().front()));
+    CHECK(sim.world().find_unit(far_sapper));
+
+    issue(sim, use_ability(0, {sapper}, AbilityId::ClearMines, 15, 10));
+    for (Tick i = 0; i < kClearWork + 100; ++i) sim.step();
+    CHECK(sim.world().mines().empty());
+    CHECK(hp_of(sim, sapper) == unit_type(UnitTypeId::Sapper).max_hp);  // lifted, not set off
+}
+
+// Wire: infantry crawls through, wheels stop, tracks roll it flat.
+// Hedgehogs: no vehicle gets through.
+void test_wire_and_hedgehogs() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, stock_with({{Resource::Materials, 15 + 10}}));
+    const EntityId sapper = w.spawn_unit(0, UnitTypeId::Sapper, at(8, 10));
+    Command wire = use_ability(0, {sapper}, AbilityId::LayWire, 10, 9);
+    wire.target_end = at(10, 11);
+    issue(sim, wire);
+    for (int i = 0; i < 600; ++i) sim.step();
+    for (int y = 9; y <= 11; ++y) CHECK(sim.world().map().terrain(10, y) == Terrain::Wire);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Materials)] == 10);
+    const TileMap& map = sim.world().map();
+    CHECK(map.speed_percent({10, 10}, MoveClass::Foot) < 50);
+    CHECK(!map.passable({10, 10}, MoveClass::Wheeled));
+
+    Command posts = use_ability(0, {sapper}, AbilityId::PlaceHedgehogs, 14, 9);
+    posts.target_end = at(14, 12);
+    issue(sim, posts);
+    for (int i = 0; i < 800; ++i) sim.step();
+    int hedgehogs = 0;
+    for (int y = 9; y <= 12; ++y) {
+        if (sim.world().map().terrain(14, y) != Terrain::Hedgehogs) continue;
+        ++hedgehogs;
+        CHECK(!sim.world().map().passable({14, y}, MoveClass::Vehicle));
+        CHECK(sim.world().map().passable({14, y}, MoveClass::Foot));
+    }
+    CHECK(hedgehogs == 1);  // the stock ran out after one
+
+    // A tank drives through the wire and flattens it.
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(6, 10));
+    issue(sim, make_move(0, {tank}, 12, 10));
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(sim.world().map().terrain(10, 10) == Terrain::Grass);
+    CHECK(sim.world().map().terrain(10, 9) == Terrain::Wire);
+}
+
+// A pillbox: its garrison fires through the slit only, bullets don't get
+// in, a rocket through the slit does.
+void test_pillbox() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, structure_type(StructureType::Pillbox).cost);
+    const EntityId sapper = w.spawn_unit(0, UnitTypeId::Sapper, post());
+    issue(sim, use_ability(0, {sapper}, AbilityId::BuildPillbox, 20, 10));  // facing east
+    for (Tick i = 0; i < structure_type(StructureType::Pillbox).build_time + 60; ++i) sim.step();
+    const Structure* box = sim.world().structure_at({10, 10});
+    CHECK(box && box->type == StructureType::Pillbox && box->built);
+    CHECK(sim.world().stock(0) == Stock{});
+    const EntityId id = box->id;
+    w.unit_for_setup(sapper)->hp = 0;  // gone, so only the pillbox fires
+    sim.step();
+
+    const EntityId gunner = w.spawn_unit(0, UnitTypeId::MachineGunner, at(9, 12));
+    issue(sim, garrison(0, {gunner}, id));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(gunner)->inside == id);
+
+    // Behind it (west): no way to fire at them. In front (east): fire.
+    const EntityId behind = w.spawn_unit(1, UnitTypeId::Truck, at(6, 10));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(hp_of(sim, behind) == unit_type(UnitTypeId::Truck).max_hp);
+    const EntityId ahead = w.spawn_unit(1, UnitTypeId::Rifleman, at(15, 10));
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(hp_of(sim, ahead) < unit_type(UnitTypeId::Rifleman).max_hp);
+    CHECK(hp_of(sim, gunner) == unit_type(UnitTypeId::MachineGunner).max_hp);  // bullets don't get in
+
+    // An RPG round through the slit.
+    const EntityId rpg = w.spawn_unit(1, UnitTypeId::Grenadier, at(14, 11));
+    issue(sim, fire_at(1, {rpg}, 10, 10));
+    for (int i = 0; i < 300 && hp_of(sim, gunner) == unit_type(UnitTypeId::MachineGunner).max_hp; ++i) sim.step();
+    CHECK(hp_of(sim, gunner) < unit_type(UnitTypeId::MachineGunner).max_hp);
+}
+
+// A demolition charge: planted, the sapper runs, it goes off. Two bring
+// down a bridge.
+void test_demolition_charges() {
+    Simulation sim(1, village_map());
+    const EntityId bridge = sim.world().structure_at({20, 10})->id;
+    std::vector<EntityId> sappers;
+    for (int i = 0; i < 2; ++i) sappers.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Sapper, at(17, 9 + 2 * i)));
+    issue(sim, use_ability(0, {sappers[0]}, AbilityId::Demolish, 20, 10));
+    for (Tick i = 0; i < kPlantWork + 60; ++i) sim.step();
+    CHECK(sim.world().charges().size() == 1);
+    for (Tick i = 0; i < kFuseTicks + 5; ++i) sim.step();
+    CHECK(sim.world().charges().empty());
+    const Structure* b = sim.world().find_structure(bridge);
+    CHECK(b && b->hp < structure_type(StructureType::Bridge).max_hp);
+    CHECK(hp_of(sim, sappers[0]) == unit_type(UnitTypeId::Sapper).max_hp);  // got away in time
+
+    issue(sim, use_ability(0, {sappers[1]}, AbilityId::Demolish, 20, 10));
+    for (Tick i = 0; i < kPlantWork + kFuseTicks + 100; ++i) sim.step();
+    CHECK(sim.world().find_structure(bridge) == nullptr);
+    CHECK(sim.world().map().terrain(20, 10) == Terrain::Water);
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -2158,6 +2338,11 @@ int main() {
     test_ags_reaches_into_trenches();
     test_mlrs_salvo();
     test_tank_indirect_fire();
+    test_mines();
+    test_sappers_find_and_clear_mines();
+    test_wire_and_hedgehogs();
+    test_pillbox();
+    test_demolition_charges();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

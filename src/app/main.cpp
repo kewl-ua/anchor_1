@@ -42,8 +42,9 @@ struct Options {
     // Also `economy`, `build`, `logistics` (depots by the station, supply
     // trucks, the first train), `recon` (scouts' observation posts), `skills`
     // (tank and IFV skills), `works` (riflemen dig in), `supply` (offline:
-    // dry tanks, a tanker and an ammunition truck) and `artillery` (offline:
-    // a howitzer and a mortar firing, a scout spotting).
+    // dry tanks, a tanker and an ammunition truck), `artillery` (offline:
+    // the guns firing, a scout spotting) and `engineering` (offline: sappers
+    // put up wire, hedgehogs, a pillbox and a mine).
     std::string scene;
 };
 
@@ -271,6 +272,33 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         if (tank) skill(tank, engine::AbilityId::IndirectFire, ahead(21.0f, 0.0f));
         game.select_units({howitzer});
         return render::to_vector2(ahead(15.0f, 0.0f));
+    }
+
+    if (options.scene == "engineering" && options.mode == Options::Mode::Offline) {
+        // Offline: four sappers in front of the army put up wire, hedgehogs,
+        // a pillbox and a mine. The pillbox builder stays selected.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        w.set_stock(me, {10, 300, 400, 150, 150});
+        std::vector<engine::EntityId> sappers;
+        for (int i = 0; i < 4; ++i) {
+            sappers.push_back(w.spawn_unit(me, engine::UnitTypeId::Sapper, ahead(12.0f, static_cast<float>(i) - 1.5f)));
+        }
+        auto skill = [&](engine::EntityId id, engine::AbilityId ability, engine::FixedVec2 at, engine::FixedVec2 end) {
+            game.submit({.type = engine::CommandType::Ability, .units = {id}, .target = at,
+                         .ability = static_cast<uint8_t>(ability), .target_end = end});
+        };
+        skill(sappers[0], engine::AbilityId::LayWire, ahead(15.0f, -4.0f), ahead(15.0f, 0.0f));
+        skill(sappers[1], engine::AbilityId::PlaceHedgehogs, ahead(16.0f, 1.0f), ahead(16.0f, 4.0f));
+        skill(sappers[2], engine::AbilityId::BuildPillbox, ahead(20.0f, 0.0f), {});
+        skill(sappers[3], engine::AbilityId::LayAtMine, ahead(17.0f, 2.5f), {});
+        game.select_units({sappers[2]});
+        return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
     if (options.scene == "build") {

@@ -121,6 +121,9 @@ bool World::line_of_sight(FixedVec2 from, Fixed eye, TilePos target, EntityId ow
             case Terrain::Rock:
                 if (h < ground + kRockHeight) return false;
                 break;
+            case Terrain::Pillbox:
+                if (h < ground + kRockHeight && structure_id_at(tile) != own_structure) return false;
+                break;
             default:
                 break;
         }
@@ -258,6 +261,7 @@ void World::update_vision() {
     // Who sees whom: a man in the open is seen when his tile is in view, one
     // in cover only when he has just fired. Up close, anyone is made out,
     // even through the trees.
+    find_mines();
     for (Unit& u : units_) {
         u.seen_by = 0;
         const Structure* house = find_structure(u.inside);

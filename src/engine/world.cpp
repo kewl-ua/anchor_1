@@ -239,8 +239,9 @@ void World::leave_structure(Unit& u) {
 // comes into sight and range.
 void World::update_garrisoned(Unit& u) {
     if (u.order == Order::Retrain) return update_retrain(u);  // at drill in the headquarters
-    if (const Structure* s = find_structure(u.inside); s && s->type == StructureType::Dugout) return;  // sheltering
-    const Unit* target = find_enemy_in_sight(u);
+    const Structure* home = find_structure(u.inside);
+    if (home && home->type == StructureType::Dugout) return;  // sheltering
+    const Unit* target = home && home->type == StructureType::Pillbox ? find_enemy_in_slit(u, *home) : find_enemy_in_sight(u);
     if (!target) return;
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius + def_of(*target).radius;
@@ -272,7 +273,10 @@ void World::collapse(const Structure& s) {
         }
     }
     Terrain rubble = s.type == StructureType::Bridge ? Terrain::Water : Terrain::Ruins;
-    if (is_fieldwork(s.type) || s.type == StructureType::Dugout) rubble = Terrain::Grass;  // filled in
+    if (is_fieldwork(s.type) || is_obstacle(s.type) || s.type == StructureType::Dugout ||
+        s.type == StructureType::Pillbox) {
+        rubble = Terrain::Grass;  // filled in, cut, torn down
+    }
     for (const TilePos& t : s.tiles) {
         if (s.type == StructureType::Parapet) {  // just a mound on the ground
             structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
@@ -433,6 +437,8 @@ void World::step() {
 
     separate_units();
     for (Unit& u : units_) u.pos = clamp_to_map(u.pos, def_of(u).radius);
+    update_mines();
+    update_charges();
 
     while (!recent_impacts_.empty() && recent_impacts_.front().tick + kImpactHistory < tick_) {
         recent_impacts_.pop_front();
@@ -658,6 +664,12 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     if (!move_to(u, next)) return Step::Blocked;
     u.moving = true;
     if (thirsty) u.fuel = max(Fixed{}, u.fuel - (u.pos - before).length());
+    // Tracks roll barbed wire flat.
+    if (move_class(def) == MoveClass::Vehicle) {
+        if (const Structure* s = structure_at(map_.clamp_tile(tile_of(u.pos))); s && s->type == StructureType::Wire) {
+            pending_damage_.push_back({s->id, s->hp});
+        }
+    }
     u.deploy_work = 0;     // setting up starts over wherever it stops
     u.camouflaged = false;  // and the nets stay behind
     return u.pos == point ? Step::Arrived : Step::Moved;
@@ -716,6 +728,9 @@ World::Obstruction World::trace_terrain(const FireLine& line, Fixed start, bool 
             return Obstruction::Terrain;
         }
         if (terrain == Terrain::Rock && h < ground + kRockHeight) return Obstruction::Terrain;
+        if (terrain == Terrain::Pillbox && h < ground + kRockHeight && structure_id_at(tile) != own_structure) {
+            return Obstruction::Terrain;
+        }
         if (terrain == Terrain::Forest && h < ground + kTreeHeight && roll_foliage &&
             static_cast<int32_t>(rng_.next_below(100)) < foliage_percent) {
             return Obstruction::Foliage;
@@ -954,8 +969,13 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     }
 
     if (!direct_hit) {
-        // A rocket into a wall hits the house.
-        if (const Structure* s = structure_at(tile_of(at))) return hurt_structure(*s, weapon);
+        // A rocket into a wall hits the house; into a pillbox, through the slit, the gunner too.
+        if (const Structure* s = structure_at(tile_of(at))) {
+            if (s->type == StructureType::Pillbox && weapon.damage_type == DamageType::AntiTank && !s->garrison.empty()) {
+                if (const Unit* gunner = find_unit(s->garrison.front())) hurt(*gunner, weapon, {at, 0, true, true});
+            }
+            return hurt_structure(*s, weapon);
+        }
         // Landed: hits whoever stands right at the spot, friend or foe.
         uint64_t best_sq = 0;
         for (const Unit& u : units_) {
@@ -1150,6 +1170,21 @@ uint64_t World::checksum() const {
         mix(u.ranging_shots);
         mix(u.camouflaged ? 1 : 0);
         mix(u.perfect_burst ? 1 : 0);
+    }
+    for (const Mine& m : mines_) {
+        mix(m.id);
+        mix(m.owner);
+        mix(static_cast<uint32_t>(m.tile.x));
+        mix(static_cast<uint32_t>(m.tile.y));
+        mix(m.anti_tank ? 1 : 0);
+        mix(m.found_by);
+    }
+    mix(next_mine_id_);
+    for (const Charge& c : charges_) {
+        mix(c.owner);
+        mix(c.target);
+        mix_vec(c.pos);
+        mix(c.goes_off);
     }
     for (const Structure& s : structures_) {
         mix(s.id);

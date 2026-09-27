@@ -31,10 +31,14 @@ enum class StructureType : uint8_t {
     Dugout,            // a foxhole upgraded into a shelter
     ArtilleryBarracks, // hires mortars, grenade launchers, howitzers, rocket launchers
     GunPit,            // a gun's dug-in position
+    EngineerBarracks,  // hires sappers
+    Wire,              // obstacles, one per tile, put up by sappers
+    Hedgehogs,
+    Pillbox,           // a firing point with a slit facing `facing`
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
-inline constexpr size_t kMaxRoster = 4;
+inline constexpr size_t kMaxRoster = 5;  // the grid's top row
 
 struct StructureDef {
     const char* name;
@@ -63,6 +67,7 @@ inline constexpr StructureType kBuildable[] = {
     StructureType::ArmorBarracks,
     StructureType::ReconBarracks,
     StructureType::ArtilleryBarracks,
+    StructureType::EngineerBarracks,
     StructureType::Warehouse,
     StructureType::AmmoDepot,
     StructureType::FuelDepot,
@@ -118,8 +123,12 @@ inline bool is_fieldwork(StructureType t) {
     return t == StructureType::Trench || t == StructureType::Foxhole || t == StructureType::Parapet ||
            t == StructureType::GunPit;
 }
-// Infantry can go inside: a house, a dugout. Whoever is inside holds it.
-inline bool is_shelter(StructureType t) { return t == StructureType::House || t == StructureType::Dugout; }
+// Infantry can go inside: a house, a dugout, a pillbox. Whoever is inside holds it.
+inline bool is_shelter(StructureType t) {
+    return t == StructureType::House || t == StructureType::Dugout || t == StructureType::Pillbox;
+}
+// Obstacles: in the way, but no cover.
+inline bool is_obstacle(StructureType t) { return t == StructureType::Wire || t == StructureType::Hedgehogs; }
 
 inline uint64_t distance_sq_to(const Structure& s, FixedVec2 p) {
     uint64_t best = UINT64_MAX;

@@ -329,6 +329,27 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .ability_count = 2,
         .deploy_time = seconds(5),
     },
+    {
+        // Mines, wire, hedgehogs, pillboxes and charges; finds the enemy's mines.
+        .name = "Sapper",
+        .short_name = "SAP",
+        .max_hp = 40,
+        .armor = {0, 0, 45},
+        .speed = tiles_per_second(1),
+        .radius = tiles(1, 5),
+        .sight = tiles(7),
+        .mass = 1,
+        .vehicle = false,
+        .weapon = {.name = "Carbine", .damage = 5, .damage_type = DamageType::Bullet, .range = tiles(4),
+                   .reload = seconds(5, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 60, .miss_spread = tiles(1)},
+        .cost = {1, 25, 20, 20, 0},
+        .train_time = seconds(18),
+        .engineer = true,
+        .abilities = {AbilityId::LayApMine, AbilityId::LayAtMine, AbilityId::ClearMines, AbilityId::LayWire,
+                      AbilityId::PlaceHedgehogs, AbilityId::BuildPillbox, AbilityId::Demolish},
+        .ability_count = 7,
+    },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -391,6 +412,20 @@ constexpr AbilityDef kAbilities[] = {
                 .range = tiles(14), .reload = seconds(4), .projectile_speed = tiles_per_second(12),
                 .splash_radius = tiles(1, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
                 .min_range = tiles(3)}},
+    {.name = "Anti-personnel mine (5 ammunition)", .label = "AP mine", .target = AbilityTarget::Point,
+     .range = tiles(0), .cooldown = 0},
+    {.name = "Anti-tank mine (10 ammunition)", .label = "AT mine", .target = AbilityTarget::Point,
+     .range = tiles(0), .cooldown = 0},
+    {.name = "Clear the enemy mines found around a point", .label = "Clear", .target = AbilityTarget::Point,
+     .range = tiles(0), .cooldown = 0},
+    {.name = "Barbed wire along a line (5 materials a tile)", .label = "Wire", .target = AbilityTarget::Line,
+     .range = tiles(0), .cooldown = 0},
+    {.name = "Anti-tank hedgehogs along a line (10 materials a tile)", .label = "Hedgehogs",
+     .target = AbilityTarget::Line, .range = tiles(0), .cooldown = 0},
+    {.name = "Pillbox here, its slit facing a direction (80 materials)", .label = "Pillbox",
+     .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
+    {.name = "Demolition charge against a building or a bridge", .label = "Charge", .target = AbilityTarget::Point,
+     .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -441,6 +476,15 @@ constexpr StructureDef kStructureTypes[] = {
      .buildable = true, .width = 3, .height = 3, .cost = {0, 0, 200, 0, 50}, .build_time = seconds(40),
      .roster = {UnitTypeId::Mortar, UnitTypeId::Ags, UnitTypeId::Howitzer, UnitTypeId::Mlrs}, .roster_size = 4},
     {.name = "Gun pit", .max_hp = 250, .armor = {0, 10, 60}},
+    {.name = "Engineer barracks", .max_hp = 1000, .armor = {0, 10, 60},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 120, 0, 0}, .build_time = seconds(25),
+     .roster = {UnitTypeId::Sapper}, .roster_size = 1},
+    // Obstacles: a shell or a tank's tracks make short work of wire.
+    {.name = "Barbed wire", .max_hp = 60, .armor = {0, 0, 60}},
+    {.name = "Hedgehogs", .max_hp = 400, .armor = {0, 30, 80}},
+    // Logs and earth with a slit facing the enemy: bullets don't get in.
+    {.name = "Pillbox", .max_hp = 1500, .armor = {0, 40, 60}, .capacity = 3, .width = 1, .height = 1,
+     .cost = {0, 0, 80, 0, 0}, .build_time = seconds(30)},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 
