@@ -84,7 +84,8 @@ bool World::diggable(TilePos t) const {
     const Terrain terrain = map_.terrain(t);
     return terrain == Terrain::Grass || terrain == Terrain::Urban || terrain == Terrain::Ruins ||
            terrain == Terrain::Plowed || terrain == Terrain::Crops || terrain == Terrain::DirtRoad ||
-           terrain == Terrain::Crater;
+           terrain == Terrain::Crater || terrain == Terrain::Wheat || terrain == Terrain::Orchard ||
+           terrain == Terrain::Garden;
 }
 
 EntityId World::place_fieldwork(StructureType type, PlayerId owner, TilePos t, FixedVec2 facing) {

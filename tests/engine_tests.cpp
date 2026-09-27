@@ -2430,8 +2430,8 @@ void test_demo_map_relief() {
 }
 
 // The demo map has spacious buildings well away from both bases: barns near
-// the middle and sheds in the industrial zone, two of each a side; a town
-// with two apartment blocks and two cell towers a side.
+// the middle, sheds in the industrial zone and the dairy farm's cowsheds,
+// two of each a side; a town with two apartment blocks and two cell towers a side.
 void test_demo_map_has_barns() {
     for (const MapSizePreset& preset : kMapSizes) {
         const World world(1, make_demo_map(preset.tiles));
@@ -2443,7 +2443,7 @@ void test_demo_map_has_barns() {
                 CHECK((s.center - demo_base_position(preset.tiles, p)).length() > Fixed::from_int(preset.tiles / 5));
             }
         }
-        CHECK(barns == 8);
+        CHECK(barns == 12);
         int blocks = 0;
         int towers = 0;
         for (const Structure& s : world.structures()) {
@@ -4173,8 +4173,9 @@ void test_roads_fields_and_swamps() {
     CHECK(on_road_far);
 }
 
-// Sunflowers, reeds and a crater hide a man, not a vehicle; a crater also
-// takes some of the hits for him. No mine goes into concrete.
+// Sunflowers, reeds, an orchard and a crater hide a man, not a vehicle (wheat
+// and kitchen gardens hide nobody); a crater also takes some of the hits for
+// him. No mine goes into concrete.
 void test_crops_swamps_and_craters() {
     auto hidden = [](Terrain ground, UnitTypeId who) {
         TileMap map(40, 20);
@@ -4190,6 +4191,10 @@ void test_crops_swamps_and_craters() {
     CHECK(hidden(Terrain::Swamp, UnitTypeId::Rifleman));
     CHECK(hidden(Terrain::Crater, UnitTypeId::Rifleman));
     CHECK(!hidden(Terrain::Crops, UnitTypeId::Tank));
+    CHECK(hidden(Terrain::Orchard, UnitTypeId::Rifleman));
+    CHECK(!hidden(Terrain::Orchard, UnitTypeId::Tank));
+    CHECK(!hidden(Terrain::Wheat, UnitTypeId::Rifleman));
+    CHECK(!hidden(Terrain::Garden, UnitTypeId::Rifleman));
 
     auto damage = [](Terrain ground) {
         int32_t total = 0;
@@ -4240,6 +4245,22 @@ void test_shelling_leaves_craters() {
     for (int y = 0; y < 20; ++y) {
         for (int x = 0; x < 15; ++x) CHECK(sim.world().map().terrain(x, y) == Terrain::Grass);  // only where they burst
     }
+
+    // Into a wheat field, the same.
+    TileMap field(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 20; x < 40; ++x) field.set_terrain(x, y, Terrain::Wheat);
+    }
+    Simulation wheat(1, field);
+    const EntityId third = wheat.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(4, 10));
+    wheat.world_for_setup().unit_for_setup(third)->rounds = 30;
+    issue(wheat, fire_at(0, {third}, 30, 10));
+    for (int i = 0; i < 2400; ++i) wheat.step();
+    int in_wheat = 0;
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 20; x < 40; ++x) in_wheat += wheat.world().map().terrain(x, y) == Terrain::Crater ? 1 : 0;
+    }
+    CHECK(in_wheat >= 3);
 
     // Into a wood, none: craters are for open ground and roads.
     TileMap wood(40, 20);
@@ -4829,10 +4850,18 @@ void test_donbas_landmarks() {
     int road = 0;
     int lined = 0;
     int gaps = 0;
+    int steep = 0;
+    int scree = 0;
     for (int y = 0; y < map.height(); ++y) {
         for (int x = 0; x < map.width(); ++x) {
             const Terrain t = map.terrain(x, y);
             slag += t == Terrain::Slag ? 1 : 0;
+            if (t == Terrain::Slag) {
+                // Two levels down to the next tile out; the scree at the foot on the plain.
+                steep += x + 1 < map.width() && map.terrain(x + 1, y) == Terrain::Slag &&
+                                 std::abs(map.elevation(x + 1, y) - map.elevation(x, y)) >= 2 ? 1 : 0;
+                scree += map.elevation(x, y) == 1 ? 1 : 0;
+            }
             chalk += t == Terrain::Chalk ? 1 : 0;
             if (t == Terrain::Slag) {
                 top_slag = std::max<int>(top_slag, map.elevation(x, y));
@@ -4852,12 +4881,68 @@ void test_donbas_landmarks() {
     }
     CHECK(slag > 40 && chalk > 20);
     CHECK(top_slag > top_else);  // nothing stands higher
+    CHECK(top_slag == TileMap::kMaxElevation);
+    CHECK(steep > 8 && scree > 8);
     CHECK(lined * 2 > road);     // mostly lined...
     CHECK(gaps > 0);             // ...with gaps to cross
     const TerrainDef& rock = terrain_def(Terrain::Slag);
     CHECK(rock.speed_percent[static_cast<size_t>(MoveClass::Wheeled)] == 0);
     CHECK(rock.speed_percent[static_cast<size_t>(MoveClass::Vehicle)] < rock.speed_percent[static_cast<size_t>(MoveClass::Foot)]);
     CHECK(terrain_def(Terrain::Chalk).speed_percent[static_cast<size_t>(MoveClass::Wheeled)] < 100);
+}
+
+// Men dig in anywhere in the fields, among the apple trees and in the
+// kitchen gardens; not into the loose rock of a spoil tip.
+void test_dig_in_the_fields() {
+    auto diggable = [](Terrain t) {
+        TileMap map(10, 10);
+        map.set_terrain(5, 5, t);
+        const World world(1, map);
+        return world.diggable({5, 5});
+    };
+    for (const Terrain t : {Terrain::Crops, Terrain::Wheat, Terrain::Orchard, Terrain::Garden}) CHECK(diggable(t));
+    CHECK(!diggable(Terrain::Slag));
+}
+
+// Wheat, apple orchards and kitchen gardens about the villages. A dairy farm
+// a side, its two long cowsheds spacious enough to be made into depots, a coop
+// by them; a coop and a cow shed at each of the villagers' small holdings.
+void test_farmland() {
+    for (const MapSizePreset& preset : kMapSizes) {
+        Simulation sim(1, make_demo_map(preset.tiles));
+        setup_demo_scenario(sim.world_for_setup());
+        const World& world = sim.world();
+        int wheat = 0;
+        int orchards = 0;
+        int gardens = 0;
+        for (int y = 0; y < world.map().height(); ++y) {
+            for (int x = 0; x < world.map().width(); ++x) {
+                const Terrain t = world.map().terrain(x, y);
+                wheat += t == Terrain::Wheat ? 1 : 0;
+                orchards += t == Terrain::Orchard ? 1 : 0;
+                gardens += t == Terrain::Garden ? 1 : 0;
+            }
+        }
+        CHECK(wheat > 40 && orchards > 20 && gardens > 8);
+        int long_sheds = 0;
+        int small_sheds = 0;
+        int coops = 0;
+        for (const Structure& s : world.structures()) {
+            if (s.look == HouseLook::House) continue;
+            CHECK(s.type == StructureType::House);
+            if (s.look == HouseLook::Coop) {
+                ++coops;
+                CHECK(s.tiles.size() == 2);
+            } else if (s.tiles.size() >= kSpaciousTiles) {
+                ++long_sheds;
+                CHECK(s.tiles.size() == 14);
+            } else {
+                ++small_sheds;
+                CHECK(s.tiles.size() == 2);
+            }
+        }
+        CHECK(long_sheds == 4 && small_sheds == 4 && coops == 6);
+    }
 }
 
 // Every upgrade is researched in its own building, as offered on its card.
@@ -5004,6 +5089,8 @@ int main() {
     test_air_upgrades();
     test_upgrade_buildings();
     test_donbas_landmarks();
+    test_farmland();
+    test_dig_in_the_fields();
     test_armor_upgrades_more();
     test_artillery_shells();
     test_workshop();

@@ -1359,7 +1359,8 @@ void World::maybe_crater(FixedVec2 at, const WeaponDef& weapon) {
     const TilePos t = map_.clamp_tile(tile_of(at));
     const Terrain ground = map_.terrain(t);
     const bool open = ground == Terrain::Grass || ground == Terrain::Plowed || ground == Terrain::Crops ||
-                      ground == Terrain::DirtRoad || ground == Terrain::Road;
+                      ground == Terrain::DirtRoad || ground == Terrain::Road || ground == Terrain::Wheat ||
+                      ground == Terrain::Garden;
     if (!open || structure_id_at(t) != 0) return;
     const int32_t chance = weapon.splash_radius >= kHeavyBurst ? kHeavyCraterPercent : kMediumCraterPercent;
     if (static_cast<int32_t>(rng_.next_below(100)) >= chance) return;

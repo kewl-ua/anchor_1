@@ -348,7 +348,7 @@ float hash_unit(uint32_t h) { return static_cast<float>(h & 0xFFFF) / 65536.0f; 
 // broadleaf and birch groves in patches, poplars along a tree line, an old
 // oak standing alone. Each its own height, girth and bow of the trunk. As the
 // wood is cut they come down one by one, leaving stumps.
-enum class TreeKind : uint8_t { Broadleaf, Oak, Beech, Birch, Pine, Poplar };
+enum class TreeKind : uint8_t { Broadleaf, Oak, Beech, Birch, Pine, Poplar, Apple };
 
 struct Tree {
     Vector2 ground;
@@ -484,7 +484,7 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
         DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 1.5f), 2.2f * s * t.girth, 1.1f * s, lit({176, 150, 110, 255}));
         return;
     }
-    const float spread = t.kind == TreeKind::Oak ? 1.5f : t.kind == TreeKind::Poplar ? 0.6f : 1.0f;
+    const float spread = t.kind == TreeKind::Oak ? 1.5f : t.kind == TreeKind::Poplar ? 0.6f : t.kind == TreeKind::Apple ? 0.8f : 1.0f;
     // Its shadow on the ground, away from the light (upper left).
     DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread, 3.4f * s,
                 lit({16, 24, 12, 70}));
@@ -551,6 +551,21 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
                 const float x = top.x;
                 fill_triangle({x - wid, y0}, {x, y0 + 1.5f * s}, {x, apex_y}, shade(needles, 1.2f));
                 fill_triangle({x, y0 + 1.5f * s}, {x + wid, y0}, {x, apex_y}, shade(needles, 0.75f));
+            }
+            break;
+        }
+        case TreeKind::Apple: {
+            // Short, the trunk whitewashed a hand high, a round crown with apples.
+            const float height = 5.5f * s * t.height;
+            const Vector2 top = draw_trunk(b, height, 2.8f * s * t.girth, 1.9f * s, bend * 0.3f, {92, 70, 50, 255});
+            DrawLineEx(b, {b.x + bend * 0.2f, b.y - height * 0.45f}, 2.8f * s * t.girth, lit({234, 232, 224, 255}));
+            const Vector2 c{top.x, top.y - 5.0f * s};
+            draw_crown(c, 14.0f * s, 11.0f * s, 4.4f * s, {72, 114, 50, 255}, t.tint, t.seed);
+            for (int k = 0; k < 6; ++k) {
+                const float a = hash_unit(tile_hash(static_cast<int>(t.seed >> 2) + k, k * 7)) * 6.2831853f;
+                const float r = 0.35f + 0.55f * hash_unit(tile_hash(k * 3, static_cast<int>(t.seed >> 6)));
+                disc({c.x + std::cos(a) * r * 6.5f * s, c.y + std::sin(a) * r * 5.0f * s}, 1.1f * s,
+                     k % 3 == 0 ? Color{220, 176, 60, 255} : Color{196, 40, 36, 255});
             }
             break;
         }
@@ -709,6 +724,201 @@ void draw_barn(const engine::TileMap& map, const engine::Structure& s, float dam
     fill_quad(d0, d1, {d1.x, d1.y - kWall * 0.8f}, {d0.x, d0.y - kWall * 0.8f}, {60, 54, 46, 255});
 }
 
+Color mix(Color a, Color b, float t);  // below, with the ground's colours
+
+// A wooden fence round a rectangle of ground: posts and two rails.
+void draw_fence(const engine::TileMap& map, Rectangle r, Color wood) {
+    const Vector2 corners[5] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}, {r.x, r.y}};
+    for (int side = 0; side < 4; ++side) {
+        const Vector2 a = corners[side];
+        const Vector2 b = corners[side + 1];
+        const float len = std::max(std::fabs(b.x - a.x), std::fabs(b.y - a.y));
+        const int posts = std::max(1, static_cast<int>(len * 2.0f));
+        for (int k = 0; k <= posts; ++k) {
+            const Vector2 g{a.x + (b.x - a.x) * static_cast<float>(k) / static_cast<float>(posts),
+                            a.y + (b.y - a.y) * static_cast<float>(k) / static_cast<float>(posts)};
+            const Vector2 foot = on_terrain(map, g);
+            DrawLineEx(foot, {foot.x, foot.y - 6.0f}, 1.2f, lit(shade(wood, 0.8f)));
+        }
+        for (const float lift : {2.5f, 5.0f}) DrawLineV(on_terrain(map, a, lift), on_terrain(map, b, lift), lit(wood));
+    }
+}
+
+// A haystack: a golden mound, darker where it's been rained on.
+void draw_haystack(const engine::TileMap& map, Vector2 ground, float size) {
+    const Vector2 b = on_terrain(map, ground);
+    DrawEllipse(static_cast<int>(b.x + 3.0f * size), static_cast<int>(b.y + 1.0f), 7.0f * size, 2.6f * size, lit({20, 24, 12, 60}));
+    DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 3.0f * size), 6.0f * size, 4.5f * size, lit({196, 164, 86, 255}));
+    DrawEllipse(static_cast<int>(b.x + 1.2f * size), static_cast<int>(b.y - 2.0f * size), 4.0f * size, 3.2f * size, lit({164, 134, 70, 255}));
+    DrawEllipse(static_cast<int>(b.x - 1.5f * size), static_cast<int>(b.y - 5.0f * size), 3.0f * size, 2.0f * size, lit({226, 196, 116, 255}));
+}
+
+// A water tower (a Rozhnovsky tower): a rusty steel tank on a tall column,
+// a ladder up it, a railing round the top; it stands over the whole farm.
+void draw_water_tower(const engine::TileMap& map, Vector2 ground) {
+    constexpr float kColumn = 52.0f;
+    constexpr float kTank = 15.0f;
+    const Vector2 b = on_terrain(map, ground);
+    DrawEllipse(static_cast<int>(b.x + 18.0f), static_cast<int>(b.y + 4.0f), 20.0f, 3.5f, lit({20, 24, 12, 60}));
+    const Color steel{118, 104, 92, 255};
+    DrawRectangleRec({b.x - 3.0f, b.y - kColumn, 6.0f, kColumn}, lit(shade(steel, 0.75f)));
+    DrawRectangleRec({b.x - 3.0f, b.y - kColumn, 2.5f, kColumn}, lit(steel));
+    for (float y = b.y - 4.0f; y > b.y - kColumn; y -= 3.0f) DrawLineV({b.x + 3.0f, y}, {b.x + 5.0f, y}, lit(shade(steel, 0.6f)));
+    DrawLineV({b.x + 5.0f, b.y}, {b.x + 5.0f, b.y - kColumn}, lit(shade(steel, 0.6f)));
+    const Color tank{134, 76, 56, 255};
+    const float top = b.y - kColumn - kTank;
+    DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - kColumn), 9.0f, 3.0f, lit(shade(tank, 0.7f)));
+    DrawRectangleRec({b.x - 9.0f, top, 18.0f, kTank}, lit(shade(tank, 0.85f)));
+    DrawRectangleRec({b.x - 9.0f, top, 6.0f, kTank}, lit(shade(tank, 1.15f)));
+    DrawLineV({b.x - 9.0f, top + 5.0f}, {b.x + 9.0f, top + 5.0f}, lit(shade(tank, 0.65f)));
+    DrawTriangle({b.x - 9.5f, top}, {b.x + 9.5f, top}, {b.x, top - 6.0f}, lit(shade(tank, 0.7f)));
+    DrawTriangle({b.x - 9.5f, top}, {b.x, top}, {b.x, top - 6.0f}, lit(shade(tank, 0.95f)));
+    DrawLineV({b.x - 10.5f, top - 1.5f}, {b.x + 10.5f, top - 1.5f}, lit(shade(steel, 0.5f)));
+}
+
+// A cow: a red steppe cow or a black-and-white one, grazing or looking about.
+void draw_cow(const engine::TileMap& map, Vector2 ground, uint32_t h) {
+    const Vector2 b = on_terrain(map, ground);
+    const float d = (h & 1u) ? 1.0f : -1.0f;  // which way she faces
+    const bool pied = (h >> 1) % 3 == 0;
+    const bool grazing = (h >> 3) % 2 == 0;
+    const Color coat = pied ? Color{36, 34, 34, 255} : Color{132, 66, 40, 255};
+    DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y + 0.5f), 6.0f, 1.8f, lit({20, 24, 12, 70}));
+    for (const float x : {-3.6f, -2.2f, 2.2f, 3.6f}) {
+        DrawLineEx({b.x + x * d, b.y - 4.0f}, {b.x + x * d, b.y}, 1.1f, lit(shade(coat, x < 0 ? 0.7f : 0.85f)));
+    }
+    DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y - 5.5f), 5.0f, 2.6f, lit(coat));
+    if (pied) {
+        DrawEllipse(static_cast<int>(b.x - 1.8f * d), static_cast<int>(b.y - 6.0f), 1.8f, 1.4f, lit({232, 230, 222, 255}));
+        DrawEllipse(static_cast<int>(b.x + 1.6f * d), static_cast<int>(b.y - 4.8f), 1.3f, 1.0f, lit({232, 230, 222, 255}));
+    } else {
+        DrawEllipse(static_cast<int>(b.x - 0.6f * d), static_cast<int>(b.y - 6.6f), 3.2f, 1.0f, lit(shade(coat, 1.25f)));
+    }
+    DrawLineEx({b.x - 4.8f * d, b.y - 6.0f}, {b.x - 5.6f * d, b.y - 3.0f}, 0.8f, lit(shade(coat, 0.7f)));  // the tail
+    const Vector2 head = grazing ? Vector2{b.x + 6.2f * d, b.y - 2.2f} : Vector2{b.x + 6.4f * d, b.y - 7.2f};
+    DrawLineEx({b.x + 4.0f * d, b.y - 6.0f}, head, 2.4f, lit(coat));
+    DrawEllipse(static_cast<int>(head.x), static_cast<int>(head.y), 1.8f, 1.3f, lit(shade(coat, 0.9f)));
+    DrawCircleV({head.x + 1.2f * d, head.y + 0.4f}, 0.8f, lit(pied ? Color{214, 190, 180, 255} : Color{196, 150, 130, 255}));
+    DrawLineV({head.x - 0.6f, head.y - 1.2f}, {head.x - 1.4f, head.y - 2.4f}, lit({226, 220, 200, 255}));
+}
+
+// A cowshed: whitewashed brick under a slate roof, a row of small windows,
+// ventilation cowls along the ridge of a long one; its yard fenced, haystacks
+// in it, cows out in front. A farm's water tower stands between its sheds.
+void draw_cowshed(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    const Rectangle r = footprint(s, 0.1f);
+    const uint32_t h = tile_hash(s.tiles.front().x, s.tiles.front().y);
+    const bool long_shed = s.tiles.size() >= engine::kSpaciousTiles;
+    const float yard = long_shed ? 0.8f : 0.5f;
+    draw_fence(map, {r.x - yard, r.y - yard, r.width + 2 * yard, r.height + 2 * yard}, {126, 100, 70, 255});
+    const float kWall = long_shed ? 11.0f : 8.0f;
+    const float kRoof = long_shed ? 8.0f : 6.0f;
+    const Vector2 ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
+    Vector2 base[4];
+    Vector2 top[4];
+    for (int i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, ground[i]);
+        top[i] = {base[i].x, base[i].y - kWall};
+    }
+    const float soot = 1.0f - 0.45f * damage;
+    const Color wall = shade({216, 212, 198, 255}, soot);
+    const Color roof = shade({120, 126, 132, 255}, soot);  // slate
+    fill_quad(base[1], base[2], top[2], top[1], wall);
+    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.74f));
+    const bool along_x = r.width >= r.height;
+    const Vector2 r0 = along_x ? Vector2{r.x, r.y + r.height * 0.5f} : Vector2{r.x + r.width * 0.5f, r.y};
+    const Vector2 r1 = along_x ? Vector2{r.x + r.width, r.y + r.height * 0.5f} : Vector2{r.x + r.width * 0.5f, r.y + r.height};
+    const Vector2 ridge0 = on_terrain(map, r0, kWall + kRoof);
+    const Vector2 ridge1 = on_terrain(map, r1, kWall + kRoof);
+    if (along_x) {
+        fill_quad(top[0], top[1], ridge1, ridge0, shade(roof, 1.1f));
+        fill_triangle(top[1], top[2], ridge1, shade(wall, 0.9f));
+        fill_quad(ridge0, ridge1, top[2], top[3], shade(roof, 0.85f));
+    } else {
+        fill_quad(top[3], top[0], ridge0, ridge1, shade(roof, 1.1f));
+        fill_quad(ridge0, top[1], top[2], ridge1, shade(roof, 0.95f));
+        fill_triangle(top[2], top[3], ridge1, shade(wall, 0.8f));
+    }
+    // Slate ribs down the roof, cowls on the ridge.
+    const float length = along_x ? r.width : r.height;
+    const int ribs = std::max(3, static_cast<int>(length + 1.0f));
+    for (int k = 1; k < ribs; ++k) {
+        const float t = static_cast<float>(k) / static_cast<float>(ribs);
+        DrawLineV(lerp(ridge0, ridge1, t), lerp(along_x ? top[3] : top[1], top[2], t), lit(shade(roof, 0.7f)));
+    }
+    if (long_shed) {
+        for (const float t : {0.3f, 0.7f}) {
+            const Vector2 c = lerp(ridge0, ridge1, t);
+            DrawRectangleRec({c.x - 2.0f, c.y - 4.0f, 4.0f, 4.0f}, lit(shade(roof, 0.8f)));
+            DrawRectangleRec({c.x - 3.0f, c.y - 5.0f, 6.0f, 1.5f}, lit(shade(roof, 0.6f)));
+        }
+    }
+    // Small windows along the long wall facing the viewer, a door in a small shed.
+    const Vector2 a = along_x ? base[2] : base[1];
+    const Vector2 b = along_x ? base[3] : base[2];
+    const int windows = long_shed ? 7 : 1;
+    for (int k = 1; k <= windows; ++k) {
+        const Vector2 p = lerp(a, b, static_cast<float>(k) / static_cast<float>(windows + 1));
+        DrawRectangleRec({p.x - 1.5f, p.y - kWall * 0.7f, 3.0f, 2.5f}, lit({70, 76, 82, 255}));
+    }
+    if (!long_shed) {
+        const Vector2 door = lerp(a, b, 0.25f);
+        DrawRectangleRec({door.x - 1.5f, door.y - 6.0f, 3.5f, 6.0f}, lit({86, 64, 44, 255}));
+    }
+    // The yard: haystacks by the fence, the cows out in front.
+    draw_haystack(map, {r.x + r.width + yard * 0.4f, r.y - yard * 0.4f}, (long_shed ? 1.0f : 0.8f) + 0.2f * static_cast<float>(h & 1));
+    if (long_shed) draw_haystack(map, {r.x - 0.35f, r.y + r.height + 0.2f}, 0.9f);
+    const int cows = long_shed ? 4 : 1 + static_cast<int>((h >> 5) & 1u);
+    for (int k = 0; k < cows; ++k) {
+        const uint32_t hk = tile_hash(static_cast<int>(h >> 8) + k, k * 13);
+        const float along = (static_cast<float>(k) + 0.3f + 0.4f * hash_unit(hk)) / static_cast<float>(cows);
+        const float out = 0.25f + (yard - 0.4f) * hash_unit(hk >> 8);
+        const Vector2 g = along_x ? Vector2{r.x + r.width * along, r.y + r.height + out}
+                                  : Vector2{r.x + r.width + out, r.y + r.height * along};
+        draw_cow(map, g, hk);
+    }
+    // A farm's water tower: by the shed that has another one in front of it.
+    if (long_shed) {
+        const Rectangle whole = footprint(s, 0.0f);
+        const int fx = static_cast<int>(whole.x + whole.width * 0.5f);
+        const int fy = static_cast<int>(whole.y + whole.height) + 2;
+        if (map.contains_tile(fx, fy) && (map.terrain(fx, fy) == engine::Terrain::House || map.terrain(fx, fy) == engine::Terrain::Ruins)) {
+            draw_water_tower(map, {r.x + r.width + 0.6f, r.y + r.height + 1.0f});
+        }
+    }
+}
+
+// A chicken coop: a little plank shed under a lean-to roof, a run of wire
+// netting beside it with the hens pecking about.
+void draw_coop(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    const Rectangle r = footprint(s, 0.15f);
+    const uint32_t h = tile_hash(s.tiles.front().x, s.tiles.front().y);
+    // The run, in front.
+    const Rectangle run{r.x, r.y + r.height + 0.1f, r.width, 0.9f};
+    for (int k = 0; k < 7; ++k) {
+        const Vector2 p = on_terrain(map, {run.x + 0.1f + (run.width - 0.2f) * hash_unit(h >> k), run.y + 0.1f + 0.7f * hash_unit(h >> (k + 9))});
+        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - 1.5f), 1.8f, 1.2f, lit(k % 3 == 0 ? Color{150, 96, 50, 255} : Color{236, 232, 222, 255}));
+        DrawCircleV({p.x + 1.4f, p.y - 2.4f}, 0.6f, lit({200, 40, 36, 255}));
+    }
+    draw_fence(map, run, {176, 176, 170, 255});
+    constexpr float kWall = 7.0f;
+    const Vector2 ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
+    Vector2 base[4];
+    Vector2 top[4];
+    for (int i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, ground[i]);
+        // The lean-to: the back wall higher than the front.
+        top[i] = {base[i].x, base[i].y - kWall - (i < 2 ? 3.0f : 0.0f)};
+    }
+    const float soot = 1.0f - 0.45f * damage;
+    const Color planks = shade({152, 128, 94, 255}, soot);
+    fill_quad(base[1], base[2], top[2], top[1], planks);
+    fill_quad(base[2], base[3], top[3], top[2], shade(planks, 0.74f));
+    fill_quad(top[0], top[1], top[2], top[3], shade({92, 86, 80, 255}, soot));
+    const Vector2 door = lerp(base[2], base[3], 0.5f);
+    DrawRectangleRec({door.x - 2.0f, door.y - 5.0f, 3.0f, 5.0f}, lit({70, 54, 40, 255}));
+}
+
 // Roads, fields, bogs and craters: marks on the ground of a tile whose
 // corners on screen are top, right, bottom, left.
 void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terrain terrain, Vector2 top, Vector2 right,
@@ -755,14 +965,75 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
             break;
         }
         case engine::Terrain::Crops: {
-            // Rows of sunflowers: a stalk and a yellow head each.
-            for (int i = 0; i < 6; ++i) {
-                const float u = 0.15f + 0.7f * static_cast<float>((h >> (i * 3)) & 7) / 7.0f;
-                const float v = 0.12f + 0.15f * static_cast<float>(i);
-                const Vector2 base = at(u, v);
-                const Vector2 head{base.x, base.y - 7.0f};
-                DrawLineV(base, head, lit({70, 96, 40, 255}));
-                DrawCircleV(head, 1.8f, lit({220, 180, 40, 255}));
+            // Rows of sunflowers: a stalk with its leaves, a big yellow head,
+            // brown in the middle, all turned the same way.
+            for (int row = 0; row < 3; ++row) {
+                for (int k = 0; k < 3; ++k) {
+                    const uint32_t hk = tile_hash(tx * 3 + k, ty * 5 + row);
+                    const float u = 0.18f + 0.32f * static_cast<float>(k) + (static_cast<float>(hk & 15) / 15.0f - 0.5f) * 0.1f;
+                    const float v = 0.18f + 0.32f * static_cast<float>(row);
+                    const Vector2 base = along_x ? at(u, v) : at(v, u);
+                    const float tall = 8.0f + static_cast<float>((hk >> 4) & 3);
+                    const Vector2 head{base.x + 0.8f, base.y - tall};
+                    DrawLineV(base, head, lit({66, 92, 38, 255}));
+                    DrawEllipse(static_cast<int>(base.x - 2.2f), static_cast<int>(base.y - tall * 0.45f), 2.6f, 1.3f, lit({62, 90, 34, 255}));
+                    DrawEllipse(static_cast<int>(base.x + 2.4f), static_cast<int>(base.y - tall * 0.66f), 2.4f, 1.2f, lit({80, 112, 44, 255}));
+                    DrawCircleV(head, 2.5f, lit({232, 188, 40, 255}));
+                    DrawCircleV({head.x + 0.5f, head.y + 0.3f}, 1.2f, lit({94, 62, 30, 255}));
+                }
+            }
+            break;
+        }
+        case engine::Terrain::Wheat: {
+            // Rows of ears, the wind running over them in waves; every fourth
+            // row of tiles the tramlines the tractor left.
+            if ((along_x ? ty : tx) % 4 == 0) {
+                for (const float v : {0.38f, 0.62f}) {
+                    DrawLineEx(along_x ? at(0.0f, v) : at(v, 0.0f), along_x ? at(1.0f, v) : at(v, 1.0f), 1.6f, lit({156, 124, 58, 255}));
+                }
+            }
+            const auto t = static_cast<float>(GetTime());
+            for (int row = 0; row < 4; ++row) {
+                const float v = 0.12f + 0.25f * static_cast<float>(row);
+                for (int k = 0; k < 5; ++k) {
+                    const float u = 0.1f + 0.2f * static_cast<float>(k) + static_cast<float>((h >> (row * 5 + k)) & 1) * 0.05f;
+                    const float wave = 0.5f + 0.5f * std::sin(t * 1.4f - (fx + u + fy + v) * 0.55f);
+                    const Color ear = mix({184, 148, 66, 255}, {240, 214, 130, 255}, wave);
+                    const Vector2 base = along_x ? at(u, v) : at(v, u);
+                    const float lean = (wave - 0.5f) * 1.6f;
+                    const Vector2 tip{base.x + lean, base.y - 4.0f};
+                    DrawLineV(base, tip, lit(shade(ear, 0.8f)));
+                    DrawLineEx({tip.x - lean * 0.1f, tip.y + 1.6f}, tip, 1.8f, lit(ear));
+                }
+            }
+            break;
+        }
+        case engine::Terrain::Orchard: {
+            // The grass mown between the rows of trees, a windfall apple or two.
+            DrawLineEx(at(0.0f, 0.02f), at(1.0f, 0.02f), 5.0f, lit({112, 136, 72, 255}));
+            for (int k = 0; k < 2; ++k) {
+                if ((h >> (k * 5)) % 3 != 0) continue;
+                const Vector2 p = at(0.1f + 0.8f * static_cast<float>((h >> (k * 7 + 3)) & 15) / 15.0f, 0.3f + 0.4f * static_cast<float>(k));
+                DrawCircleV(p, 1.0f, lit({186, 44, 38, 255}));
+            }
+            break;
+        }
+        case engine::Terrain::Garden: {
+            // Beds of potatoes in rows, a row of cabbages.
+            for (int row = 0; row < 4; ++row) {
+                const float v = 0.14f + 0.24f * static_cast<float>(row);
+                const bool cabbage = row == static_cast<int>(h % 4);
+                for (int k = 0; k < 4; ++k) {
+                    const float u = 0.14f + 0.24f * static_cast<float>(k);
+                    const Vector2 p = along_x ? at(u, v) : at(v, u);
+                    if (cabbage) {
+                        DrawCircleV({p.x, p.y - 1.2f}, 2.0f, lit({150, 186, 120, 255}));
+                        DrawCircleV({p.x - 0.4f, p.y - 1.6f}, 0.9f, lit({190, 214, 160, 255}));
+                    } else {
+                        DrawCircleV({p.x, p.y - 1.4f}, 1.9f, lit({62, 104, 44, 255}));
+                        DrawCircleV({p.x - 0.5f, p.y - 2.0f}, 0.9f, lit({92, 136, 60, 255}));
+                    }
+                }
             }
             break;
         }
@@ -852,10 +1123,17 @@ Color ground_colour(engine::Terrain t, Vector2 p) {
         // Bare trodden earth in patches of their own.
         return mix(grass, kBareEarth, 0.85f * smooth01((field(p, 9) - kBareFrom) / 0.1f));
     }
+    if (t == engine::Terrain::Crops) {
+        // Under the sunflowers, their broad leaves.
+        return mix(shade({92, 110, 48, 255}, 0.9f + 0.2f * tone), {128, 128, 60, 255}, 0.35f * smooth01((field(p, 29) - 0.55f) / 0.2f));
+    }
+    if (t == engine::Terrain::Wheat) {
+        // Ripe gold, paler and greener in patches.
+        return mix(shade(theme::terrain_color(t), 0.92f + 0.16f * tone), {170, 164, 86, 255}, 0.4f * smooth01((field(p, 23) - 0.6f) / 0.2f));
+    }
     if (t == engine::Terrain::Slag) {
-        // Black rock, burnt rusty red in places.
-        const float burnt = smooth01((field(p, 13) - 0.6f) / 0.15f);
-        return mix(shade(theme::terrain_color(t), 0.9f + 0.2f * tone), {112, 70, 52, 255}, 0.7f * burnt);
+        // Black rock (burnt rusty red up the top: see paint_ground).
+        return shade(theme::terrain_color(t), 0.9f + 0.2f * tone);
     }
     if (t == engine::Terrain::Chalk) {
         // White, greyer where it's washed down, grass taking hold here and there.
@@ -876,15 +1154,18 @@ int reach_rank(engine::Terrain t) {
         case Terrain::Riverbed: return 2;
         case Terrain::Swamp: return 3;
         case Terrain::Crater: return 5;
-        case Terrain::Plowed: return 6;
-        case Terrain::Crops: return 7;
+        case Terrain::Plowed:
+        case Terrain::Garden: return 6;
+        case Terrain::Crops:
+        case Terrain::Wheat: return 7;
         case Terrain::DirtRoad: return 8;
         case Terrain::Urban:
         case Terrain::Ruins: return 9;
         case Terrain::Trail: return 10;
         case Terrain::Grass:
         case Terrain::Wire:
-        case Terrain::Hedgehogs: return 11;
+        case Terrain::Hedgehogs:
+        case Terrain::Orchard: return 11;
         case Terrain::Forest:
         case Terrain::Chalk: return 12;
         case Terrain::Rock: return 13;
@@ -1637,12 +1918,27 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Vector2 g = lerp(to_vector2(p.prev_pos), to_vector2(p.pos), alpha);
         if (in_view(world, g)) drawables.push_back({.depth = g.x + g.y, .projectile = &p});
     }
-    // Scenery comes from the remembered ground: what the fog hides stays as it was.
+    // Scenery comes from the remembered ground: what the fog hides stays as it
+    // was; what stands behind a spoil tip is out of sight.
     for_each_visible_tile(map, view, [&](int tx, int ty) {
         const int state = fog(world, tx, ty);
-        if (state == kUnexplored) return;
+        if (state == kUnexplored || behind_relief(tx, ty)) return;
         const float light = state == kInView ? 1.0f : kFogLight;
         switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
+            case engine::Terrain::Orchard: {
+                // Apple trees in rows a tile apart, two to a tile along the row.
+                for (int k = 0; k < 2; ++k) {
+                    const uint32_t hk = tile_hash(tx * 2 + k, ty);
+                    Tree t{{static_cast<float>(tx) + 0.25f + 0.5f * static_cast<float>(k), static_cast<float>(ty) + 0.5f},
+                           0.95f + 0.2f * hash_unit(hk), 0.9f + 0.2f * hash_unit(hk >> 16), TreeKind::Apple};
+                    t.height = 0.85f + 0.3f * hash_unit(hk >> 8);
+                    t.girth = 0.9f + 0.2f * hash_unit(hk >> 12);
+                    t.bend = (hash_unit(hk >> 20) - 0.5f) * 3.0f;
+                    t.seed = hk;
+                    drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
+                }
+                break;
+            }
             case engine::Terrain::Forest: {
                 // A tree line (one tile wide, running along x or y) gets poplars in a row.
                 auto wood = [&](int x, int y) {
@@ -1667,7 +1963,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                     const int32_t max_hp = engine::structure_type(s->type).max_hp;
                     damage = 1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp);
                 }
-                if (s && s->tiles.size() >= engine::kSpaciousTiles) {
+                if (s && (s->tiles.size() >= engine::kSpaciousTiles || s->look != engine::HouseLook::House)) {
                     // A barn is one building, drawn once whichever of its tiles is in view.
                     if (std::find(barns.begin(), barns.end(), s) != barns.end()) break;
                     barns.push_back(s);
@@ -1757,6 +2053,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 draw_gas_station(map, *d.barn, d.damage);
             } else if (d.barn->type == engine::StructureType::Elevator) {
                 draw_elevator(map, *d.barn, d.damage);
+            } else if (d.barn->look == engine::HouseLook::Cowshed) {
+                draw_cowshed(map, *d.barn, d.damage);
+            } else if (d.barn->look == engine::HouseLook::Coop) {
+                draw_coop(map, *d.barn, d.damage);
             } else {
                 draw_barn(map, *d.barn, d.damage);
             }
@@ -1860,6 +2160,24 @@ float WorldRenderer::corner_light(int cx, int cy) const {
     return 1.0f + slope_x * 0.30f - slope_y * 0.18f + at(cx, cy) * 0.05f;
 }
 
+bool WorldRenderer::behind_relief(int tx, int ty) const {
+    if (tx < 0 || ty < 0 || tx >= cache_width_ || ty >= cache_height_) return false;
+    auto centre = [&](int x, int y) {
+        return (corner(x, y) + corner(x + 1, y) + corner(x, y + 1) + corner(x + 1, y + 1)) * 0.25f;
+    };
+    // A tile nearer the bottom of the screen by k along the diagonal is drawn
+    // 2k levels lower down it: ground rising faster than that hides this one.
+    const float own = centre(tx, ty);
+    for (int k = 1; k <= 6; ++k) {
+        const int x = tx + k;
+        const int y = ty + k;
+        if (x >= cache_width_ || y >= cache_height_) break;
+        if (corner(x, y) - own > 2.0f * (static_cast<float>(k) - 0.5f) + 0.25f) return true;
+        if (centre(x, y) - own > 2.0f * static_cast<float>(k) + 0.25f) return true;
+    }
+    return false;
+}
+
 float WorldRenderer::light_at(Vector2 ground) const {
     const int tx = std::clamp(static_cast<int>(std::floor(ground.x)), 0, std::max(0, cache_width_ - 1));
     const int ty = std::clamp(static_cast<int>(std::floor(ground.y)), 0, std::max(0, cache_height_ - 1));
@@ -1909,8 +2227,10 @@ WorldRenderer::GroundAt WorldRenderer::ground_at(const engine::World& world, Vec
     float best_score = -1.0f;
     for (size_t k = 0; k < count; ++k) {
         const int seed = 50 + static_cast<int>(weights[k].terrain);
-        const float score = weights[k].weight / total + (noise_at(p, 0.8f, seed) - 0.5f) * 0.36f +
-                            static_cast<float>(std::max(0, reach_rank(weights[k].terrain))) * 0.004f;
+        float score = weights[k].weight / total + (noise_at(p, 0.8f, seed) - 0.5f) * 0.36f +
+                      static_cast<float>(std::max(0, reach_rank(weights[k].terrain))) * 0.004f;
+        // Scree strewn over the grass: the foot of a spoil tip runs out finer.
+        if (weights[k].terrain == Terrain::Slag) score += (noise_at(p, 0.45f, 91) - 0.5f) * 0.3f;
         if (score > best_score) {
             best = weights[k].terrain;
             best_score = score;
@@ -1944,7 +2264,8 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
         // A 4x4 grid over the tile, each point the colour of the ground that
         // shows there: the kinds of ground blend into each other in ragged lines.
         constexpr int kSub = 4;
-        const float grain = 1.0f + (hash01(h >> 3) - 0.5f) * 0.04f;
+        // A tile a shade lighter or darker than the next (not on a ripe field: it shows there).
+        const float grain = terrain == Terrain::Wheat ? 1.0f : 1.0f + (hash01(h >> 3) - 0.5f) * 0.04f;
         Vector2 pos[kSub + 1][kSub + 1];
         Color col[kSub + 1][kSub + 1];
         for (int j = 0; j <= kSub; ++j) {
@@ -1957,13 +2278,29 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
                 pos[j][i] = iso::project(p, height);
                 const GroundAt g = ground_at(world, p, terrain);
                 Color c = ground_colour(g.terrain, p);
+                if (g.terrain == Terrain::Slag) {
+                    // Up the top of a spoil tip, the rock that smouldered for years, burnt rusty red;
+                    // round its foot the grass coming up through the scree.
+                    c = mix(c, {124, 74, 58, 255}, 0.7f * smooth01((height - 5.5f) / 3.5f + (field(p, 13) - 0.5f) * 0.4f));
+                    const int px = static_cast<int>(std::floor(p.x));  // the same for a corner shared by two tiles
+                    const int py = static_cast<int>(std::floor(p.y));
+                    int low = engine::TileMap::kMaxElevation;
+                    for (int y = py - 1; y <= py + 1; ++y) {
+                        for (int x = px - 1; x <= px + 1; ++x) {
+                            if (map.contains_tile(x, y)) low = std::min<int>(low, map.elevation(x, y));
+                        }
+                    }
+                    const float foot = 1.0f - smooth01((height - static_cast<float>(low)) / 0.8f);
+                    c = mix(c, ground_colour(Terrain::Grass, p), foot * (0.3f + 0.5f * noise_at(p, 0.5f, 77)));
+                }
                 if (g.terrain == Terrain::Water) {
                     c = mix(kShallows, c, smooth01((g.water - 0.55f) / 0.3f));  // the shallows by the shore
                 } else if (g.water > 0) {
                     c = mix(c, kSand, smooth01((g.water - 0.1f) / 0.22f));  // sand along the water
                 }
                 float k = light_at(p);
-                if (g.terrain == Terrain::Slag || g.terrain == Terrain::Chalk) k = 1.0f + (k - 1.0f) * 2.2f;
+                if (g.terrain == Terrain::Chalk) k = 1.0f + (k - 1.0f) * 2.2f;
+                k = std::clamp(k, 0.5f, 1.4f);  // the steep sides of a spoil tip
                 col[j][i] = lit(shade(c, k * grain));
             }
         }
@@ -2031,32 +2368,48 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
         return;
     }
     if (terrain == Terrain::Slag) {
-        // Loose black rock: rills down its sides, lumps, dry tufts, and birch
-        // saplings seeding themselves on it.
-        for (int k = 0; k < 2; ++k) {
-            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 4 + 2)), fy + 0.1f + 0.8f * hash01(h >> (k * 4 + 15))};
-            if (!shows(at, terrain) || steep < 0.01f) continue;
-            rill(at, 0.3f, {40, 38, 36, 255}, 1.0f);
+        // Loose black rock: gullies washed straight down its sides, lumps of
+        // burnt rock, and low on the slopes the odd birch sapling seeding itself.
+        const float shadow = std::clamp(light, 0.5f, 1.4f);
+        // At the foot, where the scree lies flat, the grass comes through.
+        bool foot = true;
+        for (const auto& [dx, dy] : {std::pair{-1, 0}, std::pair{1, 0}, std::pair{0, -1}, std::pair{0, 1}}) {
+            foot = foot && (!map.contains_tile(tx + dx, ty + dy) || map.elevation(tx + dx, ty + dy) >= map.elevation(tx, ty));
         }
-        for (int k = 0; k < 4; ++k) {
+        const float away = -(down.x + down.y) * 0.7071f * steep * 0.5f;  // levels a tile the ground rises towards the viewer
+        for (int k = 0; k < 2 && away < 0.9f && !foot; ++k) {
+            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 4 + 2)), fy + 0.1f + 0.8f * hash01(h >> (k * 4 + 15))};
+            const Vector2 end{at.x + down.x * 0.55f, at.y + down.y * 0.55f};
+            if (!shows(at, terrain) || !shows(end, terrain) || steep < 0.01f) continue;
+            DrawLineEx(screen(at), screen(end), 1.4f, lit(shade({22, 20, 20, 255}, shadow)));
+            DrawLineEx(screen({at.x + down.y * 0.04f, at.y - down.x * 0.04f}), screen({end.x + down.y * 0.04f, end.y - down.x * 0.04f}),
+                       0.8f, lit(shade({96, 90, 86, 255}, shadow)));
+        }
+        for (int k = 0; k < 3; ++k) {
             const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 3 + 1)), fy + 0.1f + 0.8f * hash01(h >> (k * 3 + 14))};
             if (!shows(at, terrain)) continue;
             const Vector2 p = screen(at);
-            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 1.8f, 1.1f, lit(shade({34, 32, 32, 255}, light)));
+            const Color lump = k == 0 && (h >> 5) % 3 == 0 ? Color{120, 78, 62, 255} : Color{30, 28, 28, 255};
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 1.6f, 1.0f, lit(shade(lump, shadow)));
         }
-        if ((h >> 9) % 5 == 0) {
-            const Vector2 base = screen({fx + 0.3f + 0.4f * hash01(h >> 6), fy + 0.3f + 0.4f * hash01(h >> 22)});
+        for (int k = 0; foot && k < 4; ++k) {
+            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 5 + 3)), fy + 0.1f + 0.8f * hash01(h >> (k * 5 + 16))};
+            if (!shows(at, terrain)) continue;
+            const Vector2 base = screen(at);
             for (int side = -1; side <= 1; ++side) {
-                DrawLineV(base, {base.x + static_cast<float>(side) * 1.6f, base.y - 3.5f}, lit(shade({140, 128, 78, 255}, light)));
+                DrawLineV(base, {base.x + static_cast<float>(side) * 1.6f, base.y - (side == 0 ? 4.0f : 2.8f)},
+                          lit(shade({86, 112, 56, 255}, shadow)));
             }
         }
-        if ((h >> 13) % 7 == 0) {
+        if (map.elevation(tx, ty) <= 4 && (h >> 13) % 6 == 0) {
             const Vector2 at{fx + 0.3f + 0.4f * hash01(h >> 3), fy + 0.3f + 0.4f * hash01(h >> 19)};
             if (shows(at, terrain)) {
                 const Vector2 b = screen(at);
-                DrawLineEx(b, {b.x, b.y - 7.0f}, 1.3f, lit({222, 220, 208, 255}));
-                DrawCircleV({b.x + 0.5f, b.y - 8.5f}, 3.2f, lit(shade({94, 132, 58, 255}, light)));
-                DrawCircleV({b.x - 0.6f, b.y - 9.5f}, 1.6f, lit(shade({128, 164, 78, 255}, light)));
+                const float lean = (hash01(h >> 7) - 0.5f) * 2.0f;
+                DrawLineEx(b, {b.x + lean, b.y - 8.0f}, 1.0f, lit({214, 210, 198, 255}));
+                const Color leaf = shade({88, 116, 56, 255}, shadow);
+                DrawEllipse(static_cast<int>(b.x + lean + 0.6f), static_cast<int>(b.y - 8.5f), 2.4f, 3.4f, lit(shade(leaf, 0.8f)));
+                DrawEllipse(static_cast<int>(b.x + lean - 0.4f), static_cast<int>(b.y - 9.5f), 1.4f, 2.2f, lit(leaf));
             }
         }
         return;
@@ -2158,6 +2511,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         const engine::Terrain terrain = seen_terrain_[static_cast<size_t>(ty * map.width() + tx)];
         g_light = state == kInView ? 1.0f : kFogLight;
         paint_ground(world, tx, ty, terrain, false);
+        if (behind_relief(tx, ty)) return;  // the ground in front covers the rest
         if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
             terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit ||
             terrain == engine::Terrain::Wire || terrain == engine::Terrain::Hedgehogs) {

@@ -57,6 +57,9 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Elevator: return {120, 116, 108, 255};
         case engine::Terrain::Slag: return {62, 58, 56, 255};
         case engine::Terrain::Chalk: return {206, 202, 188, 255};
+        case engine::Terrain::Wheat: return {190, 162, 88, 255};
+        case engine::Terrain::Orchard: return {88, 118, 62, 255};
+        case engine::Terrain::Garden: return {96, 80, 58, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;

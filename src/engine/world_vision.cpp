@@ -45,7 +45,9 @@ bool in_cover(const TileMap& map, const Unit& u) {
     if (u.airborne) return false;  // up in the open sky
     if (u.inside || u.camouflaged) return true;
     const Terrain t = map.terrain_at(u.pos);
-    if (t == Terrain::Crops || t == Terrain::Swamp || t == Terrain::Crater) return !unit_type(u.type).vehicle;
+    if (t == Terrain::Crops || t == Terrain::Swamp || t == Terrain::Crater || t == Terrain::Orchard) {
+        return !unit_type(u.type).vehicle;
+    }
     return t == Terrain::Forest || t == Terrain::Trail || t == Terrain::Trench || t == Terrain::Foxhole ||
            t == Terrain::GunPit;
 }

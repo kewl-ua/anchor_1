@@ -85,6 +85,9 @@ private:
     // hills and gullies.
     float corner_light(int cx, int cy) const;
     float light_at(Vector2 ground) const;
+    // Whether a tile lies hidden behind the ground in front of it (behind a
+    // spoil tip, say): what stands or lies on it isn't drawn.
+    bool behind_relief(int tx, int ty) const;
     // A tile's ground, drawn like AoE II's: grass in patches of green and
     // dry, ragged edges where kinds of ground meet, sand and foam along the
     // water, bare trodden earth, tufts, bushes, flowers, stones.

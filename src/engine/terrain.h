@@ -43,6 +43,9 @@ enum class Terrain : uint8_t {
     Elevator,    // a grain elevator's silos (an Elevator structure)
     Slag,        // a spoil tip (terrikon) of a coal mine: a steep cone of loose black rock
     Chalk,       // the white slopes of a chalk hill
+    Wheat,       // a wheat field: golden and knee high, it hides nobody
+    Orchard,     // an apple orchard: trees in rows; men hide under them, vehicles squeeze between
+    Garden,      // kitchen gardens behind the village houses: vegetables in rows
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -95,6 +98,9 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Grain elevator", {0, 0, 0}},
     {"Spoil tip", {55, 30, 0}},
     {"Chalk", {80, 60, 45}},
+    {"Wheat", {95, 95, 85}},
+    {"Orchard", {85, 50, 40}},
+    {"Kitchen garden", {85, 70, 55}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 
@@ -129,7 +135,7 @@ inline FixedVec2 tile_center(TilePos t) {
 // 1.0 is one tile. How it looks (isometric or not) is the renderer's business.
 class TileMap {
 public:
-    static constexpr uint8_t kMaxElevation = 7;
+    static constexpr uint8_t kMaxElevation = 10;
 
     TileMap(int32_t width, int32_t height)
         : width_(width),

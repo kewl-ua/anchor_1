@@ -39,9 +39,9 @@ struct Cone {
     int32_t x_pct;
     int32_t y_pct;
     int32_t height;  // elevation levels at the top
-    int32_t radius;  // tiles
 };
-constexpr Cone kSpoilTips[] = {{7, 53, 5, 5}, {40, 80, 5, 5}};
+constexpr Cone kSpoilTips[] = {{7, 53, 9}, {40, 80, 9}};
+constexpr int32_t kSpoilTipSlope = 2;  // levels lower every tile out
 // A chalk ridge along the river: white slopes, steppe grass along the crest.
 struct Ridge {
     int32_t x0_pct;
@@ -112,6 +112,19 @@ constexpr Rect kPlowed[] = {{28, 72, 8, 6}, {45, 76, 8, 5}, {12, 74, 7, 5}};
 constexpr Rect kCrops[] = {{42, 62, 6, 8}, {15, 40, 6, 5}, {26, 55, 6, 4}};
 // Swamps by the pond and the river.
 constexpr Blob kSwamps[] = {{19, 47, 2}, {40, 46, 2}};
+// Wheat fields, apple orchards by the villages, kitchen gardens behind them.
+constexpr Rect kWheat[] = {{30, 86, 12, 7}, {1, 64, 8, 6}, {22, 46, 6, 4}};
+constexpr Rect kOrchards[] = {{4, 57, 5, 4}, {30, 46, 5, 3}};
+constexpr Rect kGardens[] = {{9, 66, 5, 2}, {41, 51, 3, 3}};
+// A dairy farm out in the fields: two long cowsheds side by side in their
+// yard, a chicken coop by them. And the villagers' small holdings: a coop, and
+// a shed for a cow or two a few tiles along.
+constexpr Barn kDairyFarms[] = {{47, 90}};
+constexpr int32_t kCowshedLength = 7;  // tiles
+constexpr int32_t kCowshedWidth = 2;
+constexpr int32_t kCowshedGap = 4;  // from one cowshed's front to the next one's
+constexpr Barn kHoldings[] = {{15, 66}, {33, 53}};
+constexpr int32_t kHoldingShedOffset = -4;  // tiles from the coop to the cow shed
 // The concrete highway runs from the base to the central bridge (and on,
 // mirrored, to the other base); dirt roads lead off it to the villages,
 // the farms and the fields.
@@ -267,16 +280,18 @@ void raise_hill(TileMap& map, Painter& p, const Hill& hill) {
 // water, railways or anything built.
 bool open_ground(Terrain t) {
     return t == Terrain::Grass || t == Terrain::Plowed || t == Terrain::Crops || t == Terrain::Forest ||
-           t == Terrain::Swamp || t == Terrain::Crater || t == Terrain::Trail;
+           t == Terrain::Swamp || t == Terrain::Crater || t == Terrain::Trail || t == Terrain::Wheat ||
+           t == Terrain::Orchard || t == Terrain::Garden;
 }
 
-// A spoil tip: a cone of black rock, a level lower every tile and a quarter out.
+// A spoil tip: a cone of black rock, steeper than any hill, its scree spread
+// a tile round its foot.
 void raise_spoil_tip(TileMap& map, Painter& p, const Cone& cone) {
     const int32_t size = map.width();
     auto raise = [&](int32_t cx, int32_t cy) {
-        p.disc(cx, cy, cone.radius, [&](int32_t x, int32_t y, int32_t dist) {
-            const int32_t level = cone.height - dist * cone.height / cone.radius;
-            if (level <= 0 || !open_ground(map.terrain(x, y))) return;
+        p.disc(cx, cy, cone.height / kSpoilTipSlope + 2, [&](int32_t x, int32_t y, int32_t dist) {
+            const int32_t level = cone.height - dist * kSpoilTipSlope;
+            if (level <= -kSpoilTipSlope || !open_ground(map.terrain(x, y))) return;
             map.set_terrain(x, y, Terrain::Slag);
             if (level > map.elevation(x, y)) map.set_elevation(x, y, static_cast<uint8_t>(level));
         });
@@ -408,6 +423,9 @@ TileMap make_demo_map(int32_t size) {
     };
     for (const Rect& r : kPlowed) field(r, Terrain::Plowed);
     for (const Rect& r : kCrops) field(r, Terrain::Crops);
+    for (const Rect& r : kWheat) field(r, Terrain::Wheat);
+    for (const Rect& r : kOrchards) field(r, Terrain::Orchard);
+    for (const Rect& r : kGardens) field(r, Terrain::Garden);
     for (const Blob& swamp : kSwamps) {
         p.disc(p.at(swamp.x_pct), p.at(swamp.y_pct), std::max(2, p.at(swamp.radius_pct)),
                [&](int32_t x, int32_t y, int32_t dist) {
@@ -453,7 +471,8 @@ TileMap make_demo_map(int32_t size) {
         const Terrain under = map.terrain(x, y);
         const bool open = under == Terrain::Grass || under == Terrain::Forest || under == Terrain::Trail ||
                           under == Terrain::Urban || under == Terrain::Plowed || under == Terrain::Crops ||
-                          under == Terrain::Swamp || under == Terrain::DirtRoad;
+                          under == Terrain::Swamp || under == Terrain::DirtRoad || under == Terrain::Wheat ||
+                          under == Terrain::Orchard || under == Terrain::Garden;
         if (open) p.paint(x, y, t);
     };
     for (const Segment& s : kDirtRoads) p.line(s, [&](int32_t x, int32_t y, int32_t) { road(x, y, Terrain::DirtRoad); });
@@ -466,7 +485,7 @@ TileMap make_demo_map(int32_t size) {
         for (const int32_t tx : {x - 1 - kHighwayVerge, x + 2 + kHighwayVerge}) {
             if (!map.contains_tile(tx, y)) continue;
             const Terrain under = map.terrain(tx, y);
-            if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops) {
+            if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops || under == Terrain::Wheat) {
                 p.paint(tx, y, Terrain::Forest);
             }
         }
@@ -479,7 +498,7 @@ TileMap make_demo_map(int32_t size) {
             if (!map.contains_tile(x, y) || tile_noise(x, y) % 23 != 0) continue;
             const Terrain under = map.terrain(x, y);
             if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops ||
-                under == Terrain::DirtRoad || under == Terrain::Road) {
+                under == Terrain::DirtRoad || under == Terrain::Road || under == Terrain::Wheat) {
                 p.paint(x, y, Terrain::Crater);
             }
         }
@@ -524,6 +543,17 @@ TileMap make_demo_map(int32_t size) {
     for (const Shed& s : kSheds) building(p.at(s.x_pct), p.at(s.y_pct), s.w, s.h, Terrain::House);
     for (const Barn& t : kTowers) building(p.at(t.x_pct), p.at(t.y_pct), 1, 1, Terrain::Tower);
     for (const Barn& e : kElevators) building(p.at(e.x_pct), p.at(e.y_pct), 3, 2, Terrain::Elevator);
+    for (const Barn& f : kDairyFarms) {
+        const int32_t x = p.at(f.x_pct);
+        const int32_t y = p.at(f.y_pct);
+        building(x, y, kCowshedLength, kCowshedWidth, Terrain::House);
+        building(x, y + kCowshedGap, kCowshedLength, kCowshedWidth, Terrain::House);
+        building(x + kCowshedLength + 2, y + 2, 2, 1, Terrain::House);
+    }
+    for (const Barn& c : kHoldings) {
+        building(p.at(c.x_pct), p.at(c.y_pct), 2, 1, Terrain::House);
+        building(p.at(c.x_pct) + kHoldingShedOffset, p.at(c.y_pct), 2, 1, Terrain::House);
+    }
     {
         // The highway runs where x + y = size: the station stands just off it.
         const int32_t x = p.at(kGasStationAlongPct);
@@ -546,6 +576,28 @@ TileMap make_demo_map(int32_t size) {
 }
 
 void setup_demo_scenario(World& world) {
+    // How the farm buildings look (to the game they are houses), on both sides.
+    const int32_t size = world.map().width();
+    auto at = [size](int32_t pct) { return size * pct / 100; };
+    auto look = [&](int32_t x, int32_t y, HouseLook l) {
+        for (const TilePos t : {TilePos{x, y}, TilePos{size - 1 - x, size - 1 - y}}) {
+            if (const Structure* s = world.structure_at(t); s && s->type == StructureType::House) {
+                world.structure_for_setup(s->id)->look = l;
+            }
+        }
+    };
+    for (const Barn& f : kDairyFarms) {
+        const int32_t x = at(f.x_pct);
+        const int32_t y = at(f.y_pct);
+        look(x, y, HouseLook::Cowshed);
+        look(x, y + kCowshedGap, HouseLook::Cowshed);
+        look(x + kCowshedLength + 2, y + 2, HouseLook::Coop);
+    }
+    for (const Barn& c : kHoldings) {
+        look(at(c.x_pct), at(c.y_pct), HouseLook::Coop);
+        look(at(c.x_pct) + kHoldingShedOffset, at(c.y_pct), HouseLook::Cowshed);
+    }
+
     for (PlayerId player = 0; player < 2; ++player) {
         const FixedVec2 base = demo_base_position(world.map().width(), player);
         const int32_t bx = base.x.to_int();

@@ -14,6 +14,10 @@
 
 namespace engine {
 
+// What a house looks like: the game treats them all as houses (a long one is
+// spacious, so it can be turned into a depot).
+enum class HouseLook : uint8_t { House, Cowshed, Coop };
+
 enum class StructureType : uint8_t {
     House,             // infantry can hold it; collapses with everyone inside
     Bridge,            // blown up, it's river again
@@ -149,6 +153,9 @@ struct Structure {
     // player's men at the position (or inside) draw on it.
     int32_t cache = 0;
     PlayerId cache_owner = kNoOwner;
+
+    // How a house is drawn (it plays the same): a cottage, a cowshed, a coop.
+    HouseLook look = HouseLook::House;
 
     // Where the units it hires go (AoE's rally point): rear troops to work
     // if it's on the wood or the stone, trucks to collect there.
