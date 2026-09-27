@@ -37,6 +37,9 @@ public:
                 const hud::Hud& hud, render::WorldRenderer& renderer, float alpha);
 
     void select_army(const engine::World& world);
+    // The next rear trooper or supply truck with nothing to do, one after
+    // another (AoE's idle villager key). False if there is none.
+    bool select_next_idle(const engine::World& world);
     void order_move(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground);
     void order_attack_move(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground);
     void order_attack(net::Lockstep& lockstep, engine::EntityId target);
@@ -45,9 +48,10 @@ public:
     void order_gather(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                       Vector2 ground);
     void order_retrain(net::Lockstep& lockstep);
-    // Supply trucks in the selection resume their run; the rest move to the point.
+    // Supply trucks in the selection resume their run (sent to a depot of
+    // ours, they're assigned to it); the rest move to the point.
     void order_haul(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
-                    Vector2 ground);
+                    Vector2 ground, engine::EntityId structure);
     void order_train(net::Lockstep& lockstep, const engine::World& world, engine::UnitTypeId type);
     void order_build(net::Lockstep& lockstep, const Placement& placement);
     void order_help_build(net::Lockstep& lockstep, engine::EntityId site);
@@ -92,6 +96,7 @@ private:
                         engine::CommandType type);
     bool has_workers(const engine::World& world) const;
     bool has_trucks(const engine::World& world) const;
+    engine::EntityId last_idle_ = 0;
     bool has_engineers(const engine::World& world) const;
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);

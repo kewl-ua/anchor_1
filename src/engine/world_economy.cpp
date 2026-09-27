@@ -344,10 +344,31 @@ void World::update_trains() {
     }
 }
 
+// Back on the supply run. Sent to one of our depots, a truck is assigned to
+// it: that depot's freight, to that depot. Or it's given a kind of freight
+// (to the nearest depot for it), or left to haul whatever piles up.
 void World::apply_haul(const Command& cmd) {
+    const Structure* depot = find_structure(cmd.target_unit);
+    const std::optional<Resource> depot_takes =
+        depot && depot->owner == cmd.player ? depot_cargo(depot->type) : std::nullopt;
+    std::optional<Resource> cargo;
+    if (cmd.cargo >= haul_code(Resource::Personnel) && cmd.cargo <= haul_code(Resource::Fuel)) {
+        cargo = static_cast<Resource>(cmd.cargo - 1);
+        if (!depot_for(*cargo)) cargo.reset();  // no depot ever takes it from trucks
+    }
     for (EntityId id : cmd.units) {
         Unit* u = find_unit_mut(id);
         if (!u || u->owner != cmd.player || u->type != UnitTypeId::Truck) continue;
+        if (depot_takes) {
+            u->haul_cargo = *depot_takes;
+            u->haul_depot = depot->id;
+        } else if (cargo) {
+            u->haul_cargo = *cargo;
+            u->haul_depot = 0;
+        } else if (cmd.cargo == kHaulAuto) {
+            u->haul_cargo = Resource::Count;
+            u->haul_depot = 0;
+        }
         u->order = Order::Haul;
         u->order_path.reset();
         u->chase_path.reset();
@@ -357,9 +378,19 @@ void World::apply_haul(const Command& cmd) {
     }
 }
 
-// The supply run: load at the station whatever a depot of ours takes (most
-// plentiful first), drive it to the nearest depot for it, unload, repeat.
-// With nothing to carry or nowhere to put it, the truck waits.
+const Structure* World::haul_destination(const Unit& truck, Resource cargo) const {
+    if (const Structure* own = find_structure(truck.haul_depot);
+        own && own->owner == truck.owner && own->built && depot_cargo(own->type) == cargo) {
+        return own;
+    }
+    const std::optional<StructureType> type = depot_for(cargo);
+    return type ? nearest_owned(truck.owner, *type, truck.pos) : nullptr;
+}
+
+// The supply run: load at the station the freight the truck is assigned
+// (or, left to itself, whatever a depot of ours takes, most plentiful
+// first), drive it to its depot, unload, repeat. With nothing to carry or
+// nowhere to put it, the truck waits.
 void World::update_hauling(Unit& u) {
     if (u.carrying == 0) {
         const Structure* station = station_of(u.owner);
@@ -367,7 +398,8 @@ void World::update_hauling(Unit& u) {
         std::optional<Resource> pick;
         for (Resource r : {Resource::Ammo, Resource::Fuel, Resource::Food}) {
             const auto i = static_cast<size_t>(r);
-            if (station->cargo[i] <= 0 || !nearest_owned(u.owner, *depot_for(r), u.pos)) continue;
+            if (u.haul_cargo != Resource::Count && r != u.haul_cargo) continue;
+            if (station->cargo[i] <= 0 || !haul_destination(u, r)) continue;
             if (!pick || station->cargo[i] > station->cargo[static_cast<size_t>(*pick)]) pick = r;
         }
         if (!pick) return;
@@ -387,7 +419,7 @@ void World::update_hauling(Unit& u) {
         return;
     }
 
-    const Structure* depot = nearest_owned(u.owner, *depot_for(u.carrying_type), u.pos);
+    const Structure* depot = haul_destination(u, u.carrying_type);
     if (!depot) return;
     if (distance_sq_to(*depot, u.pos) > square_raw(kDoorReach)) {
         navigate(u, depot->center, u.chase_path, map_.clamp_tile(tile_of(depot->center)), false);

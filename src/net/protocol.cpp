@@ -71,7 +71,7 @@ bool has_target_unit(engine::CommandType type) {
     return type == engine::CommandType::Attack || type == engine::CommandType::Garrison ||
            type == engine::CommandType::Train || type == engine::CommandType::Build ||
            type == engine::CommandType::Upgrade || type == engine::CommandType::Unload ||
-           type == engine::CommandType::Research;
+           type == engine::CommandType::Research || type == engine::CommandType::Haul;
 }
 
 void write_command(Writer& w, const engine::Command& cmd) {
@@ -86,6 +86,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
     if (cmd.type == engine::CommandType::Train) w.u8(cmd.unit_type);
     if (cmd.type == engine::CommandType::Build) w.u8(cmd.structure_type);
     if (cmd.type == engine::CommandType::Research) w.u8(cmd.upgrade);
+    if (cmd.type == engine::CommandType::Haul) w.u8(cmd.cargo);
     if (cmd.type == engine::CommandType::Ability) {
         w.u8(cmd.ability);
         w.i32(cmd.target_end.x.raw);
@@ -112,6 +113,7 @@ std::optional<engine::Command> read_command(Reader& r) {
     if (cmd.type == engine::CommandType::Train) cmd.unit_type = r.u8();
     if (cmd.type == engine::CommandType::Build) cmd.structure_type = r.u8();
     if (cmd.type == engine::CommandType::Research) cmd.upgrade = r.u8();
+    if (cmd.type == engine::CommandType::Haul) cmd.cargo = r.u8();
     if (cmd.type == engine::CommandType::Ability) {
         cmd.ability = r.u8();
         cmd.target_end.x = engine::Fixed::from_raw(r.i32());

@@ -1164,6 +1164,27 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
             }
             break;
         }
+        case engine::Order::Haul: {
+            // Its run: the station, and the depot it takes its freight to.
+            const engine::Structure* station = world.station_of(u.owner);
+            const engine::Resource cargo = u.carrying > 0 ? u.carrying_type : u.haul_cargo;
+            const engine::Structure* depot =
+                cargo != engine::Resource::Count && engine::depot_for(cargo) ? world.haul_destination(u, cargo) : nullptr;
+            const Color color = ColorAlpha(theme::kSelection, 0.45f);
+            if (station && depot) {
+                const Vector2 a = to_vector2(station->center);
+                const Vector2 b = to_vector2(depot->center);
+                const float len = std::hypot(b.x - a.x, b.y - a.y);
+                for (float t = 0.0f; t < len; t += 1.0f) {  // dashes, a tile apart
+                    const float t1 = std::min(len, t + 0.5f);
+                    DrawLineV(on_terrain(map, lerp(a, b, t / len)), on_terrain(map, lerp(a, b, t1 / len)), color);
+                }
+                draw_ground_ellipse(on_terrain(map, b), 0.6f, color);
+            }
+            if (station) DrawLineV(from, on_terrain(map, to_vector2(u.carrying > 0 && depot ? depot->center : station->center)),
+                                   ColorAlpha(theme::kSelection, 0.25f));
+            break;
+        }
         case engine::Order::Idle:
             break;
     }

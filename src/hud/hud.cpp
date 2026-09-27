@@ -260,27 +260,169 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
     draw_minimap(world, state, l);
 }
 
+namespace {
+
+// Who works on what, for the top bar: like the villager counts under the
+// resources in AoE II.
+struct Logistics {
+    std::array<int, engine::kResourceCount> trucks{};  // trucks assigned to that freight
+    int auto_trucks = 0;  // trucks hauling whatever piles up
+    int gatherers = 0;    // rear troops cutting timber and quarrying stone
+    int idle = 0;         // rear troops and trucks with nothing to do
+    std::array<bool, engine::kResourceCount> depot{};  // a finished depot of ours takes it from trucks
+};
+
+Logistics logistics_of(const engine::World& world, engine::PlayerId player) {
+    Logistics l;
+    for (const engine::Unit& u : world.units()) {
+        if (u.owner != player) continue;
+        if (engine::idle_hand(u)) ++l.idle;
+        if (u.order == engine::Order::Gather) ++l.gatherers;
+        if (u.type != engine::UnitTypeId::Truck || u.order != engine::Order::Haul) continue;
+        if (u.haul_cargo == engine::Resource::Count) {
+            ++l.auto_trucks;
+        } else {
+            ++l.trucks[static_cast<size_t>(u.haul_cargo)];
+        }
+    }
+    for (const engine::Structure& s : world.structures()) {
+        if (s.owner != player || !s.built) continue;
+        if (const auto cargo = engine::depot_cargo(s.type)) l.depot[static_cast<size_t>(*cargo)] = true;
+    }
+    return l;
+}
+
+// Tiny icons drawn with lines, AoE-style: a truck, a railway wagon, a man.
+void draw_truck_icon(float x, float y, Color c) {
+    DrawRectangleRec({x, y + 3, 9, 5}, c);
+    DrawRectangleRec({x + 9, y + 4, 4, 4}, c);
+    DrawCircleV({x + 3, y + 9}, 1.5f, c);
+    DrawCircleV({x + 10, y + 9}, 1.5f, c);
+}
+
+void draw_wagon_icon(float x, float y, Color c) {
+    DrawRectangleLinesEx({x, y + 2, 12, 6}, 1.0f, c);
+    DrawCircleV({x + 3, y + 9}, 1.5f, c);
+    DrawCircleV({x + 9, y + 9}, 1.5f, c);
+}
+
+void draw_man_icon(float x, float y, Color c) {
+    DrawCircleV({x + 4, y + 2}, 2.0f, c);
+    DrawRectangleRec({x + 2, y + 5, 4, 6}, c);
+}
+
+// A few lines of explanation in a box under the top bar.
+void draw_note(std::span<const char* const> lines, float x, float y) {
+    float w = 0;
+    for (const char* line : lines) w = std::max(w, static_cast<float>(MeasureText(line, kCardFontSize)));
+    const float h = 10.0f + 20.0f * static_cast<float>(lines.size());
+    x = std::clamp(x, 4.0f, static_cast<float>(GetScreenWidth()) - w - 20);
+    draw_panel({x, y, w + 16, h});
+    for (size_t i = 0; i < lines.size(); ++i) {
+        draw_text(lines[i], x + 8, y + 7 + 20.0f * static_cast<float>(i), kCardFontSize,
+                  i == 0 ? theme::kText : theme::kTextDim);
+    }
+}
+
+}  // namespace
+
 void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectangle area) const {
     DrawRectangleRec(area, theme::kPanel);
     DrawLineV({area.x, area.y + area.height}, {area.x + area.width, area.y + area.height}, theme::kPanelBorder);
 
     const float y = area.y + (area.height - kSmallFontSize) * 0.5f;
     float x = area.x + kPadding;
+    const Vector2 mouse = GetMousePosition();
 
-    // Our stockpile first: it's what the player looks at most.
+    // Our stockpile first: it's what the player looks at most. Next to each
+    // resource: the freight waiting for it at the station and the trucks on
+    // it, or the rear troops gathering materials. Hover for the details.
     const engine::Stock& stock = world.stock(state.local_player);
+    const Logistics logistics = logistics_of(world, state.local_player);
+    const engine::Structure* station = world.station_of(state.local_player);
+    std::array<const char*, 4> note{};
+    size_t note_lines = 0;
     for (size_t r = 0; r < engine::kResourceCount; ++r) {
-        const char* name = engine::resource_name(static_cast<engine::Resource>(r));
+        const auto resource = static_cast<engine::Resource>(r);
+        const float start = x;
+        const char* name = engine::resource_name(resource);
         draw_text(name, x, y, kSmallFontSize, theme::kTextDim);
         x += static_cast<float>(MeasureText(name, kSmallFontSize)) + 6;
         const char* amount = TextFormat("%d", stock[r]);
         draw_text(amount, x, y, kSmallFontSize, theme::kText);
-        x += static_cast<float>(MeasureText(amount, kSmallFontSize)) + 18;
+        x += static_cast<float>(MeasureText(amount, kSmallFontSize)) + 8;
+
+        const bool by_truck = engine::depot_for(resource).has_value();
+        const int waiting = station && by_truck ? station->cargo[r] : 0;
+        const int trucks = logistics.trucks[r];
+        if (by_truck) {
+            // Piling up with nobody to haul it: amber; with no depot to take it: red.
+            Color c = theme::kTextDim;
+            if (waiting > 0 && !logistics.depot[r]) {
+                c = theme::kDanger;
+            } else if (waiting >= 3 * engine::kTruckCapacity && trucks == 0 && logistics.auto_trucks == 0) {
+                c = theme::kWarning;
+            }
+            draw_wagon_icon(x, y + 3, c);
+            x += 15;
+            const char* at_station = TextFormat("%d", waiting);
+            draw_text(at_station, x, y, kSmallFontSize, c);
+            x += static_cast<float>(MeasureText(at_station, kSmallFontSize)) + 6;
+            draw_truck_icon(x, y + 3, theme::kTextDim);
+            x += 16;
+            const char* on_it = TextFormat("%d", trucks);
+            draw_text(on_it, x, y, kSmallFontSize, theme::kTextDim);
+            x += static_cast<float>(MeasureText(on_it, kSmallFontSize));
+        } else if (resource == engine::Resource::Materials) {
+            draw_man_icon(x, y + 2, theme::kTextDim);
+            x += 11;
+            const char* gathering = TextFormat("%d", logistics.gatherers);
+            draw_text(gathering, x, y, kSmallFontSize, theme::kTextDim);
+            x += static_cast<float>(MeasureText(gathering, kSmallFontSize));
+        }
+        if (CheckCollisionPointRec(mouse, {start, area.y, x - start, area.height})) {
+            note[0] = TextFormat("%s: %d in stock", name, stock[r]);
+            note_lines = 1;
+            if (resource == engine::Resource::Personnel) {
+                note[note_lines++] = TextFormat("+%d with every train: look after the men",
+                                                engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)]);
+            } else if (resource == engine::Resource::Materials) {
+                note[note_lines++] = TextFormat("Rear troops cutting timber or quarrying stone: %d", logistics.gatherers);
+                note[note_lines++] = "They carry it to the headquarters or a warehouse";
+            } else {
+                const char* depot = engine::structure_type(*engine::depot_for(resource)).name;
+                note[note_lines++] = TextFormat("Waiting at the station: %d. Trucks on it: %d (on auto: %d)", waiting,
+                                                trucks, logistics.auto_trucks);
+                note[note_lines++] = logistics.depot[r]
+                                         ? TextFormat("Trucks take it to the %s", depot)
+                                         : TextFormat("No %s: trucks can't take it anywhere!", depot);
+            }
+        }
+        x += 18;
     }
+
+    // Trucks left to haul whatever piles up; the idle ones, a click away.
+    if (logistics.auto_trucks > 0) {
+        draw_truck_icon(x, y + 3, theme::kTextDim);
+        x += 16;
+        const char* auto_trucks = TextFormat("auto %d", logistics.auto_trucks);
+        draw_text(auto_trucks, x, y, kSmallFontSize, theme::kTextDim);
+        x += static_cast<float>(MeasureText(auto_trucks, kSmallFontSize)) + 18;
+    }
+    const char* idle = TextFormat("Idle %d", logistics.idle);
+    idle_rect_ = {x - 4, area.y + 3, static_cast<float>(MeasureText(idle, kSmallFontSize)) + 8, area.height - 6};
+    if (logistics.idle > 0) DrawRectangleRec(idle_rect_, ColorAlpha(theme::kWarning, 0.25f));
+    draw_text(idle, x, y, kSmallFontSize, logistics.idle > 0 ? theme::kWarning : theme::kTextDim);
+    if (CheckCollisionPointRec(mouse, idle_rect_)) {
+        note[0] = TextFormat("Rear troops and trucks with nothing to do: %d", logistics.idle);
+        note[1] = "Click, or press '.', to pick them one by one";
+        note_lines = 2;
+    }
+    x += idle_rect_.width + 18;
     // Men and freight only come by rail.
     const char* train = "No station: no trains";
     Color train_color = theme::kDanger;
-    if (const engine::Structure* station = world.station_of(state.local_player)) {
+    if (station) {
         train = TextFormat("Train in %ds (+%d men)", seconds_until(world, station->next_train),
                            engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)]);
         train_color = theme::kTextDim;
@@ -288,23 +430,25 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
     draw_text(train, x, y, kSmallFontSize, train_color);
     x += static_cast<float>(MeasureText(train, kSmallFontSize)) + 30;
 
-    // Debug and network details, smaller.
+    // Debug and network details, smaller, as far as they fit before the checksum.
     constexpr int kTiny = 14;
     const float ty = area.y + (area.height - kTiny) * 0.5f;
-    const char* stats = TextFormat("Tick %u  FPS %d  Delay %u", world.tick(), GetFPS(), state.net.input_delay);
-    draw_text(stats, x, ty, kTiny, theme::kTextDim);
-    x += static_cast<float>(MeasureText(stats, kTiny));
-    if (state.net.online) {
-        const char* online = TextFormat("  Ping %d ms  ", state.net.ping_ms);
-        draw_text(online, x, ty, kTiny, theme::kTextDim);
-        x += static_cast<float>(MeasureText(online, kTiny));
-        draw_text(TextFormat("You: Player %d", state.local_player + 1), x, ty, kTiny,
-                  theme::player_color(state.local_player));
-    }
-
     const char* checksum = TextFormat("%016llX", static_cast<unsigned long long>(world.checksum()));
     const float w = static_cast<float>(MeasureText(checksum, kTiny));
     draw_text(checksum, area.x + area.width - w - kPadding, ty, kTiny, theme::kTextDim);
+    const float right = area.x + area.width - w - kPadding - 12;
+    auto put = [&](const char* text, Color color) {
+        const float tw = static_cast<float>(MeasureText(text, kTiny));
+        if (x + tw > right) return;
+        draw_text(text, x, ty, kTiny, color);
+        x += tw;
+    };
+    if (state.net.online) {
+        put(TextFormat("You: Player %d  ", state.local_player + 1), theme::player_color(state.local_player));
+        put(TextFormat("Ping %d ms  ", state.net.ping_ms), theme::kTextDim);
+    }
+    put(TextFormat("Tick %u  FPS %d  Delay %u", world.tick(), GetFPS(), state.net.input_delay), theme::kTextDim);
+    if (note_lines > 0) draw_note({note.data(), note_lines}, mouse.x - 40, area.y + area.height + 4);
 }
 
 void Hud::draw_banner(const NetStatus& net) const {
@@ -428,6 +572,24 @@ void Hud::draw_tooltip(const CommandButton& b, const engine::Stock& stock) const
     }
 }
 
+namespace {
+
+// A depot's card: the trucks bringing its freight here.
+void draw_depot_trucks(const engine::World& world, const engine::Structure& s, float y, Rectangle area) {
+    const std::optional<engine::Resource> cargo = engine::depot_cargo(s.type);
+    if (!cargo || !s.built) return;
+    int here = 0;
+    for (const engine::Unit& u : world.units()) {
+        if (u.owner != s.owner || u.type != engine::UnitTypeId::Truck || u.order != engine::Order::Haul) continue;
+        if (u.haul_cargo == *cargo && world.haul_destination(u, *cargo) == &s) ++here;
+    }
+    draw_text(TextFormat("Trucks bringing %s here: %d. RMB with trucks: assign them to this depot.",
+                         engine::resource_name(*cargo), here),
+              area.x, y, kCardFontSize, here > 0 ? theme::kText : theme::kWarning);
+}
+
+}  // namespace
+
 void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
     const engine::StructureDef& def = engine::structure_type(s.type);
     if (s.research != engine::UpgradeId::Count) {
@@ -480,10 +642,12 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Takes food from trucks, materials from rear troops.", area.x, line2, kCardFontSize,
                       theme::kTextDim);
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_depot_trucks(world, s, line4, area);
             return;
         case engine::StructureType::AmmoDepot:
             draw_text("Takes ammunition from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text("Rear troops standing by unload trucks faster.", area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_depot_trucks(world, s, line4, area);
             return;
         case engine::StructureType::Trench:
             draw_text(TextFormat("At a position (standing %d s): %d%% of hits taken by the walls.",
@@ -549,6 +713,7 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Takes fuel from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text(TextFormat("Burns if destroyed: %d%% of the fuel is lost.", engine::kFuelDepotLossPercent),
                       area.x, line3, kCardFontSize, theme::kWarning);
+            draw_depot_trucks(world, s, line4, area);
             return;
         default: break;
     }
@@ -625,6 +790,37 @@ void Hud::draw_selection(const engine::World& world, const HudState& state, Rect
         draw_hp_bar(*u, {x + 3, y + kIconH - 7, kIconW - 6, 3});
     }
 }
+
+namespace {
+
+// A supply truck's assignment, and what holds it up if anything.
+std::pair<const char*, Color> truck_status(const engine::World& world, const engine::Unit& u) {
+    if (u.order != engine::Order::Haul) return {"Off the supply run: Q-R put it back on", theme::kWarning};
+    const engine::Structure* station = world.station_of(u.owner);
+    if (!station) return {"No station: no freight comes", theme::kDanger};
+    if (u.haul_cargo == engine::Resource::Count) {
+        bool any = false;
+        for (engine::Resource r : {engine::Resource::Food, engine::Resource::Ammo, engine::Resource::Fuel}) {
+            any = any || (station->cargo[static_cast<size_t>(r)] > 0 && world.haul_destination(u, r));
+        }
+        return {u.carrying > 0 || any ? "Hauls whatever piles up at the station"
+                                      : "Hauls whatever piles up: nothing to take now, waiting for a train",
+                theme::kTextDim};
+    }
+    const engine::Resource r = u.haul_cargo;
+    const char* depot_name = engine::structure_type(*engine::depot_for(r)).name;
+    const engine::Structure* depot = world.haul_destination(u, r);
+    if (!depot) return {TextFormat("Hauls %s: no %s to take it to!", engine::resource_name(r), depot_name), theme::kDanger};
+    const char* where = depot->id == u.haul_depot ? "its" : "the nearest";
+    if (u.carrying == 0 && station->cargo[static_cast<size_t>(r)] <= 0) {
+        return {TextFormat("Hauls %s to %s %s: none at the station, waiting for a train", engine::resource_name(r), where,
+                           depot_name),
+                theme::kTextDim};
+    }
+    return {TextFormat("Hauls %s to %s %s", engine::resource_name(r), where, depot_name), theme::kTextDim};
+}
+
+}  // namespace
 
 void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rectangle area) const {
     const engine::UnitTypeDef& def = engine::unit_type(u.type);
@@ -758,6 +954,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                             thirsty && armed ? "    " : "",
                             armed ? TextFormat("Rounds %d / %d", u.rounds, def.rounds_capacity) : "");
         if ((thirsty && u.fuel.raw <= 0) || (armed && u.rounds <= 0)) supply_color = theme::kDanger;
+    } else if (u.type == engine::UnitTypeId::Truck) {
+        std::tie(supply, supply_color) = truck_status(world, u);
     } else if (def.supplies != engine::Resource::Count) {
         supply = TextFormat("Aboard: %d / %d %s. Serves our vehicles within %d tiles.", u.carrying,
                             def.cargo_capacity, engine::resource_name(def.supplies),

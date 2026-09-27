@@ -61,6 +61,11 @@ inline constexpr Tick kTrainApproachTicks = 8 * kTicksPerSecond;
 inline constexpr Tick kTrainStayTicks = 5 * kTicksPerSecond;
 
 // --- Trucks ---
+// What a Haul command tells trucks to carry: nothing new (each keeps its
+// assignment), whatever piles up at the station, or one kind of freight.
+inline constexpr uint8_t kHaulKeep = 0;
+inline constexpr uint8_t kHaulAuto = 0xFF;
+inline constexpr uint8_t haul_code(Resource r) { return static_cast<uint8_t>(static_cast<uint8_t>(r) + 1); }
 inline constexpr int32_t kTruckCapacity = 40;
 inline constexpr Tick kTruckLoadTicks = 2 * kTicksPerSecond;
 // Unloading: the driver alone manages one unit a second; every rear trooper

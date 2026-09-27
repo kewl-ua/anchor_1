@@ -25,7 +25,8 @@ enum class CommandType : uint8_t {
     Retrain,       // rear troops: go to the headquarters and come out as riflemen
     Build,         // rear troops: put up a building (structure_type at target) or help
                    // finish one (target_unit)
-    Haul,          // supply trucks: run between the station and the depots
+    Haul,          // supply trucks: run between the station and the depots; a depot
+                   // (target_unit) or a `cargo` assigns them
     Observe,       // scouts: hold an observation post watching the sector towards `target`
     Ability,       // use a skill (`ability`) at `target` (a line: to `target_end`)
     Upgrade,       // a foxhole (target_unit) is dug out into a dugout
@@ -46,6 +47,7 @@ struct Command {
     uint8_t ability = 0;         // Ability: an AbilityId
     FixedVec2 target_end{};      // Ability along a line: its other end
     uint8_t upgrade = 0;         // Research: an UpgradeId
+    uint8_t cargo = 0;           // Haul: kHaulKeep, kHaulAuto or haul_code(Resource) (economy.h)
 };
 
 }  // namespace engine

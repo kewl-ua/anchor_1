@@ -1252,6 +1252,8 @@ uint64_t World::checksum() const {
         mix(u.perfect_burst ? 1 : 0);
         mix(u.silent ? 1 : 0);
         mix(u.airborne ? 1 : 0);
+        mix(static_cast<uint8_t>(u.haul_cargo));
+        mix(u.haul_depot);
     }
     for (const Courier& c : couriers_) {
         mix(c.arrives);
@@ -1265,6 +1267,7 @@ uint64_t World::checksum() const {
         mix(c.cmd.ability);
         mix_vec(c.cmd.target_end);
         mix(c.cmd.upgrade);
+        mix(c.cmd.cargo);
     }
     for (const Mine& m : mines_) {
         mix(m.id);

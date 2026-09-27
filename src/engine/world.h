@@ -286,6 +286,12 @@ struct Unit {
     bool camouflaged = false;  // under nets: hidden like in a forest until it moves
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
 
+    // A supply truck's assignment: the freight it hauls (Count: whatever
+    // piles up most at the station) and the depot it takes it to (0: the
+    // nearest one for it).
+    Resource haul_cargo = Resource::Count;
+    EntityId haul_depot = 0;
+
     bool silent = false;  // radio silence: no bearings on it, orders by courier
     bool airborne = false;  // an aircraft in the air: only air defence reaches it
 };
@@ -328,6 +334,12 @@ struct Impact {
 inline const WeaponDef& weapon_of(const Unit& u) {
     const UnitTypeDef& def = unit_type(u.type);
     return u.round_type == 1 && def.alt_weapon.damage > 0 ? def.alt_weapon : def.weapon;
+}
+
+// Rear troops and supply trucks with nothing to do: AoE's idle villagers.
+inline bool idle_hand(const Unit& u) {
+    const UnitTypeDef& def = unit_type(u.type);
+    return u.order == Order::Idle && !u.inside && (def.worker || u.type == UnitTypeId::Truck);
 }
 
 // The complete game state.
@@ -373,6 +385,11 @@ public:
     void set_stock(PlayerId player, const Stock& stock) { stock_[player % kMaxPlayers] = stock; }
     // A player's railway station (the first one), if it still stands.
     const Structure* station_of(PlayerId player) const;
+    // The nearest finished building of this type of `owner`'s.
+    const Structure* nearest_owned(PlayerId owner, StructureType type, FixedVec2 from) const;
+    // Where a truck takes a load of `cargo`: its own depot if it's assigned
+    // one for that freight and it stands, otherwise the nearest.
+    const Structure* haul_destination(const Unit& truck, Resource cargo) const;
     // Open ground a trench, foxhole or parapet can go on.
     bool diggable(TilePos t) const;
     // Mines and charges. A player sees his own mines and the ones his sappers found.
@@ -482,7 +499,6 @@ private:
     void update_production();
     void update_trains();
     void burn_fuel_depot(const Structure& depot);
-    const Structure* nearest_owned(PlayerId owner, StructureType type, FixedVec2 from) const;
     const Structure* nearest_headquarters(PlayerId owner, FixedVec2 from) const;
     // The nearest finished building of `owner` that takes in materials.
     const Structure* nearest_drop_off(PlayerId owner, FixedVec2 from) const;

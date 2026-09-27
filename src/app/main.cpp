@@ -125,6 +125,41 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return Vector2{(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
     }
 
+    if (options.scene == "trucks" && options.mode == Options::Mode::Offline) {
+        // Offline: a warehouse and an ammunition depot by the station, freight
+        // waiting on it, and three supply trucks: one on food, one assigned to
+        // the ammunition depot, one on auto. The food truck stays selected.
+        const engine::Structure* station = world.station_of(me);
+        if (!station) return std::nullopt;
+        engine::World& w = game.world_for_setup();
+        const engine::TilePos s = engine::tile_of(station->center);
+        const int32_t step = me == 0 ? 1 : -1;
+        auto place = [&](engine::StructureType type) {
+            for (int32_t r = 4; r < 30; ++r) {
+                for (int32_t side = -r; side <= r; side += 2) {
+                    const engine::TilePos o{s.x + side, s.y + r * step};
+                    if (w.can_place(type, o)) return w.place_structure(type, me, o, 2, 2);
+                }
+            }
+            return engine::EntityId{0};
+        };
+        place(engine::StructureType::Warehouse);
+        const engine::EntityId ammo = place(engine::StructureType::AmmoDepot);
+        w.structure_for_setup(station->id)->cargo = {0, 160, 0, 120, 90};
+        std::vector<engine::EntityId> trucks;
+        for (int i = 0; i < 3; ++i) {
+            trucks.push_back(w.spawn_unit(me, engine::UnitTypeId::Truck,
+                                          {station->center.x + engine::Fixed::from_int(i * 2 - 2),
+                                           station->center.y + engine::Fixed::from_int(3 * step)}));
+        }
+        game.submit({.type = engine::CommandType::Haul, .units = {trucks[0]},
+                     .cargo = engine::haul_code(engine::Resource::Food)});
+        game.submit({.type = engine::CommandType::Haul, .units = {trucks[1]}, .target_unit = ammo});
+        game.submit({.type = engine::CommandType::Haul, .units = {trucks[2]}, .cargo = engine::kHaulAuto});
+        game.select_units({trucks[0]});
+        return render::to_vector2(station->center);
+    }
+
     if (options.scene == "recon") {
         // The two scouts take up observation posts watching towards the
         // enemy; the sectors show while they are selected.

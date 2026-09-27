@@ -138,6 +138,16 @@ inline std::optional<StructureType> depot_for(Resource r) {
     }
 }
 
+// What a depot takes in from trucks, the other way round.
+inline std::optional<Resource> depot_cargo(StructureType t) {
+    switch (t) {
+        case StructureType::Warehouse: return Resource::Food;
+        case StructureType::AmmoDepot: return Resource::Ammo;
+        case StructureType::FuelDepot: return Resource::Fuel;
+        default: return std::nullopt;
+    }
+}
+
 // Squared distance from a point to the nearest tile of a structure (0 inside it).
 // Field works: passable ground that gives cover.
 inline bool is_fieldwork(StructureType t) {

@@ -78,6 +78,10 @@ public:
     std::optional<Vector2> minimap_to_ground(Vector2 screen_pos) const;
     // Which cell of the command grid is under the point.
     std::optional<size_t> button_at(Vector2 screen_pos) const;
+    // Whether the point is on the top bar's idle rear troops and trucks button.
+    bool idle_button_at(Vector2 screen_pos) const {
+        return idle_rect_.width > 0 && CheckCollisionPointRec(screen_pos, idle_rect_);
+    }
 
 private:
     struct Layout {
@@ -106,6 +110,7 @@ private:
     // Ground (tiles) <-> minimap-local pixels, for the cached map size.
     Vector2 ground_to_minimap(Vector2 ground, Rectangle minimap) const;
 
+    mutable Rectangle idle_rect_{};  // where draw_top_bar put the idle button
     Texture2D minimap_texture_{};
     int32_t map_width_ = 0;
     int32_t map_height_ = 0;

@@ -87,6 +87,12 @@ void Game::update(float dt) {
         if (auto ground = hud_.minimap_to_ground(mouse)) center_camera_on(*ground);
     }
 
+    // The idle rear troops and trucks, one by one: the '.' key or the top bar button.
+    const bool idle_click = IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && hud_.idle_button_at(mouse);
+    if ((IsKeyPressed(KEY_PERIOD) || idle_click) && controller_.select_next_idle(sim_.world())) {
+        center_camera_on_selection();
+    }
+
     controller_.update(sim_.world(), lockstep_, camera_, hud_, renderer_, alpha_);
     renderer_.update(sim_.world(), scaled);
     hud_.update(sim_.world(), lockstep_.local_player(), reveal_);

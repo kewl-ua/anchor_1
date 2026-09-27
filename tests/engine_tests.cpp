@@ -1300,6 +1300,12 @@ Simulation economy_sim(const Stock& stock, bool forest_strip = true) {
 
 int32_t stock_of(const Simulation& sim, Resource r) { return sim.world().stock(0)[static_cast<size_t>(r)]; }
 
+// The depot of ours a truck standing at `pos` is unloading at.
+EntityId nearest_depot_id(const Simulation& sim, FixedVec2 pos) {
+    const Structure* s = sim.world().nearest_owned(0, StructureType::AmmoDepot, pos);
+    return s ? s->id : 0;
+}
+
 std::vector<EntityId> spawn_workers(Simulation& sim, int count, int32_t x, int32_t y) {
     std::vector<EntityId> ids;
     for (int i = 0; i < count; ++i) ids.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Worker, at(x, y + i)));
@@ -1566,6 +1572,112 @@ int haul_one_load(int helpers) {
 void test_trucks_haul_freight_to_depots() {
     const int ticks = haul_one_load(0);
     CHECK(ticks < 3000);
+}
+
+Command haul_cargo(std::vector<EntityId> trucks, uint8_t cargo, EntityId depot = 0) {
+    Command c = haul(std::move(trucks));
+    c.cargo = cargo;
+    c.target_unit = depot;
+    return c;
+}
+
+// What a truck takes on at the station after the first train: on auto
+// whatever there's most of (food), assigned a freight only that one, and
+// with no depot for its freight nothing at all.
+void test_trucks_haul_what_they_are_told() {
+    auto first_load = [](std::vector<Command> orders) {
+        Simulation sim = logistics_sim({});
+        World& w = sim.world_for_setup();
+        w.place_structure(StructureType::Warehouse, 0, {20, 12}, 2, 2);
+        w.place_structure(StructureType::AmmoDepot, 0, {24, 12}, 2, 2);
+        const EntityId truck = w.spawn_unit(0, UnitTypeId::Truck, at(22, 8));
+        for (Command& c : orders) {
+            c.units = {truck};
+            issue(sim, c);
+            sim.step();
+        }
+        for (Tick i = 0; i <= kTrainInterval + 200 && sim.world().find_unit(truck)->carrying == 0; ++i) sim.step();
+        const Unit* u = sim.world().find_unit(truck);
+        return u->carrying > 0 ? u->carrying_type : Resource::Count;
+    };
+    CHECK(first_load({haul_cargo({}, kHaulAuto)}) == Resource::Food);
+    CHECK(first_load({haul_cargo({}, haul_code(Resource::Ammo))}) == Resource::Ammo);
+    CHECK(first_load({haul_cargo({}, haul_code(Resource::Fuel))}) == Resource::Count);  // no fuel depot
+    // Back on the run as it was (the station, or no cargo given); auto again.
+    CHECK(first_load({haul_cargo({}, haul_code(Resource::Ammo)), haul_cargo({}, kHaulKeep)}) == Resource::Ammo);
+    CHECK(first_load({haul_cargo({}, haul_code(Resource::Ammo)), haul_cargo({}, kHaulAuto)}) == Resource::Food);
+    // Nobody hauls men or materials by truck.
+    CHECK(first_load({haul_cargo({}, haul_code(Resource::Ammo)), haul_cargo({}, haul_code(Resource::Materials))}) ==
+          Resource::Ammo);
+}
+
+// Sent to a depot of ours, a truck hauls its freight there, not to a nearer
+// one; if that depot goes, to the nearest again. The enemy's depots and our
+// unfinished ones don't count.
+void test_trucks_assigned_to_a_depot() {
+    Simulation sim = logistics_sim({});
+    World& w = sim.world_for_setup();
+    const EntityId near = w.place_structure(StructureType::AmmoDepot, 0, {24, 8}, 2, 2);
+    const EntityId far = w.place_structure(StructureType::AmmoDepot, 0, {34, 20}, 2, 2);
+    const EntityId enemy = w.place_structure(StructureType::Warehouse, 1, {10, 20}, 2, 2);
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::Truck, at(22, 6));
+    const EntityId other = w.spawn_unit(0, UnitTypeId::Truck, at(22, 5));
+    issue(sim, haul_cargo({truck}, kHaulKeep, far));
+    issue(sim, haul_cargo({other}, haul_code(Resource::Ammo)));
+    sim.step();
+    issue(sim, haul_cargo({truck}, kHaulKeep, enemy));  // not ours: nothing changes
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(truck)->haul_cargo == Resource::Ammo && sim.world().find_unit(truck)->haul_depot == far);
+
+    // Where each one unloads its first load.
+    auto unloads_at = [&](EntityId id) {
+        for (Tick i = 0; i < kTrainInterval + 3000; ++i) {
+            const int32_t before = sim.world().find_unit(id)->carrying;
+            sim.step();
+            const Unit* u = sim.world().find_unit(id);
+            if (before > 0 && u->carrying < before && u->carrying_type == Resource::Ammo) {
+                return nearest_depot_id(sim, u->pos);
+            }
+        }
+        return EntityId{0};
+    };
+    CHECK(unloads_at(truck) == far);
+    CHECK(unloads_at(other) == near);
+
+    sim.world_for_setup().structure_for_setup(far)->hp = 0;
+    sim.step();
+    for (int i = 0; i < 3000 && sim.world().find_unit(truck)->carrying > 0; ++i) sim.step();
+    CHECK(unloads_at(truck) == near);
+
+    // Assigned to the ammunition depot with food aboard: the food still goes
+    // to the warehouse.
+    Simulation food = logistics_sim({});
+    World& fw = food.world_for_setup();
+    const EntityId warehouse = fw.place_structure(StructureType::Warehouse, 0, {10, 18}, 2, 2);
+    const EntityId depot = fw.place_structure(StructureType::AmmoDepot, 0, {34, 18}, 2, 2);
+    const EntityId loaded = fw.spawn_unit(0, UnitTypeId::Truck, at(22, 6));
+    issue(food, haul_cargo({loaded}, haul_code(Resource::Food)));
+    for (Tick i = 0; i < kTrainInterval + 400 && food.world().find_unit(loaded)->carrying == 0; ++i) food.step();
+    CHECK(food.world().find_unit(loaded)->carrying_type == Resource::Food);
+    issue(food, haul_cargo({loaded}, kHaulKeep, depot));
+    for (int i = 0; i < 3000 && food.world().find_unit(loaded)->carrying == kTruckCapacity; ++i) food.step();
+    const FixedVec2 unloading = food.world().find_unit(loaded)->pos;
+    CHECK((unloading - food.world().find_structure(warehouse)->center).length() < Fixed::from_int(3));
+    CHECK(food.world().find_unit(loaded)->haul_depot == depot);
+}
+
+// Rear troops and trucks with nothing to do are idle; on the supply run or at work they aren't.
+void test_idle_hands() {
+    Simulation sim = logistics_sim({});
+    World& w = sim.world_for_setup();
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::Truck, at(22, 8));
+    const EntityId worker = w.spawn_unit(0, UnitTypeId::Worker, at(20, 12));
+    const EntityId rifle = w.spawn_unit(0, UnitTypeId::Rifleman, at(20, 14));
+    CHECK(idle_hand(*sim.world().find_unit(truck)) && idle_hand(*sim.world().find_unit(worker)));
+    CHECK(!idle_hand(*sim.world().find_unit(rifle)));
+    issue(sim, haul({truck}));
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(!idle_hand(*sim.world().find_unit(truck)));
 }
 
 // The driver alone unloads at a crawl; rear troops by the depot make it quick.
@@ -3090,6 +3202,9 @@ int main() {
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();
     test_trucks_haul_freight_to_depots();
+    test_trucks_haul_what_they_are_told();
+    test_trucks_assigned_to_a_depot();
+    test_idle_hands();
     test_rear_troops_unload_faster();
     test_no_trains_without_the_station();
     test_fuel_depot_burns();

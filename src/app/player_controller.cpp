@@ -150,8 +150,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 renderer.add_order_ping(ground, false);
             } else if (structure && structure->owner == player_ && is_supply_point(structure->type) &&
                        has_trucks(world)) {
-                // Trucks go back on the supply run; anyone else selected just goes there.
-                order_haul(lockstep, world, renderer, ground);
+                // Trucks go back on the supply run (to this depot); anyone else selected just goes there.
+                order_haul(lockstep, world, renderer, ground, structure->id);
             } else if (structure && engine::is_shelter(structure->type)) {
                 // Our infantry moves in; a house or dugout the enemy holds gets shelled.
                 if (structure->owner == engine::kNoOwner || structure->owner == player_) {
@@ -301,7 +301,35 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         retrain[static_cast<size_t>(engine::Resource::Ammo)] = 20;
         put(1, Action::Retrain, 0, "Retrain", "Retrain as riflemen at the headquarters", retrain);
     }
-    if (*lead == engine::UnitTypeId::Truck) put(0, Action::Haul, 0, "Supply run", "Back on the supply run");
+    if (*lead == engine::UnitTypeId::Truck) {
+        // What the trucks haul: whatever piles up at the station, or one kind of freight.
+        struct Choice {
+            uint8_t code;
+            const char* label;
+            const char* tooltip;
+        };
+        static constexpr Choice kChoices[] = {
+            {engine::kHaulAuto, "Auto", "Haul whatever piles up most at the station, to the nearest depot for it"},
+            {engine::haul_code(engine::Resource::Food), "Food",
+             "Haul food: station -> nearest warehouse (RMB on a warehouse: to that one)"},
+            {engine::haul_code(engine::Resource::Ammo), "Ammo",
+             "Haul ammunition: station -> nearest ammo depot (RMB on one: to that one)"},
+            {engine::haul_code(engine::Resource::Fuel), "Fuel",
+             "Haul fuel: station -> nearest fuel depot (RMB on one: to that one)"},
+        };
+        for (size_t i = 0; i < std::size(kChoices); ++i) {
+            // Lit when every selected truck hauls it.
+            bool all = true;
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (!u || u->type != engine::UnitTypeId::Truck) continue;
+                const uint8_t code = u->haul_cargo == engine::Resource::Count ? engine::kHaulAuto
+                                                                              : engine::haul_code(u->haul_cargo);
+                all = all && u->order == engine::Order::Haul && code == kChoices[i].code;
+            }
+            put(i, Action::Haul, kChoices[i].code, kChoices[i].label, kChoices[i].tooltip).active = all;
+        }
+    }
     if (def.sector_range.raw > 0) {
         put(0, Action::Observe, 0, "Observe", "Observation post: watch a sector, holding fire").active =
             targeting_ == Targeting::Observe;
@@ -397,7 +425,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             break;
         }
         case Action::Haul: {
-            engine::Command haul{.type = engine::CommandType::Haul};
+            engine::Command haul{.type = engine::CommandType::Haul, .cargo = cell.param};
             for (engine::EntityId id : selection_) {
                 const engine::Unit* u = world.find_unit(id);
                 if (u && u->type == engine::UnitTypeId::Truck) haul.units.push_back(id);
@@ -477,6 +505,19 @@ void PlayerController::select_army(const engine::World& world) {
     }
 }
 
+bool PlayerController::select_next_idle(const engine::World& world) {
+    std::vector<engine::EntityId> idle;
+    for (const engine::Unit& u : world.units()) {
+        if (u.owner == player_ && engine::idle_hand(u)) idle.push_back(u.id);  // in id order
+    }
+    if (idle.empty()) return false;
+    const auto next = std::upper_bound(idle.begin(), idle.end(), last_idle_);
+    last_idle_ = next == idle.end() ? idle.front() : *next;
+    select_units({last_idle_});
+    targeting_ = Targeting::None;
+    return true;
+}
+
 bool PlayerController::has_trucks(const engine::World& world) const {
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
@@ -512,9 +553,10 @@ bool PlayerController::is_supply_point(engine::StructureType type) {
 }
 
 void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& world,
-                                  render::WorldRenderer& renderer, Vector2 ground) {
+                                  render::WorldRenderer& renderer, Vector2 ground, engine::EntityId structure) {
     engine::Command haul;
     haul.type = engine::CommandType::Haul;
+    haul.target_unit = structure;  // a depot assigns them to it; the station keeps what they haul
     engine::Command move;
     move.type = engine::CommandType::Move;
     move.target = render::to_fixed_vec2(ground);
