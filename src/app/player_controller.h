@@ -101,6 +101,11 @@ private:
     bool has_trucks(const engine::World& world) const;
     engine::EntityId last_idle_ = 0;
     bool has_engineers(const engine::World& world) const;
+    bool has_service_vehicles(const engine::World& world) const;
+    // Tankers and ammunition trucks in the selection are attached to `unit`;
+    // the rest go where it is.
+    void order_supply(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                      const engine::Unit& unit);
     // Where a supply truck loads or unloads.
     static bool is_supply_point(engine::StructureType type);
     // Where a tanker or an ammunition truck loads up, and whether any selected one does there.

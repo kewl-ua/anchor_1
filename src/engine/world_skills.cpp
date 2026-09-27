@@ -170,6 +170,13 @@ void World::apply_ability(const Command& cmd) {
             u->silent = !u->silent;  // whatever it was doing, it goes on doing
             continue;
         }
+        if (id == AbilityId::CallSupply) {
+            // Over the radio: with it off and no relay near, nobody hears.
+            if (!in_touch(*u)) continue;
+            call_supply(*u);
+            u->ability_ready[static_cast<size_t>(slot)] = tick_ + ability_def(id).cooldown;
+            continue;
+        }
         if (id == AbilityId::SwitchAmmo) {
             if (unit_type(u->type).alt_weapon.damage > 0) {
                 // The round in the breech has to come out: a full reload.
@@ -424,6 +431,7 @@ void World::update_ability(Unit& u) {
 
         case AbilityId::SwitchAmmo:
         case AbilityId::RadioSilence:
+        case AbilityId::CallSupply:
         case AbilityId::Count:
             break;
     }
@@ -433,22 +441,152 @@ void World::update_ability(Unit& u) {
 // Off to the depot for the kind of cargo this vehicle carries, and load up
 // from the stock until full (or the stock runs dry).
 void World::refill(Unit& u) {
+    if (!load_up(u)) finish_ability(u);
+}
+
+bool World::load_up(Unit& u) {
     const UnitTypeDef& def = unit_type(u.type);
+    if (def.supplies == Resource::Count) return false;
     const StructureType depot_type = def.supplies == Resource::Fuel ? StructureType::FuelDepot : StructureType::AmmoDepot;
     const Structure* depot = nearest_owned(u.owner, depot_type, u.pos);
     int32_t& stock = stock_[u.owner % kMaxPlayers][static_cast<size_t>(def.supplies)];
-    if (!depot || def.supplies == Resource::Count || u.carrying >= def.cargo_capacity || stock <= 0) {
-        return finish_ability(u);
-    }
+    if (!depot || u.carrying >= def.cargo_capacity || stock <= 0) return false;
     if (distance_sq_to(*depot, u.pos) > square_raw(Fixed::from_int(1))) {
         navigate(u, depot->center, u.order_path, map_.clamp_tile(tile_of(depot->center)), false);
-        return;
+        return true;
     }
-    if (++u.work < kRefillInterval) return;
+    if (++u.work < kRefillInterval) return true;
     u.work = 0;
     --stock;
     ++u.carrying;
     u.carrying_type = def.supplies;
+    return true;
+}
+
+namespace {
+
+// How much of a full tank or rack (per mille) `v` is short of, in the
+// cargo a service vehicle brings; 0 if it doesn't use that at all.
+int64_t missing(const Unit& v, Resource cargo) {
+    const UnitTypeDef& vd = unit_type(v.type);
+    if (vd.aircraft) return 0;  // rearmed at the airfield
+    if (cargo == Resource::Fuel && vd.fuel_capacity.raw > 0) {
+        return static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;
+    }
+    if (cargo == Resource::Ammo && vd.rounds_capacity > 0) {
+        return static_cast<int64_t>(vd.rounds_capacity - v.rounds) * 1000 / vd.rounds_capacity;
+    }
+    return 0;
+}
+
+bool uses(const Unit& v, Resource cargo) {
+    const UnitTypeDef& vd = unit_type(v.type);
+    if (vd.aircraft) return false;
+    return cargo == Resource::Fuel ? vd.fuel_capacity.raw > 0 : cargo == Resource::Ammo && vd.rounds_capacity > 0;
+}
+
+}  // namespace
+
+// Tankers and ammunition trucks attached to one unit of ours: they follow
+// it and keep it topped up, and fetch more from the depot when empty.
+void World::apply_supply(const Command& cmd) {
+    const Unit* v = find_unit(cmd.target_unit);
+    for (EntityId id : cmd.units) {
+        Unit* u = find_unit_mut(id);
+        if (!u || u->owner != cmd.player) continue;
+        const Resource cargo = unit_type(u->type).supplies;
+        if (cargo == Resource::Count || !v || v->owner != cmd.player || v->id == u->id || !uses(*v, cargo)) continue;
+        u->order = Order::Supply;
+        u->serves = v->id;
+        u->on_call = false;
+        u->order_path.reset();
+        u->chase_path.reset();
+        u->speed_cap = Fixed{};
+        u->engaged = 0;
+        u->work = 0;
+    }
+}
+
+// A call over the radio: for whatever it's short of, the nearest of our
+// tankers or ammunition trucks that is free (standing by, with something
+// aboard) comes over, unless one is already on its way or with it.
+void World::call_supply(const Unit& caller) {
+    for (const Resource cargo : {Resource::Fuel, Resource::Ammo}) {
+        if (missing(caller, cargo) <= 0) continue;
+        const bool looked_after = std::any_of(units_.begin(), units_.end(), [&](const Unit& o) {
+            return o.order == Order::Supply && o.serves == caller.id && unit_type(o.type).supplies == cargo;
+        });
+        if (looked_after) continue;
+        Unit* best = nullptr;
+        uint64_t best_sq = 0;
+        for (Unit& o : units_) {
+            if (o.owner != caller.owner || o.order != Order::Idle || o.inside || o.carrying <= 0) continue;
+            if (unit_type(o.type).supplies != cargo) continue;
+            const uint64_t d = (o.pos - caller.pos).length_sq_raw();
+            if (!best || d < best_sq) {
+                best = &o;
+                best_sq = d;
+            }
+        }
+        if (!best) continue;
+        best->order = Order::Supply;
+        best->serves = caller.id;
+        best->on_call = true;
+        best->order_path.reset();
+        best->chase_path.reset();
+        best->work = 0;
+    }
+}
+
+// On the job for one unit: top it up; answering a call, that's it, it's free
+// again where it stands. Attached, it stays close by (seeing to anyone else
+// nearby who needs it), and when it runs dry it goes for more, fills up and
+// comes back. With the unit gone, it's free.
+void World::update_supply(Unit& u) {
+    const Resource cargo = unit_type(u.type).supplies;
+    const Unit* v = find_unit(u.serves);
+    auto release = [&] {
+        u.order = Order::Idle;
+        u.serves = 0;
+        u.on_call = false;
+        u.order_path.reset();
+        u.chase_path.reset();
+        u.work = 0;
+    };
+    if (!v || cargo == Resource::Count) return release();
+    const StructureType depot_type = cargo == Resource::Fuel ? StructureType::FuelDepot : StructureType::AmmoDepot;
+    const Structure* depot = nearest_owned(u.owner, depot_type, u.pos);
+    const bool at_depot = depot && distance_sq_to(*depot, u.pos) <= square_raw(Fixed::from_int(1));
+    if (u.carrying <= 0 || (!u.on_call && at_depot && u.carrying < unit_type(u.type).cargo_capacity)) {
+        if (u.on_call) return release();
+        if (load_up(u)) return;  // off for more, or filling up
+    }
+    if (u.carrying > 0 && missing(*v, cargo) > 0) return hand_over(u, *v);
+    if (u.on_call) return release();
+    if ((v->pos - u.pos).length_sq_raw() > square_raw(kEscortDistance)) {
+        navigate(u, v->pos, u.chase_path, map_.clamp_tile(tile_of(v->pos)), false);
+        return;
+    }
+    serve(u);
+}
+
+void World::hand_over(Unit& u, const Unit& target) {
+    const bool fuel = unit_type(u.type).supplies == Resource::Fuel;
+    const Fixed reach = unit_type(u.type).radius + unit_type(target.type).radius + Fixed::from_ratio(1, 2);
+    if ((target.pos - u.pos).length_sq_raw() > square_raw(reach)) {
+        navigate(u, target.pos, u.chase_path, map_.clamp_tile(tile_of(target.pos)), false);
+        return;
+    }
+    if (++u.work < (fuel ? kRefuelInterval : kRearmInterval)) return;
+    u.work = 0;
+    Unit* v = find_unit_mut(target.id);
+    const UnitTypeDef& vd = unit_type(v->type);
+    if (fuel) {
+        v->fuel = min(vd.fuel_capacity, v->fuel + Fixed::from_int(kTilesPerFuel));
+    } else {
+        v->rounds = std::min(vd.rounds_capacity, v->rounds + vd.rounds_per_supply);
+    }
+    --u.carrying;
 }
 
 // A tanker or an ammunition truck standing by looks after the neediest of
@@ -479,21 +617,7 @@ void World::serve(Unit& u) {
         u.work = 0;
         return;
     }
-    const Fixed reach = def.radius + unit_type(neediest->type).radius + Fixed::from_ratio(1, 2);
-    if ((neediest->pos - u.pos).length_sq_raw() > square_raw(reach)) {
-        navigate(u, neediest->pos, u.chase_path, map_.clamp_tile(tile_of(neediest->pos)), false);
-        return;
-    }
-    if (++u.work < (fuel ? kRefuelInterval : kRearmInterval)) return;
-    u.work = 0;
-    Unit* v = find_unit_mut(neediest->id);
-    const UnitTypeDef& vd = unit_type(v->type);
-    if (fuel) {
-        v->fuel = min(vd.fuel_capacity, v->fuel + Fixed::from_int(kTilesPerFuel));
-    } else {
-        v->rounds = std::min(vd.rounds_capacity, v->rounds + vd.rounds_per_supply);
-    }
-    --u.carrying;
+    hand_over(u, *neediest);
 }
 
 void World::lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters) {

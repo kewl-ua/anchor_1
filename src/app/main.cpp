@@ -289,10 +289,12 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
 
     if (options.scene == "supply") {
         // Offline: the tanks are nearly dry and the IFV has shot its racks
-        // empty; the tanker and the ammunition truck drive up to the army and
-        // look after them. A tank stays selected to show its card.
+        // empty. The tanker is attached to the first tank and follows it; the
+        // IFV calls an ammunition truck over by radio. The tanker stays
+        // selected to show whom it looks after.
         std::vector<engine::EntityId> service;
         engine::EntityId tank = 0;
+        engine::EntityId ifv = 0;
         Vector2 army{0, 0};
         int count = 0;
         for (const engine::Unit& u : world.units()) {
@@ -306,15 +308,22 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                     if (u.type == engine::UnitTypeId::Ifv) v->rounds = 0;
                 }
                 if (u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;
+                if (u.type == engine::UnitTypeId::Ifv && ifv == 0) ifv = u.id;
                 army.x += render::to_vector2(u.pos).x;
                 army.y += render::to_vector2(u.pos).y;
                 ++count;
             }
         }
-        if (count == 0 || service.empty()) return std::nullopt;
+        if (count == 0 || service.empty() || tank == 0 || ifv == 0) return std::nullopt;
         army = {army.x / static_cast<float>(count), army.y / static_cast<float>(count)};
-        game.submit({.type = engine::CommandType::Move, .units = service, .target = render::to_fixed_vec2(army)});
-        game.select_units({tank});
+        std::vector<engine::EntityId> tankers;
+        for (engine::EntityId id : service) {
+            if (engine::unit_type(world.find_unit(id)->type).supplies == engine::Resource::Fuel) tankers.push_back(id);
+        }
+        game.submit({.type = engine::CommandType::Supply, .units = tankers, .target_unit = tank});
+        game.submit({.type = engine::CommandType::Ability, .units = {ifv},
+                     .ability = static_cast<uint8_t>(engine::AbilityId::CallSupply)});
+        if (!tankers.empty()) game.select_units({tankers.front()});
         return army;
     }
 

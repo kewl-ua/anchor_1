@@ -33,6 +33,7 @@ enum class Order : uint8_t {
     Haul,          // supply truck: load at the station, unload at the depot, repeat
     Observe,       // scout: an observation post watching the sector towards order_point, holding fire
     Ability,       // using the skill order_ability at order_point (to order_point2)
+    Supply,        // a service vehicle looking after the unit `serves`
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -83,6 +84,8 @@ inline constexpr Fixed kServiceRadius = Fixed::from_int(4);
 inline constexpr Tick kRefuelInterval = 4;
 inline constexpr Tick kRearmInterval = 8;
 inline constexpr Tick kRefillInterval = 2;  // loading at the depot
+// A service vehicle attached to a unit keeps this close to it.
+inline constexpr Fixed kEscortDistance = Fixed::from_int(3);
 
 // Artillery. Ranging (bracketing): the chance a shell lands on the aim point
 // on the 1st, 2nd and 3rd and later shots at the same target, and how far
@@ -291,6 +294,12 @@ struct Unit {
     // nearest one for it).
     Resource haul_cargo = Resource::Count;
     EntityId haul_depot = 0;
+
+    // A tanker or an ammunition truck on Order::Supply: the unit it looks
+    // after, attached to it for good or, `on_call`, answering its radio
+    // call once.
+    EntityId serves = 0;
+    bool on_call = false;
 
     bool silent = false;  // radio silence: no bearings on it, orders by courier
     bool airborne = false;  // an aircraft in the air: only air defence reaches it
@@ -565,6 +574,14 @@ private:
     // Service vehicles: look after our vehicles nearby; load up at a depot.
     void serve(Unit& u);
     void refill(Unit& u);
+    // Service vehicles and the units they look after.
+    void apply_supply(const Command& cmd);
+    void update_supply(Unit& u);
+    void call_supply(const Unit& caller);
+    // Drives up to `v` and hands over a unit of cargo every so often.
+    void hand_over(Unit& u, const Unit& v);
+    // Loads up at the nearest depot for the cargo; false once full or when it can't.
+    bool load_up(Unit& u);
     // A fireball: fuel or ammunition going up.
     void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire);
 

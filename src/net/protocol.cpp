@@ -71,7 +71,8 @@ bool has_target_unit(engine::CommandType type) {
     return type == engine::CommandType::Attack || type == engine::CommandType::Garrison ||
            type == engine::CommandType::Train || type == engine::CommandType::Build ||
            type == engine::CommandType::Upgrade || type == engine::CommandType::Unload ||
-           type == engine::CommandType::Research || type == engine::CommandType::Haul;
+           type == engine::CommandType::Research || type == engine::CommandType::Haul ||
+           type == engine::CommandType::Supply;
 }
 
 void write_command(Writer& w, const engine::Command& cmd) {
@@ -97,7 +98,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
 std::optional<engine::Command> read_command(Reader& r) {
     engine::Command cmd;
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(engine::CommandType::Research)) return std::nullopt;
+    if (type > static_cast<uint8_t>(engine::CommandType::Supply)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
 
     const uint16_t count = r.u16();

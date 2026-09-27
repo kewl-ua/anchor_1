@@ -1240,6 +1240,14 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
             }
             break;
         }
+        case engine::Order::Supply:
+            if (const engine::Unit* v = world.find_unit(u.serves)) {
+                const Vector2 to = on_terrain(map, unit_ground_pos(*v, alpha));
+                DrawLineV(from, to, ColorAlpha(theme::kSelection, 0.45f));
+                draw_ground_ellipse(to, engine::unit_type(v->type).radius.raw / 65536.0f + 0.3f,
+                                    ColorAlpha(theme::kSelection, 0.6f));
+            }
+            break;
         case engine::Order::Haul: {
             // Its run: the station, and the depot it takes its freight to.
             const engine::Structure* station = world.station_of(u.owner);

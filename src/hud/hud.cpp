@@ -860,8 +860,9 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     static constexpr const char* kOrderNames[] = {"Idle",          "Moving",           "Attacking",
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
                                                   "Gathering",     "Retraining",       "Building",
-                                                  "Supply run",    "Observing, holding fire", "Using a skill"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Ability) + 1);
+                                                  "Supply run",    "Observing, holding fire", "Using a skill",
+                                                  "Looking after a unit"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Supply) + 1);
     const char* state = kOrderNames[static_cast<int>(u.order)];
     if (u.order == engine::Order::Ability) state = engine::ability_def(u.order_ability).label;
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
@@ -962,10 +963,25 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     } else if (u.type == engine::UnitTypeId::Truck) {
         std::tie(supply, supply_color) = truck_status(world, u);
     } else if (def.supplies != engine::Resource::Count) {
-        supply = TextFormat("Aboard: %d / %d %s. Serves our vehicles within %d tiles.", u.carrying,
-                            def.cargo_capacity, engine::resource_name(def.supplies),
-                            engine::kServiceRadius.to_int());
+        // Standing by it sees to whoever is near; attached or called, to one unit.
+        const engine::Unit* v = u.order == engine::Order::Supply ? world.find_unit(u.serves) : nullptr;
+        const char* job = v ? TextFormat("%s %s.", u.on_call ? "Answering the radio call of:" : "Attached to:",
+                                         engine::unit_type(v->type).name)
+                            : TextFormat("Serves our vehicles within %d tiles; RMB on one: attach to it.",
+                                         engine::kServiceRadius.to_int());
+        supply = TextFormat("Aboard: %d / %d %s. %s", u.carrying, def.cargo_capacity,
+                            engine::resource_name(def.supplies), job);
         if (u.carrying <= 0) supply_color = theme::kWarning;
+    }
+    // The tankers and ammunition trucks looking after this one.
+    int tankers = 0;
+    int ammo_trucks = 0;
+    for (const engine::Unit& o : world.units()) {
+        if (o.order != engine::Order::Supply || o.serves != u.id) continue;
+        (engine::unit_type(o.type).supplies == engine::Resource::Fuel ? tankers : ammo_trucks) += 1;
+    }
+    if (supply && tankers + ammo_trucks > 0) {
+        supply = TextFormat("%s    With it: %d tanker(s), %d ammo truck(s)", supply, tankers, ammo_trucks);
     }
     if (supply) {
         draw_text(supply, area.x, line2 + 3 * step, fitting_font(supply, kCardFontSize, area.width), supply_color);

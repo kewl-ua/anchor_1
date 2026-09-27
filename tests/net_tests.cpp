@@ -185,6 +185,11 @@ TickInput sample_input() {
     haul.target_unit = 42;
     haul.cargo = 3;
     input.commands.push_back(haul);
+    Command supply;
+    supply.type = CommandType::Supply;
+    supply.units = {22};
+    supply.target_unit = 23;
+    input.commands.push_back(supply);
     Command post = make_move({19}, 60, 61);
     post.type = CommandType::Observe;
     input.commands.push_back(post);

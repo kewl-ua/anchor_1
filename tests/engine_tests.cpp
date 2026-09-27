@@ -1666,6 +1666,103 @@ void test_trucks_assigned_to_a_depot() {
     CHECK(food.world().find_unit(loaded)->haul_depot == depot);
 }
 
+// --- Service vehicles attached and called over the radio ---
+
+Command attach(PlayerId player, std::vector<EntityId> vehicles, EntityId unit) {
+    return {.type = CommandType::Supply, .player = player, .units = std::move(vehicles), .target_unit = unit};
+}
+
+// An ammunition truck attached to a tank tops it up, follows it about, and
+// when it runs dry fetches more from the depot and comes back; with the tank
+// gone it's free. Only for one of ours that uses what it carries.
+void test_attached_supply() {
+    Simulation sim(1, TileMap(60, 30));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {0, 0, 0, 200, 0});
+    w.place_structure(StructureType::AmmoDepot, 0, {4, 4}, 2, 2);
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(20, 15));
+    const EntityId truck = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(12, 20));
+    const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(14, 20));
+    const EntityId enemy = w.spawn_unit(1, UnitTypeId::Tank, at(50, 25));
+    w.unit_for_setup(tank)->rounds = 0;
+    w.unit_for_setup(enemy)->rounds = 0;
+    w.unit_for_setup(truck)->carrying = 10;
+
+    // Not the enemy's, not one without a gun to load.
+    issue(sim, attach(0, {truck}, enemy));
+    issue(sim, attach(0, {truck}, scout));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(truck)->order == Order::Idle);
+
+    issue(sim, attach(0, {truck}, tank));
+    const int32_t full = unit_type(UnitTypeId::Tank).rounds_capacity;
+    for (int i = 0; i < 3000 && sim.world().find_unit(tank)->rounds < full; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->rounds == full);  // 10 aboard, then a trip to the depot for the rest
+    CHECK(sim.world().find_unit(truck)->carrying >= unit_type(UnitTypeId::AmmoTruck).cargo_capacity - full);  // it filled up
+    CHECK(stock_of(sim, Resource::Ammo) < 200);
+    CHECK(sim.world().find_unit(truck)->order == Order::Supply);
+
+    issue(sim, make_move(0, {tank}, 45, 10));
+    for (int i = 0; i < 900; ++i) sim.step();
+    const Fixed apart = (sim.world().find_unit(tank)->pos - sim.world().find_unit(truck)->pos).length();
+    CHECK(apart <= kEscortDistance + Fixed::from_int(1));
+
+    sim.world_for_setup().unit_for_setup(tank)->hp = 0;
+    sim.step();
+    sim.step();
+    CHECK(sim.world().find_unit(truck)->order == Order::Idle && sim.world().find_unit(truck)->serves == 0);
+}
+
+// A call over the radio brings the nearest free tanker and ammunition
+// truck with something aboard, not ones busy elsewhere or empty; they top
+// the caller up and are free again. Radio off and no relay: nobody hears.
+void test_radio_call_for_supply() {
+    Simulation sim(1, TileMap(60, 30));
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(30, 15));
+    const EntityId other = w.spawn_unit(0, UnitTypeId::Tank, at(30, 25));
+    w.unit_for_setup(tank)->rounds = 0;
+    w.unit_for_setup(tank)->fuel = Fixed::from_int(20);
+    w.unit_for_setup(other)->rounds = 20;
+    const EntityId busy = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(32, 22));  // nearest, but attached elsewhere
+    const EntityId empty = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(34, 15));
+    const EntityId near = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(40, 15));
+    const EntityId far = w.spawn_unit(0, UnitTypeId::AmmoTruck, at(55, 15));
+    const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(50, 5));
+    w.unit_for_setup(empty)->carrying = 0;
+    issue(sim, attach(0, {busy}, other));
+    issue(sim, use_ability(0, {tank}, AbilityId::CallSupply, 0, 0));
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(near)->order == Order::Supply && sim.world().find_unit(near)->serves == tank);
+    CHECK(sim.world().find_unit(tanker)->order == Order::Supply && sim.world().find_unit(tanker)->serves == tank);
+    CHECK(sim.world().find_unit(far)->order == Order::Idle && sim.world().find_unit(empty)->order == Order::Idle);
+    CHECK(sim.world().find_unit(busy)->serves == other);
+    // Calling again while they're on the way sends nobody else.
+    for (Tick i = 0; i < ability_def(AbilityId::CallSupply).cooldown; ++i) sim.step();
+    issue(sim, use_ability(0, {tank}, AbilityId::CallSupply, 0, 0));
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(far)->order == Order::Idle);
+
+    for (int i = 0; i < 3000 && sim.world().find_unit(near)->order == Order::Supply; ++i) sim.step();
+    const Unit* t = sim.world().find_unit(tank);
+    CHECK(t->rounds == unit_type(UnitTypeId::Tank).rounds_capacity || sim.world().find_unit(near)->carrying == 0);
+    CHECK(t->rounds > 0);
+    for (int i = 0; i < 3000 && sim.world().find_unit(tanker)->order == Order::Supply; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->fuel == unit_type(UnitTypeId::Tank).fuel_capacity);
+    CHECK(sim.world().find_unit(near)->order == Order::Idle && sim.world().find_unit(tanker)->order == Order::Idle);
+
+    // Radio silence, no relay near: the call goes nowhere.
+    Simulation quiet(1, TileMap(60, 30));
+    World& q = quiet.world_for_setup();
+    const EntityId silent = q.spawn_unit(0, UnitTypeId::Tank, at(30, 15));
+    const EntityId truck = q.spawn_unit(0, UnitTypeId::AmmoTruck, at(40, 15));
+    q.unit_for_setup(silent)->rounds = 0;
+    q.unit_for_setup(silent)->silent = true;
+    issue(quiet, use_ability(0, {silent}, AbilityId::CallSupply, 0, 0));
+    for (Tick i = 0; i < kCourierTicks + 20; ++i) quiet.step();
+    CHECK(quiet.world().find_unit(truck)->order == Order::Idle);
+}
+
 // --- Village buildings as forward depots ---
 
 // A plain with a barn (4 x 2 House tiles at (20..23, 10..11)) and a cottage
@@ -3340,6 +3437,8 @@ int main() {
     test_demo_map_has_barns();
     test_take_over_a_village_building();
     test_taking_over_rules();
+    test_attached_supply();
+    test_radio_call_for_supply();
     test_rear_troops_unload_faster();
     test_no_trains_without_the_station();
     test_fuel_depot_burns();

@@ -339,6 +339,7 @@ void World::deliver(const Command& cmd) {
         case CommandType::Upgrade: apply_upgrade(cmd); break;
         case CommandType::Unload: apply_unload(cmd); break;
         case CommandType::Research: apply_research(cmd); break;
+        case CommandType::Supply: apply_supply(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -569,6 +570,10 @@ void World::update_unit(Unit& u) {
 
         case Order::Ability:
             update_ability(u);
+            break;
+
+        case Order::Supply:
+            update_supply(u);
             break;
     }
 }
@@ -1254,6 +1259,8 @@ uint64_t World::checksum() const {
         mix(u.airborne ? 1 : 0);
         mix(static_cast<uint8_t>(u.haul_cargo));
         mix(u.haul_depot);
+        mix(u.serves);
+        mix(u.on_call ? 1 : 0);
     }
     for (const Courier& c : couriers_) {
         mix(c.arrives);

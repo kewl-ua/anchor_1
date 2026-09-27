@@ -128,6 +128,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             if (minimap_ground) order_move(lockstep, renderer, *minimap_ground);
         } else if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
             order_attack(lockstep, enemy->id);
+        } else if (const engine::Unit* own = has_service_vehicles(world) ? unit_at(world, camera, mouse, alpha, true) : nullptr;
+                   own && !own->inside && !std::binary_search(selection_.begin(), selection_.end(), own->id)) {
+            // A tanker or an ammunition truck right-clicked onto one of ours: attached to it.
+            order_supply(lockstep, world, renderer, *own);
         } else {
             const Vector2 ground = ground_under(world, camera, mouse);
             const engine::TilePos tile{static_cast<int32_t>(std::floor(ground.x)),
@@ -371,10 +375,12 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         bool alt_loaded = false;
         bool deployed = false;
         bool on_air = false;  // any radio of the selection
+        bool heard = false;   // any of them can be heard over the radio (on the air, or by a relay)
         for (engine::EntityId unit_id : selection_) {
             const engine::Unit* u = world.find_unit(unit_id);
             if (u && engine::unit_type(u->type).emitter && !u->silent) on_air = true;
             if (!u || u->type != *lead) continue;
+            heard = heard || world.in_touch(*u);
             alt_loaded = u->round_type == 1;
             deployed = u->deployed;
             const engine::Tick ready = u->ability_ready[i];
@@ -393,7 +399,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         const size_t slot = i < hud::kGridColumns ? i : 2 * hud::kGridColumns + (i - hud::kGridColumns);
         hud::CommandButton& b = put(slot, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
-        b.enabled = !locked;
+        b.enabled = !locked && (id != engine::AbilityId::CallSupply || heard);
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded) ||
                    (id == engine::AbilityId::RadioSilence && !on_air);
     }
@@ -592,6 +598,27 @@ bool PlayerController::refills_at(const engine::World& world, engine::StructureT
         const engine::Unit* u = world.find_unit(id);
         return u && depot_for_refill(u->type) == depot;
     });
+}
+
+bool PlayerController::has_service_vehicles(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::unit_type(u->type).supplies != engine::Resource::Count;
+    });
+}
+
+void PlayerController::order_supply(net::Lockstep& lockstep, const engine::World& world,
+                                    render::WorldRenderer& renderer, const engine::Unit& unit) {
+    engine::Command supply{.type = engine::CommandType::Supply, .target_unit = unit.id};
+    engine::Command move{.type = engine::CommandType::Move, .target = unit.pos};
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (!u) continue;
+        (engine::unit_type(u->type).supplies != engine::Resource::Count ? supply : move).units.push_back(id);
+    }
+    if (!supply.units.empty()) lockstep.submit(std::move(supply));
+    if (!move.units.empty()) lockstep.submit(std::move(move));
+    renderer.add_order_ping(render::to_vector2(unit.pos), false);
 }
 
 bool PlayerController::has_engineers(const engine::World& world) const {

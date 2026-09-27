@@ -82,6 +82,7 @@ enum class AbilityId : uint8_t {
     Demolish,      // sapper: a charge against a building or a bridge
     Smoke,         // tank: a smoke screen ahead (needs smoke grenades)
     RadioSilence,  // radios: go quiet (direction finders lose it, orders come by courier) or back on air
+    CallSupply,    // radios: call the nearest free tanker / ammunition truck over
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
