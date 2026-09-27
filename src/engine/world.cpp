@@ -467,6 +467,7 @@ void World::apply_stop(const Command& cmd) {
 void World::step() {
     update_couriers();
     update_trains();
+    update_rations();
     update_production();
     update_upgrades();
     update_research();
@@ -731,6 +732,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     if (u.deployed && !pack_step(u)) return Step::Moved;   // a gun packs up before it goes anywhere
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
+    if (hungry(u.owner)) speed = speed * kHungrySpeedPercent / 100;
     // Terrain slows down (forest for infantry, villages for vehicles...).
     const int32_t terrain_pct = map_.speed_percent(tile_of(u.pos), move_class(def));
     if (terrain_pct > 0) speed = speed * terrain_pct / 100;
@@ -912,6 +914,7 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     // are deadly up close.
     const Structure* works = structure_at(map_.clamp_tile(tile_of(shooter.pos)));
     int32_t accuracy = weapon.accuracy;
+    if (hungry(shooter.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
     Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
     if (works && !shooter.inside) {
         if (works->type == StructureType::Foxhole) accuracy = accuracy * kFoxholeAccuracyPercent / 100;
@@ -1286,6 +1289,7 @@ uint64_t World::checksum() const {
     }
     mix(next_mine_id_);
     for (uint32_t bits : upgrades_) mix(bits);
+    for (bool h : hungry_) mix(h ? 1 : 0);
     for (const Smoke& s : smokes_) {
         mix_vec(s.center);
         mix_fixed(s.radius);

@@ -122,6 +122,7 @@ void Game::draw(hud::NetStatus net) const {
         .dragging = controller_.dragging(),
         .drag_rect = controller_.drag_rect(),
         .targeting = controller_.targeting_label(),
+        .cursor_hint = controller_.cursor_hint(),
         .placing = controller_.placement() ? engine::structure_type(controller_.placement()->type).name : "",
         .view_ground = {ground_at({0, 0}), ground_at({w, 0}), ground_at({w, h}), ground_at({0, h})},
         .net = net,

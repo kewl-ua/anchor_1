@@ -44,7 +44,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         placing_.reset();
         build_menu_ = false;
         convert_menu_ = false;
-        if (targeting_ == Targeting::Convert) targeting_ = Targeting::None;
+        if (targeting_ == Targeting::Convert || targeting_ == Targeting::Gather) targeting_ = Targeting::None;
     }
 
     // The grid's hotkeys: a key presses whatever its cell holds.
@@ -102,8 +102,13 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             if (targeting_ == Targeting::Observe) order_to_point(lockstep, renderer, *target, engine::CommandType::Observe);
             if (targeting_ == Targeting::Ability) order_ability(lockstep, world, renderer, aiming_, *target, *target);
             if (targeting_ == Targeting::Convert) {
-                order_convert(lockstep, world, renderer, *target);
+                order_convert(lockstep, world, renderer, mouse, camera);
                 convert_menu_ = false;
+            }
+            if (targeting_ == Targeting::Gather) {
+                if (const auto tile = render::resource_on_screen(camera, world, mouse)) {
+                    order_gather(lockstep, world, renderer, render::to_vector2(engine::tile_center(*tile)));
+                }
             }
             if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more clicks
         } else if (!over_hud) {
@@ -133,16 +138,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             // A tanker or an ammunition truck right-clicked onto one of ours: attached to it.
             order_supply(lockstep, world, renderer, *own);
         } else {
-            const Vector2 ground = ground_under(world, camera, mouse);
-            const engine::TilePos tile{static_cast<int32_t>(std::floor(ground.x)),
-                                       static_cast<int32_t>(std::floor(ground.y))};
-            const engine::Structure* structure = world.structure_at(tile);
-            const engine::Terrain terrain = world.map().contains(tile) ? world.map().terrain(tile) : engine::Terrain::Grass;
-            const bool resource = (terrain == engine::Terrain::Forest || terrain == engine::Terrain::Rock) &&
-                                  world.map().resource(tile) > 0;
-            if (resource && has_workers(world)) {
+            Vector2 ground = ground_under(world, camera, mouse);
+            // A click on a roof or a tree's crown means the building or the tree.
+            const engine::Structure* structure = render::structure_on_screen(camera, world, mouse);
+            const std::optional<engine::TilePos> resource = render::resource_on_screen(camera, world, mouse);
+            if (structure) ground = render::to_vector2(structure->center);
+            if (resource && !structure && has_workers(world)) {
                 // Rear troops go to work; anyone else selected just goes there.
-                order_gather(lockstep, world, renderer, ground);
+                order_gather(lockstep, world, renderer, render::to_vector2(engine::tile_center(*resource)));
             } else if (structure && structure->owner == player_ && !structure->built &&
                        (has_workers(world) || has_engineers(world))) {
                 order_help_build(lockstep, structure->id);
@@ -177,6 +180,67 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     }
     if (IsKeyPressed(KEY_F2)) select_army(world);
     rebuild_grid(world);  // what the HUD shows this frame
+    hint_ = "";
+    if (!over_hud && !placing_) update_hint(world, camera, mouse, alpha);
+}
+
+// Like AoE's cursors: what a right click (or, aiming, a left click) would
+// do to whatever is under the cursor, given who is selected.
+void PlayerController::update_hint(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse,
+                                   float alpha) {
+    const engine::Structure* s = render::structure_on_screen(camera, world, mouse);
+    if (targeting_ == Targeting::Convert) {
+        if (!s) return;
+        hint_ = world.can_convert(*s, player_)
+                    ? TextFormat("Click: make it a %s", engine::structure_type(converting_).name)
+                    : "Not a spacious village building we can take over";
+        return;
+    }
+    const std::optional<engine::TilePos> resource = render::resource_on_screen(camera, world, mouse);
+    if (targeting_ == Targeting::Gather) {
+        if (resource) {
+            hint_ = TextFormat("Click: %s (%d left)",
+                               world.map().terrain(*resource) == engine::Terrain::Rock ? "quarry stone" : "cut timber",
+                               world.map().resource(*resource));
+        }
+        return;
+    }
+    if (targeting() || selection_.empty()) return;
+    if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
+        hint_ = "RMB: attack";
+        return;
+    }
+    const engine::Unit* own = unit_at(world, camera, mouse, alpha, true);
+    if (own && !own->inside && has_service_vehicles(world) &&
+        !std::binary_search(selection_.begin(), selection_.end(), own->id)) {
+        hint_ = TextFormat("RMB: attach to this %s: follow it, keep it supplied", engine::unit_type(own->type).name);
+        return;
+    }
+    if (s && s->owner == player_ && !s->built && (has_workers(world) || has_engineers(world))) {
+        hint_ = "RMB: help build";
+        return;
+    }
+    const engine::StructureType role = s ? engine::role_of(*s) : engine::StructureType::Count;
+    if (s && s->owner == player_ && refills_at(world, role)) {
+        hint_ = "RMB: load up here from the stock";
+        return;
+    }
+    if (s && s->owner == player_ && is_supply_point(role) && has_trucks(world)) {
+        const std::optional<engine::Resource> cargo = engine::depot_cargo(role);
+        hint_ = cargo ? TextFormat("RMB: haul %s from the station to this %s", engine::resource_name(*cargo),
+                                   engine::structure_type(role).name)
+                      : "RMB: back on the supply run";
+        return;
+    }
+    if (s && engine::is_shelter(role)) {
+        hint_ = s->owner == engine::kNoOwner || s->owner == player_ ? "RMB: go in" : "RMB: shell it";
+        return;
+    }
+    if (resource && !s && has_workers(world)) {
+        hint_ = TextFormat("RMB: %s (%d left), carry it in",
+                           world.map().terrain(*resource) == engine::Terrain::Rock ? "quarry stone" : "cut timber",
+                           world.map().resource(*resource));
+    }
 }
 
 namespace {
@@ -328,6 +392,9 @@ void PlayerController::rebuild_grid(const engine::World& world) {
 
     if (def.worker) {
         put(0, Action::BuildMenu, 0, "Build", "Build: barracks, warehouses, depots");
+        put(3, Action::Gather, 0, "Gather",
+            "Cut timber or quarry stone: click a forest or a rock (RMB on it does the same). They carry it in themselves")
+            .active = targeting_ == Targeting::Gather;
         put(2, Action::ConvertMenu, 0, "Take over",
             "Turn a spacious village building (a barn) into a depot: nearer the front, less driving for the supply");
         engine::Stock retrain{};
@@ -440,6 +507,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Retrain: order_retrain(lockstep); break;
         case Action::BuildMenu: build_menu_ = true; break;
         case Action::ConvertMenu: convert_menu_ = true; break;
+        case Action::Gather: targeting_ = Targeting::Gather; break;
         case Action::Back:
             build_menu_ = false;
             convert_menu_ = false;
@@ -550,9 +618,8 @@ void PlayerController::select_army(const engine::World& world) {
 }
 
 void PlayerController::order_convert(net::Lockstep& lockstep, const engine::World& world,
-                                     render::WorldRenderer& renderer, Vector2 ground) {
-    const engine::TilePos tile{static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))};
-    const engine::Structure* s = world.structure_at(tile);
+                                     render::WorldRenderer& renderer, Vector2 mouse, const render::RtsCamera& camera) {
+    const engine::Structure* s = render::structure_on_screen(camera, world, mouse);
     if (!s || !world.can_convert(*s, player_)) return;
     engine::Command cmd{.type = engine::CommandType::Build, .target_unit = s->id,
                         .structure_type = static_cast<uint8_t>(converting_)};
@@ -725,6 +792,7 @@ const char* PlayerController::targeting_label() const {
         case Targeting::Observe: return "Observation sector";
         case Targeting::Ability: return engine::ability_def(aiming_).name;
         case Targeting::Convert: return "Click a spacious village building (a barn) to take it over";
+        case Targeting::Gather: return "Click a forest or a rock";
         case Targeting::None: break;
     }
     return "";
@@ -812,9 +880,7 @@ void PlayerController::click_select(const engine::World& world, const render::Rt
         selection_.clear();
         selected_structure_ = 0;
         // One of our own buildings under the cursor?
-        const Vector2 ground = ground_under(world, camera, mouse);
-        const engine::Structure* s = world.structure_at(
-            {static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))});
+        const engine::Structure* s = render::structure_on_screen(camera, world, mouse);
         if (s && s->owner == player_) selected_structure_ = s->id;
         return;
     }

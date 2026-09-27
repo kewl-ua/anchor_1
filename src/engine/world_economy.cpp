@@ -377,6 +377,25 @@ void World::update_trains() {
 // Back on the supply run. Sent to one of our depots, a truck is assigned to
 // it: that depot's freight, to that depot. Or it's given a kind of freight
 // (to the nearest depot for it), or left to haul whatever piles up.
+int32_t World::mouths(PlayerId player) const {
+    int32_t men = 0;
+    for (const Unit& u : units_) {
+        if (u.owner == player) men += unit_type(u.type).cost[static_cast<size_t>(Resource::Personnel)];
+    }
+    return men;
+}
+
+// Ration time: everyone's ration from the stock, or all of it and hunger.
+void World::update_rations() {
+    if (tick_ == 0 || tick_ % kRationInterval != 0) return;
+    for (size_t p = 0; p < kMaxPlayers; ++p) {
+        const int32_t need = mouths(static_cast<PlayerId>(p)) * kRationPerMan;
+        int32_t& food = stock_[p][static_cast<size_t>(Resource::Food)];
+        hungry_[p] = food < need;
+        food = std::max(0, food - need);
+    }
+}
+
 void World::apply_haul(const Command& cmd) {
     const Structure* depot = find_structure(cmd.target_unit);
     const std::optional<Resource> depot_takes =

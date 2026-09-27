@@ -75,6 +75,16 @@ inline constexpr int32_t kUnloadDriverWork = 1;
 inline constexpr int32_t kUnloadHelperWork = 2;
 inline constexpr int32_t kMaxUnloadHelpers = 4;
 
+// --- Rations ---
+// The army eats: every so often each man (a unit's crew, as hired) takes
+// his ration from the stock. With too little food, the whole army goes
+// hungry until the next ration it gets in full: it shoots worse and
+// moves slower.
+inline constexpr Tick kRationInterval = 60 * kTicksPerSecond;
+inline constexpr int32_t kRationPerMan = 1;
+inline constexpr int32_t kHungryAccuracyPercent = 75;
+inline constexpr int32_t kHungrySpeedPercent = 85;
+
 // --- Village buildings ---
 // A building this big (tiles: a barn, a machine shed) is spacious enough for
 // rear troops to turn it into a depot, a forward one near the front: it

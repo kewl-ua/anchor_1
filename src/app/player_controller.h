@@ -58,7 +58,7 @@ public:
     void order_stop(net::Lockstep& lockstep);
     // Rear troops turn the spacious village building at the point into a depot.
     void order_convert(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
-                       Vector2 ground);
+                       Vector2 mouse, const render::RtsCamera& camera);
 
     // The building following the cursor, if the player is placing one.
     const std::optional<Placement>& placement() const { return placement_; }
@@ -80,6 +80,9 @@ public:
     // A hotkey was pressed and the next left click picks the order's target
     // point ("A": attack-move, "G": fire at ground). Empty when not targeting.
     const char* targeting_label() const;
+    // What a right click would do on whatever is under the cursor, for a
+    // hint by it ("RMB: cut timber"); empty if nothing special.
+    const char* cursor_hint() const { return hint_; }
     bool targeting() const { return targeting_ != Targeting::None; }
     // The command grid for the current selection, for the HUD to draw.
     std::span<const hud::CommandButton> command_buttons() const { return buttons_; }
@@ -116,7 +119,7 @@ private:
     // The command grid. Each cell holds an action; its hotkey is the cell's.
     enum class Action : uint8_t {
         None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload,
-        Research, ConvertMenu, Convert
+        Research, ConvertMenu, Convert, Gather
     };
     struct Cell {
         Action action = Action::None;
@@ -129,7 +132,7 @@ private:
     void order_ability(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                        engine::AbilityId ability, Vector2 target, Vector2 end);
 
-    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability, Convert };
+    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability, Convert, Gather };
 
     engine::PlayerId player_;
     std::vector<engine::EntityId> selection_;  // sorted, unique
@@ -142,6 +145,8 @@ private:
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
     bool convert_menu_ = false;  // rear troops: what depot to make of a village building
+    const char* hint_ = "";      // see cursor_hint()
+    void update_hint(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse, float alpha);
     engine::StructureType converting_ = engine::StructureType::Warehouse;  // Targeting::Convert
     std::optional<Vector2> line_start_;  // a line skill being dragged: where it started
     std::vector<engine::TilePos> trench_preview_;

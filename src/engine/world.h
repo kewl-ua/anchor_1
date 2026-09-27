@@ -424,6 +424,9 @@ public:
     // Two of `player`'s bearings on this radio cross at a wide enough angle:
     // he knows where it is.
     bool fixed_by(PlayerId player, const Unit& u) const;
+    // Rations: the men `player` has to feed, and whether his army went hungry.
+    int32_t mouths(PlayerId player) const;
+    bool hungry(PlayerId player) const { return player < kMaxPlayers && hungry_[player]; }
     // Setup and tests: an upgrade without the research.
     void upgrade_for_setup(PlayerId player, UpgradeId id) {
         upgrades_[player % kMaxPlayers] |= 1u << static_cast<uint32_t>(id);
@@ -510,6 +513,7 @@ private:
     void update_hauling(Unit& u);
     void update_production();
     void update_trains();
+    void update_rations();
     void burn_fuel_depot(const Structure& depot);
     const Structure* nearest_headquarters(PlayerId owner, FixedVec2 from) const;
     // The nearest finished building of `owner` that takes in materials.
@@ -694,6 +698,7 @@ private:
     std::vector<Smoke> smokes_;
     std::vector<Bearing> bearings_;  // rebuilt with the fog
     std::vector<Courier> couriers_;  // in the order they were sent, so they arrive in it
+    std::array<bool, kMaxPlayers> hungry_{};
 };
 
 }  // namespace engine

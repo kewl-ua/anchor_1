@@ -153,6 +153,42 @@ float unit_pick_radius(const RtsCamera& camera, const engine::Unit& unit) {
     return px * camera.camera2d().zoom;
 }
 
+namespace {
+
+float drawn_height(const engine::Structure& s);  // with the buildings' drawing, below
+
+// Ground tiles under points straight below a screen point, `lift` world
+// pixels down: what stands on them and is drawn that high covers the point.
+template <typename Fn>
+auto probe_below(const RtsCamera& camera, const engine::World& world, Vector2 screen, float reach, Fn fn)
+    -> decltype(fn(engine::TilePos{}, 0.0f)) {
+    const float zoom = camera.camera2d().zoom;
+    for (float lift = 0.0f; lift <= reach; lift += 3.0f) {
+        const Vector2 ground = iso::pick_ground(world.map(), camera.screen_to_world({screen.x, screen.y + lift * zoom}));
+        const engine::TilePos t{static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))};
+        if (auto found = fn(t, lift)) return found;
+    }
+    return {};
+}
+
+}  // namespace
+
+const engine::Structure* structure_on_screen(const RtsCamera& camera, const engine::World& world, Vector2 screen) {
+    return probe_below(camera, world, screen, 40.0f, [&](engine::TilePos t, float lift) -> const engine::Structure* {
+        const engine::Structure* s = world.structure_at(t);
+        return s && lift <= drawn_height(*s) ? s : nullptr;
+    });
+}
+
+std::optional<engine::TilePos> resource_on_screen(const RtsCamera& camera, const engine::World& world, Vector2 screen) {
+    return probe_below(camera, world, screen, 24.0f, [&](engine::TilePos t, float lift) -> std::optional<engine::TilePos> {
+        if (!world.map().contains(t) || world.map().resource(t) <= 0) return std::nullopt;
+        const engine::Terrain terrain = world.map().terrain(t);
+        const float height = terrain == engine::Terrain::Forest ? 24.0f : terrain == engine::Terrain::Rock ? 12.0f : -1.0f;
+        return lift <= height ? std::optional<engine::TilePos>(t) : std::nullopt;
+    });
+}
+
 // --- Effects -----------------------------------------------------------------
 
 void WorldRenderer::add_order_ping(Vector2 ground, bool attack) { pings_.push_back({ground, 0.0f, attack}); }
@@ -461,6 +497,20 @@ void draw_barn(const engine::TileMap& map, const engine::Structure& s, float dam
     const Vector2 d0 = lerp(a, b, 0.35f);
     const Vector2 d1 = lerp(a, b, 0.65f);
     fill_quad(d0, d1, {d1.x, d1.y - kWall * 0.8f}, {d0.x, d0.y - kWall * 0.8f}, {60, 54, 46, 255});
+}
+
+// How high a structure is drawn above its tiles, pixels: what a click on it may hit.
+float drawn_height(const engine::Structure& s) {
+    switch (s.type) {
+        case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 23.0f;
+        case engine::StructureType::Pillbox: return 10.0f;
+        case engine::StructureType::Bridge:
+        case engine::StructureType::Airfield:
+        case engine::StructureType::Dugout: return 4.0f;
+        default:
+            if (engine::is_fieldwork(s.type) || engine::is_obstacle(s.type)) return 4.0f;
+            return style_of(s.type).wall + 12.0f;  // the roof edge and the flag above it
+    }
 }
 
 void draw_building(const engine::TileMap& map, const engine::Structure& s) {

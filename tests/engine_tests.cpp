@@ -1666,6 +1666,72 @@ void test_trucks_assigned_to_a_depot() {
     CHECK(food.world().find_unit(loaded)->haul_depot == depot);
 }
 
+// --- Rations ---
+
+// Every ration time each man takes his ration from the stock: a rifleman
+// one, a tank's crew three. Short of it, the army goes hungry until the
+// next full ration.
+void test_rations() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    for (int i = 0; i < 4; ++i) w.spawn_unit(0, UnitTypeId::Rifleman, at(5, 5 + i));
+    w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    w.spawn_unit(1, UnitTypeId::Rifleman, at(35, 15));
+    w.set_stock(0, {0, 100, 0, 0, 0});
+    w.set_stock(1, {0, 0, 0, 0, 0});
+    CHECK(sim.world().mouths(0) == 4 + 3 && sim.world().mouths(1) == 1);
+    for (Tick i = 0; i + 1 < kRationInterval; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Food) == 100);  // not yet
+    for (int i = 0; i < 2; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Food) == 100 - 7 * kRationPerMan);
+    CHECK(!sim.world().hungry(0) && sim.world().hungry(1));
+
+    sim.world_for_setup().set_stock(0, {0, 5, 0, 0, 0});
+    for (Tick i = 0; i < kRationInterval; ++i) sim.step();
+    CHECK(sim.world().hungry(0) && stock_of(sim, Resource::Food) == 0);
+    sim.world_for_setup().set_stock(0, {0, 50, 0, 0, 0});
+    for (Tick i = 0; i < kRationInterval; ++i) sim.step();
+    CHECK(!sim.world().hungry(0) && stock_of(sim, Resource::Food) == 43);
+}
+
+// Hungry men move slower and shoot worse.
+void test_hunger_weakens_the_army() {
+    auto walked = [](bool fed) {
+        Simulation sim(1, TileMap(60, 20));
+        const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(5, 10));
+        sim.world_for_setup().set_stock(0, {0, fed ? 100 : 0, 0, 0, 0});
+        for (Tick i = 0; i <= kRationInterval; ++i) sim.step();
+        CHECK(sim.world().hungry(0) != fed);
+        issue(sim, make_move(0, {rifle}, 55, 10));
+        for (int i = 0; i < 200; ++i) sim.step();
+        return sim.world().find_unit(rifle)->pos.x;
+    };
+    const Fixed fed = walked(true) - Fixed::from_int(5);
+    const Fixed hungry = walked(false) - Fixed::from_int(5);
+    CHECK(hungry < fed && hungry * 100 >= fed * (kHungrySpeedPercent - 3) && hungry * 100 <= fed * (kHungrySpeedPercent + 3));
+
+    // Shots at a truck that can't answer, over many seeds: hungry, fewer hit.
+    auto damage = [](bool fed) {
+        int32_t total = 0;
+        for (uint64_t seed = 1; seed <= 20; ++seed) {
+            Simulation sim(seed, TileMap(40, 20));
+            const EntityId mg = sim.world_for_setup().spawn_unit(0, UnitTypeId::MachineGunner, at(10, 10));
+            sim.world_for_setup().set_stock(0, {0, fed ? 100 : 0, 0, 0, 0});
+            for (Tick i = 0; i <= kRationInterval; ++i) sim.step();
+            const EntityId truck = sim.world_for_setup().spawn_unit(1, UnitTypeId::Truck, at(15, 10));
+            sim.world_for_setup().unit_for_setup(truck)->hp = 100000;
+            issue(sim, attack_order(0, {mg}, truck));
+            for (int i = 0; i < 400; ++i) sim.step();
+            total += 100000 - sim.world().find_unit(truck)->hp;
+        }
+        return total;
+    };
+    const int32_t fed_damage = damage(true);
+    const int32_t hungry_damage = damage(false);
+    // A quarter fewer aimed hits; a miss this close still often finds the truck.
+    CHECK(hungry_damage > 0 && hungry_damage * 100 <= fed_damage * 93);
+}
+
 // --- Service vehicles attached and called over the radio ---
 
 Command attach(PlayerId player, std::vector<EntityId> vehicles, EntityId unit) {
@@ -3438,6 +3504,8 @@ int main() {
     test_take_over_a_village_building();
     test_taking_over_rules();
     test_attached_supply();
+    test_rations();
+    test_hunger_weakens_the_army();
     test_radio_call_for_supply();
     test_rear_troops_unload_faster();
     test_no_trains_without_the_station();

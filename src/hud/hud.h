@@ -50,6 +50,7 @@ struct HudState {
     bool dragging = false;
     Rectangle drag_rect{};  // screen space
     std::string_view targeting;  // label of the order being aimed ("Attack-move"...), empty if none
+    std::string_view cursor_hint;  // what a click would do on what's under the cursor, empty if nothing
     std::string_view placing;    // name of the building being placed, empty if none
     // Ground points under the screen corners (top-left, top-right,
     // bottom-right, bottom-left), for the camera frame on the minimap.

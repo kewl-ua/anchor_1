@@ -135,5 +135,9 @@ Vector2 unit_screen_pos(const RtsCamera& camera, const engine::TileMap& map, con
                         float alpha);
 // How close to unit_screen_pos() a click must be, in screen pixels.
 float unit_pick_radius(const RtsCamera& camera, const engine::Unit& unit);
+// What is drawn under a screen point: a building's walls and roof and a
+// tree's crown stand above the tile they're on, and a click on them counts.
+const engine::Structure* structure_on_screen(const RtsCamera& camera, const engine::World& world, Vector2 screen);
+std::optional<engine::TilePos> resource_on_screen(const RtsCamera& camera, const engine::World& world, Vector2 screen);
 
 }  // namespace render

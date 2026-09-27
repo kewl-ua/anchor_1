@@ -246,6 +246,16 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
         draw_text(TextFormat("%.*s", static_cast<int>(state.targeting.size()), state.targeting.data()), m.x + 14,
                   m.y + 8, kSmallFontSize, theme::kDanger);
     }
+    if (!state.cursor_hint.empty()) {
+        // By the cursor, like AoE's cursor changing over a tree or a mine.
+        const Vector2 m = GetMousePosition();
+        const char* hint = TextFormat("%.*s", static_cast<int>(state.cursor_hint.size()), state.cursor_hint.data());
+        const float w = static_cast<float>(MeasureText(hint, kCardFontSize));
+        const float x = std::min(m.x + 16, static_cast<float>(GetScreenWidth()) - w - 12);
+        const float y = m.y + (state.targeting.empty() ? 18.0f : 30.0f);
+        DrawRectangleRec({x - 5, y - 3, w + 10, kCardFontSize + 6.0f}, {16, 18, 20, 210});
+        draw_text(hint, x, y, kCardFontSize, theme::kText);
+    }
     if (!state.placing.empty()) {
         const Vector2 m = GetMousePosition();
         draw_text(TextFormat("%.*s: LMB to place, Shift for more, RMB cancels", static_cast<int>(state.placing.size()),
@@ -349,8 +359,13 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
         draw_text(name, x, y, kSmallFontSize, theme::kTextDim);
         x += static_cast<float>(MeasureText(name, kSmallFontSize)) + 6;
         const char* amount = TextFormat("%d", stock[r]);
-        draw_text(amount, x, y, kSmallFontSize, theme::kText);
+        const bool starving = resource == engine::Resource::Food && world.hungry(state.local_player);
+        draw_text(amount, x, y, kSmallFontSize, starving ? theme::kDanger : theme::kText);
         x += static_cast<float>(MeasureText(amount, kSmallFontSize)) + 8;
+        if (starving) {
+            draw_text("HUNGRY", x, y, kSmallFontSize, theme::kDanger);
+            x += static_cast<float>(MeasureText("HUNGRY", kSmallFontSize)) + 8;
+        }
 
         const bool by_truck = engine::depot_for(resource).has_value();
         const int waiting = station && by_truck ? station->cargo[r] : 0;
@@ -390,6 +405,15 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
                 note[note_lines++] = TextFormat("Rear troops cutting timber or quarrying stone: %d", logistics.gatherers);
                 note[note_lines++] = "They carry it to the headquarters or a warehouse";
             } else {
+                if (resource == engine::Resource::Food) {
+                    const int32_t men = world.mouths(state.local_player);
+                    note[0] = TextFormat("Food: %d in stock. Rations: %d men eat %d a minute (next in %ds)%s", stock[r], men,
+                                         men * engine::kRationPerMan * 60 * engine::kTicksPerSecond /
+                                             static_cast<int32_t>(engine::kRationInterval),
+                                         static_cast<int>((engine::kRationInterval - world.tick() % engine::kRationInterval) /
+                                                          engine::kTicksPerSecond),
+                                         world.hungry(state.local_player) ? ". HUNGRY: they shoot and move worse" : "");
+                }
                 const char* depot = engine::structure_type(*engine::depot_for(resource)).name;
                 note[note_lines++] = TextFormat("Waiting at the station: %d. Trucks on it: %d (on auto: %d)", waiting,
                                                 trucks, logistics.auto_trucks);
@@ -875,7 +899,16 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                                static_cast<int>((engine::kRetrainTicks - u.work) / engine::kTicksPerSecond + 1));
         }
     }
-    if (def.worker && u.carrying > 0) state = TextFormat("%s, carrying %d materials", state, u.carrying);
+    if (def.worker && u.order == engine::Order::Gather) {
+        const bool stone = world.map().terrain(u.gather_tile) == engine::Terrain::Rock;
+        const engine::Structure* hq = world.nearest_owned(u.owner, engine::StructureType::Headquarters, u.pos);
+        const engine::Structure* store = world.nearest_owned(u.owner, engine::StructureType::Warehouse, u.pos);
+        if (!hq || (store && (store->center - u.pos).length_sq_raw() < (hq->center - u.pos).length_sq_raw())) hq = store;
+        state = TextFormat("%s %d/%d, carries it to the %s", stone ? "Quarrying stone" : "Cutting timber", u.carrying,
+                           engine::kCarryCapacity, hq ? engine::structure_type(hq->type).name : "... nowhere!");
+    } else if (def.worker && u.carrying > 0) {
+        state = TextFormat("%s, carrying %d materials", state, u.carrying);
+    }
     if (def.aircraft) {
         const bool full = u.rounds >= def.rounds_capacity && u.fuel >= def.fuel_capacity;
         if (!u.airborne) {

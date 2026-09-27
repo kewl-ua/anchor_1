@@ -243,6 +243,7 @@ void World::fire_at_air(Unit& u, const Unit& target) {
     u.last_shot_at = target.pos;
     int32_t accuracy = weapon.accuracy;
     if (def.emitter && u.silent) accuracy = accuracy * kOpticalSightPercent / 100;  // radar off: by eye
+    if (hungry(u.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
     const bool hit = static_cast<int32_t>(rng_.next_below(100)) < accuracy;
     if (weapon.projectile_speed.raw == 0) {
         if (hit) hurt(target, weapon, {u.pos, 0, false, true});
