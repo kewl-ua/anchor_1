@@ -358,6 +358,32 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 corner_heights_[static_cast<size_t>(cy * (cache_width_ + 1) + cx)] = iso::corner_height(map, cx, cy);
             }
         }
+        // The villages: the yards round their houses, away from the town and the works.
+        village_.assign(static_cast<size_t>(cache_width_ * cache_height_), 0);
+        auto near = [&](int x, int y, int r, auto pred) {
+            for (int dy = -r; dy <= r; ++dy) {
+                for (int dx = -r; dx <= r; ++dx) {
+                    if (map.contains_tile(x + dx, y + dy) && pred(map.terrain(x + dx, y + dy), x + dx, y + dy)) return true;
+                }
+            }
+            return false;
+        };
+        for (int y = 0; y < cache_height_; ++y) {
+            for (int x = 0; x < cache_width_; ++x) {
+                const engine::Terrain t = map.terrain(x, y);
+                if (t != engine::Terrain::Urban && t != engine::Terrain::House) continue;
+                const bool cottage = near(x, y, 2, [&](engine::Terrain n, int nx, int ny) {
+                    if (n != engine::Terrain::House) return false;
+                    const engine::Structure* s = world.structure_at({nx, ny});
+                    return s && s->tiles.size() < engine::kSpaciousTiles;  // a cottage, a small holding's shed or coop
+                });
+                const bool town = near(x, y, 3, [](engine::Terrain n, int, int) {
+                    return n == engine::Terrain::Apartment || n == engine::Terrain::Tower || n == engine::Terrain::GasStation ||
+                           n == engine::Terrain::Elevator;
+                });
+                if (cottage && !town) village_[static_cast<size_t>(y * cache_width_ + x)] = 1;
+            }
+        }
         // A spoil tip's top: a corner among rock, higher than every corner round it.
         spoil_peaks_.clear();
         for (int cy = 1; cy < cache_height_; ++cy) {
@@ -812,33 +838,160 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
 // A small house on one tile: walls and a hipped roof. Damage darkens it with
 // soot and sets it smoking.
 void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
-    constexpr float kWall = 13.0f;
-    constexpr float kRoof = 9.0f;
+    const uint32_t h = tile_hash(tx, ty);
+    auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 5) + i * 13, i * 31 + 7)); };
     const auto x = static_cast<float>(tx);
     const auto y = static_cast<float>(ty);
-    const Vector2 ground[4] = {
-        {x + 0.12f, y + 0.12f}, {x + 0.88f, y + 0.12f}, {x + 0.88f, y + 0.88f}, {x + 0.12f, y + 0.88f}};
+    // Square, or long one way or the other.
+    const int shape = static_cast<int>(h % 3);
+    float x0 = x + 0.14f;
+    float x1 = x + 0.86f;
+    float y0 = y + 0.14f;
+    float y1 = y + 0.86f;
+    if (shape == 1) {
+        y0 = y + 0.24f;
+        y1 = y + 0.8f;
+    } else if (shape == 2) {
+        x0 = x + 0.24f;
+        x1 = x + 0.8f;
+    }
+    const float wall_h = 11.0f + 3.0f * rnd(1);
+    const float roof_h = 8.0f + 2.5f * rnd(2);
+    const Vector2 ground[4] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
     Vector2 base[4];
     Vector2 top[4];
     for (int i = 0; i < 4; ++i) {
         base[i] = on_terrain(map, ground[i]);
-        top[i] = {base[i].x, base[i].y - kWall};
+        top[i] = {base[i].x, base[i].y - wall_h};
     }
-    const uint32_t h = tile_hash(tx, ty);
     const float soot = 1.0f - 0.45f * damage;
-    const Color wall = shade({196, 184, 160, 255}, (0.9f + static_cast<float>(h & 0x3F) / 400.0f) * soot);
-    const Color roof = shade((h >> 8) % 3 == 0 ? Color{120, 72, 58, 255} : Color{92, 90, 96, 255}, soot);
 
-    // The walls facing the viewer are the +x (lit) and +y (shaded) sides.
-    fill_quad(base[1], base[2], top[2], top[1], wall);
-    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));
-    const Vector2 apex = on_terrain(map, {x + 0.5f, y + 0.5f}, kWall + kRoof);
-    fill_triangle(top[0], top[1], apex, shade(roof, 1.1f));
-    fill_triangle(top[3], top[0], apex, shade(roof, 0.95f));
-    fill_triangle(top[1], top[2], apex, shade(roof, 1.2f));
-    fill_triangle(top[2], top[3], apex, shade(roof, 0.8f));
+    // Walls: whitewashed, red brick, yellow brick or grey silicate brick; a dark plinth.
+    const int material = static_cast<int>(rnd(3) * 4.0f);
+    static constexpr Color kWalls[4] = {{226, 222, 208, 255}, {164, 88, 64, 255}, {204, 176, 118, 255}, {184, 182, 174, 255}};
+    const Color wall = shade(kWalls[material], (0.94f + 0.12f * rnd(4)) * soot);
+    fill_quad(base[1], base[2], top[2], top[1], wall);                     // +x: in the light
+    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));       // +y: in shade
+    if (material != 0) {
+        for (int k = 1; k < 5; ++k) {
+            const float lift = wall_h * static_cast<float>(k) / 5.0f;
+            DrawLineV({base[1].x, base[1].y - lift}, {base[2].x, base[2].y - lift}, lit(shade(wall, 0.86f)));
+            DrawLineV({base[2].x, base[2].y - lift}, {base[3].x, base[3].y - lift}, lit(shade(wall, 0.62f)));
+        }
+    }
+    const Color plinth = shade({104, 96, 88, 255}, soot);
+    fill_quad(base[1], base[2], {base[2].x, base[2].y - 2.5f}, {base[1].x, base[1].y - 2.5f}, plinth);
+    fill_quad(base[2], base[3], {base[3].x, base[3].y - 2.5f}, {base[2].x, base[2].y - 2.5f}, shade(plinth, 0.75f));
+
+    // Windows in painted frames (white, blue, green or brown), broken once it's been hit; a door with its step.
+    static constexpr Color kFrames[4] = {{236, 234, 226, 255}, {70, 110, 172, 255}, {74, 132, 92, 255}, {120, 84, 56, 255}};
+    const Color frame = kFrames[static_cast<int>(rnd(5) * 4.0f)];
+    auto window = [&](Vector2 a, Vector2 b, float t, float k, int i) {
+        const Vector2 c{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t - wall_h * 0.52f};
+        const float dx = (b.x - a.x) / std::max(1.0f, std::fabs(b.x - a.x)) * 2.2f;
+        const float dy = (b.y - a.y) / std::max(1.0f, std::fabs(b.x - a.x)) * 2.2f;
+        fill_quad({c.x - dx - 0.6f, c.y - dy - 3.4f}, {c.x + dx + 0.6f, c.y + dy - 3.4f}, {c.x + dx + 0.6f, c.y + dy + 3.4f},
+                  {c.x - dx - 0.6f, c.y - dy + 3.4f}, shade(frame, k));
+        const bool broken = damage > 0.35f && rnd(40 + i) < damage;
+        const Color glass = broken ? Color{20, 18, 18, 255} : shade({70, 86, 100, 255}, k);
+        fill_quad({c.x - dx, c.y - dy - 2.6f}, {c.x + dx, c.y + dy - 2.6f}, {c.x + dx, c.y + dy + 2.6f}, {c.x - dx, c.y - dy + 2.6f}, glass);
+        if (!broken) DrawLineV({c.x, c.y - 2.6f}, {c.x, c.y + 2.6f}, lit(shade(frame, k)));
+    };
+    window(base[1], base[2], 0.3f, 1.0f, 0);
+    window(base[1], base[2], 0.72f, 1.0f, 1);
+    window(base[2], base[3], 0.32f, 0.75f, 2);
+    {
+        const float t = 0.74f;
+        const Vector2 d0{base[2].x + (base[3].x - base[2].x) * (t - 0.09f), base[2].y + (base[3].y - base[2].y) * (t - 0.09f)};
+        const Vector2 d1{base[2].x + (base[3].x - base[2].x) * (t + 0.09f), base[2].y + (base[3].y - base[2].y) * (t + 0.09f)};
+        fill_quad(d0, d1, {d1.x, d1.y - wall_h * 0.68f}, {d0.x, d0.y - wall_h * 0.68f}, shade({112, 78, 52, 255}, 0.8f * soot));
+        fill_quad({d0.x - 1.0f, d0.y + 1.2f}, {d1.x + 1.0f, d1.y + 1.2f}, {d1.x + 1.0f, d1.y - 0.6f}, {d0.x - 1.0f, d0.y - 0.6f},
+                  shade({150, 146, 138, 255}, soot));
+    }
+    // The yellow gas pipe along the lit wall under the eaves, down at the corner.
+    if (rnd(6) < 0.7f) {
+        const Color gas{214, 180, 40, 255};
+        DrawLineEx({base[1].x, base[1].y - wall_h + 2.5f}, {base[2].x, base[2].y - wall_h + 2.5f}, 1.4f, lit(gas));
+        DrawLineEx({base[2].x - 1.0f, base[2].y - wall_h + 2.5f}, {base[2].x - 1.0f, base[2].y - 3.0f}, 1.4f, lit(gas));
+    }
+
+    // The roof, over the eaves: hipped or gabled along the long side; slate,
+    // green or red tin, or rusty; slate ribbed, tin seamed.
+    static constexpr Color kRoofs[4] = {{128, 130, 130, 255}, {86, 120, 90, 255}, {144, 72, 56, 255}, {126, 86, 60, 255}};
+    const int cover = static_cast<int>(rnd(7) * 4.0f);
+    const Color roof = shade(kRoofs[cover], (0.94f + 0.12f * rnd(8)) * soot);
+    constexpr float kEave = 0.05f;
+    Vector2 eave[4];
+    const Vector2 out[4] = {{x0 - kEave, y0 - kEave}, {x1 + kEave, y0 - kEave}, {x1 + kEave, y1 + kEave}, {x0 - kEave, y1 + kEave}};
+    for (int i = 0; i < 4; ++i) eave[i] = on_terrain(map, out[i], wall_h - 1.0f);
+    const bool hipped = shape == 0 && rnd(9) < 0.55f;
+    const bool along_x = shape == 1 || (shape == 0 && rnd(10) < 0.5f);
+    Vector2 ridge0;
+    Vector2 ridge1;
+    const float ym = (y0 + y1) * 0.5f;
+    const float xm = (x0 + x1) * 0.5f;
+    if (hipped) {
+        ridge0 = ridge1 = on_terrain(map, {xm, ym}, wall_h + roof_h);
+        fill_triangle(eave[0], eave[1], ridge0, shade(roof, 1.1f));
+        fill_triangle(eave[3], eave[0], ridge0, shade(roof, 0.95f));
+        fill_triangle(eave[1], eave[2], ridge0, shade(roof, 1.2f));
+        fill_triangle(eave[2], eave[3], ridge0, shade(roof, 0.8f));
+    } else if (along_x) {
+        ridge0 = on_terrain(map, {x0 - kEave, ym}, wall_h + roof_h);
+        ridge1 = on_terrain(map, {x1 + kEave, ym}, wall_h + roof_h);
+        fill_quad(eave[0], eave[1], ridge1, ridge0, shade(roof, 1.1f));
+        const Vector2 g1 = on_terrain(map, {x1, ym}, wall_h + roof_h - 1.0f);
+        fill_triangle(top[1], top[2], g1, shade(wall, 0.9f));  // the gable end
+        fill_quad(ridge0, ridge1, eave[2], eave[3], shade(roof, 0.82f));
+    } else {
+        ridge0 = on_terrain(map, {xm, y0 - kEave}, wall_h + roof_h);
+        ridge1 = on_terrain(map, {xm, y1 + kEave}, wall_h + roof_h);
+        fill_quad(eave[3], eave[0], ridge0, ridge1, shade(roof, 1.1f));
+        fill_quad(ridge0, eave[1], eave[2], ridge1, shade(roof, 0.95f));
+        const Vector2 g1 = on_terrain(map, {xm, y1}, wall_h + roof_h - 1.0f);
+        fill_triangle(top[2], top[3], g1, shade(wall, 0.66f));  // the gable end
+    }
+    if (!hipped) {
+        // Ribs or seams down the slopes, the ridge capped.
+        const int ribs = cover == 0 ? 7 : 4;
+        const Vector2 lo_a = along_x ? eave[0] : eave[3];
+        const Vector2 lo_b = along_x ? eave[1] : eave[0];
+        const Vector2 lo_c = along_x ? eave[3] : eave[1];
+        const Vector2 lo_d = along_x ? eave[2] : eave[2];
+        for (int k = 1; k < ribs; ++k) {
+            const float t = static_cast<float>(k) / static_cast<float>(ribs);
+            const Vector2 r{ridge0.x + (ridge1.x - ridge0.x) * t, ridge0.y + (ridge1.y - ridge0.y) * t};
+            DrawLineV(r, {lo_a.x + (lo_b.x - lo_a.x) * t, lo_a.y + (lo_b.y - lo_a.y) * t}, lit(shade(roof, cover == 0 ? 0.92f : 1.25f)));
+            DrawLineV(r, {lo_c.x + (lo_d.x - lo_c.x) * t, lo_c.y + (lo_d.y - lo_c.y) * t}, lit(shade(roof, 0.66f)));
+        }
+        DrawLineEx(ridge0, ridge1, 1.5f, lit(shade(roof, 0.6f)));
+    }
+    // Holes where it's been hit: the dark inside, the rafters across.
+    if (damage > 0.3f) {
+        const int holes = 1 + static_cast<int>(damage * 2.5f);
+        for (int k = 0; k < holes; ++k) {
+            const Vector2 g{x0 + (x1 - x0) * (0.25f + 0.5f * rnd(60 + k)), y0 + (y1 - y0) * (0.25f + 0.5f * rnd(70 + k))};
+            const Vector2 c = on_terrain(map, g, wall_h + roof_h * 0.55f);
+            DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), 3.5f, 2.2f, lit({26, 22, 20, 255}));
+            DrawLineV({c.x - 3.0f, c.y - 1.0f}, {c.x + 3.0f, c.y + 1.0f}, lit({92, 70, 50, 255}));
+        }
+    }
+    // A brick chimney, capped; a TV aerial on some.
+    {
+        const Vector2 c = on_terrain(map, {xm + (x1 - xm) * 0.4f, ym - (ym - y0) * 0.2f}, wall_h + roof_h * 0.7f);
+        const Color brick = shade({150, 78, 60, 255}, soot);
+        fill_quad({c.x - 1.8f, c.y}, {c.x + 1.8f, c.y}, {c.x + 1.8f, c.y - 6.0f}, {c.x - 1.8f, c.y - 6.0f}, brick);
+        fill_quad({c.x - 1.8f, c.y}, {c.x, c.y}, {c.x, c.y - 6.0f}, {c.x - 1.8f, c.y - 6.0f}, shade(brick, 1.2f));
+        fill_quad({c.x - 2.4f, c.y - 6.0f}, {c.x + 2.4f, c.y - 6.0f}, {c.x + 2.4f, c.y - 7.2f}, {c.x - 2.4f, c.y - 7.2f}, shade(brick, 0.7f));
+    }
+    if (rnd(11) < 0.45f && damage < 0.6f) {
+        const Vector2 b = on_terrain(map, {xm - (xm - x0) * 0.4f, ym}, wall_h + roof_h * 0.8f);
+        DrawLineV(b, {b.x, b.y - 11.0f}, lit({70, 70, 70, 255}));
+        for (const float k : {8.0f, 10.5f}) DrawLineV({b.x - 3.5f, b.y - k + 1.0f}, {b.x + 3.5f, b.y - k - 1.0f}, lit({70, 70, 70, 255}));
+    }
 
     if (damage > 0.5f && (h & 3) == 0) {  // smoke from some of the tiles of a badly hit house
+        const Vector2 apex = on_terrain(map, {xm, ym}, wall_h + roof_h);
         const float puff = 5.0f + 5.0f * damage;
         DrawCircleV({apex.x + 2.0f, apex.y - 6.0f}, puff, lit({70, 68, 66, 150}));
         DrawCircleV({apex.x - 3.0f, apex.y - 12.0f}, puff * 0.8f, lit({90, 88, 86, 110}));
@@ -1220,6 +1373,91 @@ void draw_sunflower(Vector2 base, float tall, float head, float stage, float lea
     }
     disc(hc, head * 0.58f, bloom ? Color{96, 62, 30, 255} : Color{78, 62, 36, 255});
     if (!far) disc({hc.x + head * 0.15f, hc.y + head * 0.15f}, head * 0.32f, {58, 38, 20, 255});
+}
+
+// A village yard: a picket fence along an edge or two (weathered, green or
+// blue), and now a woodpile, a well under its little roof, a dog's kennel, a
+// washing line, a bench, a vegetable bed.
+void draw_yard(const engine::TileMap& map, int tx, int ty) {
+    const auto fx = static_cast<float>(tx);
+    const auto fy = static_cast<float>(ty);
+    const uint32_t h = tile_hash(tx * 13 + 5, ty * 11 + 9);
+    auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 7) + i * 23, i * 17 + 1)); };
+    auto at = [&](float u, float v, float lift = 0.0f) { return on_terrain(map, {fx + u, fy + v}, lift); };
+    static constexpr Color kPaint[3] = {{142, 128, 106, 255}, {86, 122, 82, 255}, {92, 122, 162, 255}};
+    const Color wood = kPaint[static_cast<int>(rnd(0) * 3.0f)];
+    auto fence = [&](Vector2 a, Vector2 b) {
+        for (int k = 0; k <= 8; ++k) {
+            const float t = static_cast<float>(k) / 8.0f;
+            const Vector2 g{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+            const Vector2 foot = at(g.x, g.y);
+            DrawLineEx(foot, {foot.x, foot.y - 5.5f}, 1.4f, lit(k % 4 == 0 ? shade(wood, 0.7f) : wood));
+        }
+        for (const float lift : {2.0f, 4.5f}) DrawLineV(at(a.x, a.y, lift), at(b.x, b.y, lift), lit(shade(wood, 0.75f)));
+    };
+    if (rnd(1) < 0.55f) fence({1.0f, 0.02f}, {1.0f, 0.98f});
+    if (rnd(2) < 0.45f) fence({0.02f, 1.0f}, {0.98f, 1.0f});
+    const int item = static_cast<int>(rnd(3) * 12.0f);
+    const Vector2 spot = at(0.3f + 0.4f * rnd(4), 0.3f + 0.4f * rnd(5));
+    switch (item) {
+        case 0:
+        case 1: {  // a woodpile: sawn ends in rows
+            DrawRectangleRec({spot.x - 7.0f, spot.y - 6.0f, 14.0f, 6.0f}, lit({104, 78, 52, 255}));
+            for (int row = 0; row < 2; ++row) {
+                for (int k = 0; k < 5; ++k) {
+                    DrawCircleV({spot.x - 5.6f + 2.8f * static_cast<float>(k) + row * 1.4f, spot.y - 1.6f - 2.8f * static_cast<float>(row)}, 1.3f,
+                                lit({188, 160, 116, 255}));
+                }
+            }
+            break;
+        }
+        case 2: {  // a well: a concrete ring, a little gable roof on posts, the winch
+            DrawEllipse(static_cast<int>(spot.x), static_cast<int>(spot.y - 3.0f), 4.0f, 2.0f, lit({160, 156, 146, 255}));
+            DrawRectangleRec({spot.x - 4.0f, spot.y - 3.0f, 8.0f, 3.0f}, lit({150, 146, 136, 255}));
+            DrawEllipse(static_cast<int>(spot.x), static_cast<int>(spot.y - 3.0f), 2.8f, 1.3f, lit({30, 34, 36, 255}));
+            for (const float side : {-3.5f, 3.5f}) DrawLineEx({spot.x + side, spot.y - 2.0f}, {spot.x + side, spot.y - 10.0f}, 1.2f, lit({96, 72, 50, 255}));
+            DrawTriangle({spot.x - 6.0f, spot.y - 9.5f}, {spot.x + 6.0f, spot.y - 9.5f}, {spot.x, spot.y - 14.0f}, lit({120, 64, 50, 255}));
+            DrawLineEx({spot.x - 3.5f, spot.y - 7.0f}, {spot.x + 3.5f, spot.y - 7.0f}, 1.4f, lit({80, 60, 42, 255}));
+            break;
+        }
+        case 3: {  // a dog's kennel
+            DrawRectangleRec({spot.x - 3.0f, spot.y - 4.0f, 6.0f, 4.0f}, lit({126, 94, 62, 255}));
+            DrawTriangle({spot.x - 3.8f, spot.y - 4.0f}, {spot.x + 3.8f, spot.y - 4.0f}, {spot.x, spot.y - 7.0f}, lit({90, 70, 52, 255}));
+            DrawEllipse(static_cast<int>(spot.x), static_cast<int>(spot.y - 1.5f), 1.2f, 1.5f, lit({30, 24, 20, 255}));
+            break;
+        }
+        case 4: {  // a washing line between two posts, washing on it
+            const Vector2 a{spot.x - 8.0f, spot.y};
+            const Vector2 b{spot.x + 8.0f, spot.y - 3.0f};
+            DrawLineEx(a, {a.x, a.y - 9.0f}, 1.1f, lit({96, 90, 84, 255}));
+            DrawLineEx(b, {b.x, b.y - 9.0f}, 1.1f, lit({96, 90, 84, 255}));
+            DrawLineV({a.x, a.y - 9.0f}, {b.x, b.y - 9.0f}, lit({200, 200, 196, 255}));
+            static constexpr Color kWash[4] = {{226, 224, 216, 255}, {170, 60, 56, 255}, {80, 110, 170, 255}, {214, 190, 90, 255}};
+            for (int k = 0; k < 4; ++k) {
+                const float t = 0.15f + 0.22f * static_cast<float>(k);
+                const Vector2 c{a.x + (b.x - a.x) * t, a.y - 9.0f + (b.y - a.y) * t};
+                DrawRectangleRec({c.x - 1.4f, c.y, 2.8f, 3.5f}, lit(kWash[(k + static_cast<int>(h)) % 4]));
+            }
+            break;
+        }
+        case 5: {  // a bench by the fence
+            DrawLineEx({spot.x - 5.0f, spot.y - 2.5f}, {spot.x + 5.0f, spot.y - 4.0f}, 2.0f, lit({132, 100, 66, 255}));
+            for (const float side : {-4.0f, 4.0f}) DrawLineV({spot.x + side, spot.y - 2.8f + side * -0.15f}, {spot.x + side, spot.y}, lit({90, 68, 46, 255}));
+            break;
+        }
+        case 6:
+        case 7: {  // a vegetable bed
+            for (int row = 0; row < 3; ++row) {
+                for (int k = 0; k < 4; ++k) {
+                    const Vector2 g{0.25f + 0.12f * static_cast<float>(k), 0.3f + 0.14f * static_cast<float>(row)};
+                    DrawCircleV(at(g.x, g.y, 1.0f), 1.4f, lit(row == 1 ? Color{150, 184, 110, 255} : Color{70, 110, 50, 255}));
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 // A round bale of straw lying on its side: the lit end, the rolled side.
@@ -2345,6 +2583,19 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         if (state == kUnexplored || behind_relief(tx, ty)) return;
         const float light = state == kInView ? 1.0f : kFogLight;
         switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
+            case engine::Terrain::Urban: {
+                // An apple or a cherry tree in some of the village yards.
+                const uint32_t hk = tile_hash(tx * 7 + 3, ty * 5 + 1);
+                if (!village(tx, ty) || hk % 4 != 0) break;
+                Tree t{{static_cast<float>(tx) + 0.25f + 0.5f * hash_unit(hk >> 4), static_cast<float>(ty) + 0.25f + 0.5f * hash_unit(hk >> 12)},
+                       0.8f + 0.25f * hash_unit(hk >> 20), 0.9f + 0.2f * hash_unit(hk >> 8), TreeKind::Apple};
+                t.height = 0.9f + 0.3f * hash_unit(hk >> 16);
+                t.girth = 0.9f + 0.2f * hash_unit(hk >> 24);
+                t.bend = (hash_unit(hk >> 6) - 0.5f) * 3.0f;
+                t.seed = hk;
+                drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
+                break;
+            }
             case engine::Terrain::Orchard: {
                 // Apple trees in rows a tile apart, two to a tile along the row.
                 for (int k = 0; k < 2; ++k) {
@@ -2693,6 +2944,10 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
                 pos[j][i] = iso::project(p, height);
                 const GroundAt g = ground_at(world, p, terrain == Terrain::Bridge ? Terrain::Water : terrain);  // the river under a bridge
                 Color c = ground_colour(g.terrain, p);
+                if (g.terrain == Terrain::Urban && village(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)))) {
+                    // A village yard: grass, trodden bare along the paths and by the doors.
+                    c = mix(ground_colour(Terrain::Grass, p), {124, 106, 80, 255}, 0.75f * smooth01((field(p, 61) - 0.38f) / 0.25f));
+                }
                 if (g.terrain == Terrain::Slag) {
                     // Up the top of a spoil tip, the rock that smouldered for years, burnt rusty red;
                     // round its foot the grass coming up through the scree.
@@ -2934,6 +3189,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
             });
         }
         draw_ground_detail(map, tx, ty, terrain, top, right, bottom, left);
+        if (terrain == engine::Terrain::Urban && village(tx, ty)) draw_yard(map, tx, ty);
         if (terrain == engine::Terrain::Airstrip) {
             // Concrete slabs; a dashed centre line down the middle row of the runway.
             const Color seam = shade(theme::terrain_color(terrain), 0.8f);

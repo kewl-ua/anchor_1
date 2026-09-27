@@ -143,6 +143,14 @@ private:
     std::vector<uint8_t> crater_seen_;
     uint32_t crater_revision_ = 0;
     void draw_crater(const engine::World& world, int tx, int ty) const;
+    // Yards of a village (not of the town or the works): earth and grass,
+    // fences, woodpiles, wells, fruit trees. One per tile, found once per map.
+    std::vector<uint8_t> village_;
+    bool village(int tx, int ty) const {
+        return tx >= 0 && ty >= 0 && tx < cache_width_ && ty < cache_height_ &&
+               village_.size() == static_cast<size_t>(cache_width_ * cache_height_) &&
+               village_[static_cast<size_t>(ty * cache_width_ + tx)] != 0;
+    }
     // Each bridge's deck, from its tiles (see iso::Deck).
     std::vector<std::pair<engine::EntityId, iso::Deck>> bridge_decks_;
     void draw_bridges(const engine::World& world) const;
