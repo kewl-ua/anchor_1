@@ -190,6 +190,9 @@ TickInput sample_input() {
     supply.units = {22};
     supply.target_unit = 23;
     input.commands.push_back(supply);
+    Command collect = make_move({24}, 70, 71);
+    collect.type = CommandType::Collect;
+    input.commands.push_back(collect);
     Command post = make_move({19}, 60, 61);
     post.type = CommandType::Observe;
     input.commands.push_back(post);

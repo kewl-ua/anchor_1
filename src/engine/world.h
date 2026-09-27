@@ -34,6 +34,7 @@ enum class Order : uint8_t {
     Observe,       // scout: an observation post watching the sector towards order_point, holding fire
     Ability,       // using the skill order_ability at order_point (to order_point2)
     Supply,        // a service vehicle looking after the unit `serves`
+    Collect,       // a supply truck parked at order_point by the wood, taking loads in
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -327,6 +328,8 @@ struct Unit {
     // call once.
     EntityId serves = 0;
     bool on_call = false;
+    // A collecting truck on its way to unload what the rear troops gave it.
+    bool delivering = false;
 
     bool silent = false;  // radio silence: no bearings on it, orders by courier
     bool airborne = false;  // an aircraft in the air: only air defence reaches it
@@ -528,6 +531,10 @@ private:
     void apply_retrain(const Command& cmd);
     void apply_build(const Command& cmd);
     void apply_haul(const Command& cmd);
+    void apply_collect(const Command& cmd);
+    void update_collect(Unit& u);
+    // Of our trucks collecting by the wood, the one whose spot is nearest.
+    Unit* nearest_collector(PlayerId owner, FixedVec2 from);
     void apply_observe(const Command& cmd);
 
     // Skills and field works (world_skills.cpp).

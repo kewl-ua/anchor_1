@@ -41,6 +41,11 @@ inline void pay(Stock& have, const Stock& price) {
 
 // --- Rear troops' work ---
 inline constexpr int32_t kCarryCapacity = 10;
+// A supply truck parked by the wood: rear troops this close hand it their
+// loads instead of walking them in. Full, or with nobody bringing anything
+// for a while, it takes the load in and comes back.
+inline constexpr int32_t kCollectReachTiles = 2;
+inline constexpr Tick kCollectPatience = 20 * kTicksPerSecond;
 inline constexpr Tick kChopTicks = kTicksPerSecond;           // one unit of timber per second
 inline constexpr Tick kQuarryTicks = kTicksPerSecond * 3 / 2;  // stone is slower
 inline constexpr int32_t kForestMaterials = 150;              // per tile; a cut-down forest is a field

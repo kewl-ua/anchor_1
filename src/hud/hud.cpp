@@ -862,6 +862,11 @@ namespace {
 
 // A supply truck's assignment, and what holds it up if anything.
 std::pair<const char*, Color> truck_status(const engine::World& world, const engine::Unit& u) {
+    if (u.order == engine::Order::Collect) {
+        return {TextFormat("By the wood: %d / %d materials aboard, %s", u.carrying, engine::kTruckCapacity,
+                           u.delivering ? "taking them in" : "rear troops hand their loads in"),
+                theme::kTextDim};
+    }
     if (u.order != engine::Order::Haul) return {"Off the supply run: Q-R put it back on", theme::kWarning};
     const engine::Structure* station = world.station_of(u.owner);
     if (!station) return {"No station: no freight comes", theme::kDanger};
@@ -923,8 +928,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
                                                   "Gathering",     "Retraining",       "Building",
                                                   "Supply run",    "Observing, holding fire", "Using a skill",
-                                                  "Looking after a unit"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Supply) + 1);
+                                                  "Looking after a unit", "Collecting by the wood"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Collect) + 1);
     const char* state = kOrderNames[static_cast<int>(u.order)];
     if (u.order == engine::Order::Ability) state = engine::ability_def(u.order_ability).label;
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";

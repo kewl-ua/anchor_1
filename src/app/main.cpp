@@ -33,6 +33,7 @@ struct Options {
     // `--look x,y`: during the smoke test, keep the camera on this ground
     // point (in tiles) instead of following the army.
     std::optional<Vector2> look;
+    std::optional<float> zoom;  // smoke screenshots: camera zoom
     // `--reveal`: no fog of war on screen (the game itself still plays by it).
     bool reveal = false;
     // `--ticks n`: take the smoke screenshot at this tick.
@@ -54,8 +55,10 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     const engine::World& world = game.world();
     const engine::PlayerId me = game.local_player();
 
-    if (options.scene == "economy") {
-        // Rear troops cut the nearest woodline; the headquarters hires two more.
+    if (options.scene == "economy" || options.scene == "timber") {
+        // Rear troops cut the nearest woodline; the headquarters hires two
+        // more. `timber` (offline): a supply truck parks by the wood and
+        // takes their loads in; the camera stays at the wood.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const engine::TilePos b = engine::tile_of(base);
         std::optional<engine::TilePos> wood;
@@ -86,6 +89,11 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         const Vector2 b2 = render::to_vector2(base);
         const Vector2 w2 = wood ? render::to_vector2(engine::tile_center(*wood)) : b2;
+        if (options.scene == "timber" && options.mode == Options::Mode::Offline && wood) {
+            const engine::EntityId truck = game.world_for_setup().spawn_unit(me, engine::UnitTypeId::Truck, base);
+            game.submit({.type = engine::CommandType::Collect, .units = {truck}, .target = engine::tile_center(*wood)});
+            return w2;
+        }
         return Vector2{(b2.x + w2.x) * 0.5f, (b2.y + w2.y) * 0.5f};
     }
 
@@ -572,6 +580,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
             if (!parse_map_size(argv[++i], opt.map_size)) return std::nullopt;
         } else if (arg == "--smoke-test" && has_next) {
             opt.smoke_screenshot = argv[++i];
+        } else if (arg == "--zoom" && has_next) {
+            long percent = 0;
+            if (!parse_int(argv[++i], 30, 250, percent)) return std::nullopt;
+            opt.zoom = static_cast<float>(percent) / 100.0f;
         } else if (arg == "--look" && has_next) {
             const std::string xy = argv[++i];
             const size_t comma = xy.find(',');
@@ -672,6 +684,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (smoke && smoke_look) {
+                if (options->zoom) game->set_camera_zoom(*options->zoom);
                 game->center_camera_on(*smoke_look);
             } else if (smoke) {
                 game->center_camera_on_selection();

@@ -238,6 +238,26 @@ void World::update_gathering(Unit& u) {
 
     if (u.carrying >= kCarryCapacity || (nothing_left && u.carrying > 0)) {
         const Structure* hq = nearest_drop_off(u.owner, u.pos);
+        // A truck collecting by the wood, if its spot is nearer: into its bed,
+        // or, while it's away unloading, wait for it at its spot.
+        if (Unit* truck = nearest_collector(u.owner, u.pos);
+            truck && (!hq || (truck->order_point - u.pos).length_sq_raw() < distance_sq_to(*hq, u.pos))) {
+            const bool ready = !truck->delivering && truck->carrying < kTruckCapacity &&
+                               (truck->order_point - truck->pos).length_sq_raw() <= square_raw(Fixed::from_int(1));
+            const FixedVec2 meet = ready ? truck->pos : truck->order_point;
+            if ((meet - u.pos).length_sq_raw() > square_raw(Fixed::from_int(kCollectReachTiles))) {
+                navigate(u, meet, u.chase_path, map_.clamp_tile(tile_of(meet)), false);
+                return;
+            }
+            if (!ready) return;
+            const int32_t moved = std::min(u.carrying, kTruckCapacity - truck->carrying);
+            truck->carrying += moved;
+            truck->carrying_type = Resource::Materials;
+            truck->work = 0;  // someone brought something: it waits on
+            u.carrying -= moved;
+            if (nothing_left && u.carrying == 0) finish();
+            return;
+        }
         if (!hq) return finish();
         if (distance_sq_to(*hq, u.pos) <= square_raw(kDoorReach)) {
             stock_[u.owner % kMaxPlayers][static_cast<size_t>(Resource::Materials)] += u.carrying;
@@ -609,12 +629,78 @@ const Structure* World::nearest_owned(PlayerId owner, StructureType type, FixedV
     return best;
 }
 
+Unit* World::nearest_collector(PlayerId owner, FixedVec2 from) {
+    Unit* best = nullptr;
+    uint64_t best_sq = 0;
+    for (Unit& t : units_) {
+        if (t.owner != owner || t.order != Order::Collect) continue;
+        const uint64_t d = (t.order_point - from).length_sq_raw();  // where it parks
+        if (!best || d < best_sq) {
+            best = &t;
+            best_sq = d;
+        }
+    }
+    return best;
+}
+
+// Supply trucks sent to the wood or the stone: parked by it on firm ground,
+// taking the rear troops' loads in.
+void World::apply_collect(const Command& cmd) {
+    const TilePos clicked = map_.clamp_tile(tile_of(cmd.target));
+    const std::optional<TilePos> spot = nearest_passable(map_, clicked, MoveClass::Wheeled);
+    if (!spot) return;
+    for (EntityId id : cmd.units) {
+        Unit* u = find_unit_mut(id);
+        if (!u || u->owner != cmd.player || u->type != UnitTypeId::Truck) continue;
+        if (u->carrying > 0 && u->carrying_type != Resource::Materials) continue;  // freight aboard: deliver it first
+        u->order = Order::Collect;
+        u->order_point = tile_center(*spot);
+        u->order_goal = *spot;
+        u->order_path.reset();
+        u->chase_path.reset();
+        u->speed_cap = Fixed{};
+        u->engaged = 0;
+        u->work = 0;
+        u->delivering = false;
+    }
+}
+
+// Parked by the wood until it's full, or nobody has brought anything for a
+// while and there's something aboard; then to the headquarters or a
+// warehouse, unload the lot, and back to its spot.
+void World::update_collect(Unit& u) {
+    if (!u.delivering) {
+        if ((u.order_point - u.pos).length_sq_raw() > square_raw(Fixed::from_ratio(1, 2))) {
+            navigate(u, u.order_point, u.order_path, u.order_goal, false);
+            return;
+        }
+        ++u.work;
+        if (u.carrying >= kTruckCapacity || (u.carrying > 0 && u.work >= kCollectPatience)) {
+            u.delivering = true;
+            u.work = 0;
+        }
+        return;
+    }
+    const Structure* drop = nearest_drop_off(u.owner, u.pos);
+    if (!drop) return;
+    if (distance_sq_to(*drop, u.pos) > square_raw(kDoorReach)) {
+        navigate(u, drop->center, u.chase_path, map_.clamp_tile(tile_of(drop->center)), false);
+        u.work = 0;
+        return;
+    }
+    if (++u.work < kTruckLoadTicks) return;
+    stock_[u.owner % kMaxPlayers][static_cast<size_t>(Resource::Materials)] += u.carrying;
+    u.carrying = 0;
+    u.work = 0;
+    u.delivering = false;
+}
+
 const Structure* World::nearest_drop_off(PlayerId owner, FixedVec2 from) const {
     const Structure* best = nullptr;
     uint64_t best_sq = 0;
     for (const Structure& s : structures_) {
         if (s.owner != owner || !s.built) continue;
-        if (s.type != StructureType::Headquarters && s.type != StructureType::Warehouse) continue;
+        if (s.type != StructureType::Headquarters && role_of(s) != StructureType::Warehouse) continue;
         const uint64_t d = distance_sq_to(s, from);
         if (!best || d < best_sq) {
             best = &s;

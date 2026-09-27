@@ -1346,6 +1346,73 @@ void test_cut_down_forest_becomes_field() {
     for (const Unit& u : sim.world().units()) CHECK(u.order == Order::Idle && u.carrying == 0);
 }
 
+// A wood far from the headquarters (a forest at x 45..50), three rear
+// troops at its edge; `truck`: one of our supply trucks sent to collect
+// there. Materials in the stock after `ticks`, and whether any of the men
+// walked back near the headquarters.
+std::pair<int32_t, bool> timber_run(bool truck, int ticks, int men = 3) {
+    TileMap map(60, 30);
+    for (int y = 10; y <= 20; ++y) {
+        for (int x = 45; x <= 50; ++x) map.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::Headquarters, 0, {3, 12}, 3, 3);
+    std::vector<EntityId> crew;
+    for (int i = 0; i < men; ++i) crew.push_back(w.spawn_unit(0, UnitTypeId::Worker, at(43, 13 + 2 * i)));
+    issue(sim, gather_at(crew, 45, 15));
+    if (truck) {
+        const EntityId t = w.spawn_unit(0, UnitTypeId::Truck, at(40, 15));
+        issue(sim, make_order(CommandType::Collect, 0, {t}, 45, 15));
+    }
+    bool walked_home = false;
+    for (int i = 0; i < ticks; ++i) {
+        sim.step();
+        for (EntityId id : crew) walked_home = walked_home || sim.world().find_unit(id)->pos.x < Fixed::from_int(20);
+    }
+    return {stock_of(sim, Resource::Materials), walked_home};
+}
+
+// Rear troops cut at the wood and walk their loads to the headquarters; with
+// a truck parked by the wood they hand the loads to it instead, and it takes
+// them in 40 at a time: more timber in the same time.
+void test_trucks_collect_timber() {
+    const auto [on_foot, walked] = timber_run(false, 4000);
+    const auto [by_truck, walked_too] = timber_run(true, 4000);
+    CHECK(on_foot > 0 && walked);
+    CHECK(!walked_too);
+    CHECK(by_truck > on_foot);
+    CHECK(by_truck % kTruckCapacity == 0);  // it waits for a full bed while the men keep bringing
+    const auto [one_man, walked_alone] = timber_run(true, 6000, 1);  // slow going, but loads keep coming
+    CHECK(one_man > 0 && one_man % kTruckCapacity == 0 && !walked_alone);
+
+    // Nobody bringing anything for a while: it takes in what it has.
+    TileMap map(40, 20);
+    Simulation sim(1, map);
+    sim.world_for_setup().place_structure(StructureType::Headquarters, 0, {3, 8}, 3, 3);
+    const EntityId t = sim.world_for_setup().spawn_unit(0, UnitTypeId::Truck, at(30, 10));
+    issue(sim, make_order(CommandType::Collect, 0, {t}, 30, 10));
+    for (int i = 0; i < 10; ++i) sim.step();
+    Unit* truck = sim.world_for_setup().unit_for_setup(t);
+    truck->carrying = 15;
+    truck->carrying_type = Resource::Materials;
+    for (Tick i = 0; i < kCollectPatience + 1000 && stock_of(sim, Resource::Materials) == 0; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Materials) == 15);
+    for (int i = 0; i < 1000; ++i) sim.step();
+    CHECK((sim.world().find_unit(t)->pos - at(30, 10)).length() < Fixed::from_int(1));  // back at its spot
+
+    // Only supply trucks collect, and not with other freight aboard.
+    const EntityId tanker = sim.world_for_setup().spawn_unit(0, UnitTypeId::FuelTanker, at(20, 10));
+    sim.world_for_setup().unit_for_setup(tanker)->carrying = 0;  // empty, and still no
+    const EntityId loaded = sim.world_for_setup().spawn_unit(0, UnitTypeId::Truck, at(21, 12));
+    sim.world_for_setup().unit_for_setup(loaded)->carrying = 20;
+    sim.world_for_setup().unit_for_setup(loaded)->carrying_type = Resource::Food;
+    issue(sim, make_order(CommandType::Collect, 0, {tanker, loaded}, 30, 10));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(tanker)->order != Order::Collect);
+    CHECK(sim.world().find_unit(loaded)->order != Order::Collect);
+}
+
 void test_rear_troops_quarry_stone() {
     Simulation sim = economy_sim({}, false);
     issue(sim, gather_at(spawn_workers(sim, 2, 9, 13), 5, 15));
@@ -3992,6 +4059,7 @@ int main() {
     test_rear_troops_cut_timber();
     test_cut_down_forest_becomes_field();
     test_rear_troops_quarry_stone();
+    test_trucks_collect_timber();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

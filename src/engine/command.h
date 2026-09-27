@@ -33,6 +33,7 @@ enum class CommandType : uint8_t {
     Unload,        // everyone inside a house or dugout (target_unit) comes out
     Research,      // a building (target_unit) researches an upgrade (`upgrade`)
     Supply,        // tankers, ammunition trucks: look after one unit (target_unit) for good
+    Collect,       // supply trucks: park by the wood or the stone at `target` and take the rear troops' loads in
 };
 
 // The only way anything outside the engine can change the game state.

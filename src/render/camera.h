@@ -13,6 +13,8 @@ class RtsCamera {
 public:
     void set_bounds(Rectangle bounds);
     void center_on(Vector2 world_pos);
+    // Zoom, within the limits the mouse wheel has (smoke screenshots).
+    void set_zoom(float zoom);
 
     // Reads input and updates the view; call once per frame.
     void update(float dt);

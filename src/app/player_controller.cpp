@@ -155,7 +155,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 if (!stock.units.empty()) lockstep.submit(std::move(stock));
                 if (!move.units.empty()) lockstep.submit(std::move(move));
                 renderer.add_order_ping(render::to_vector2(structure->center), false);
-            } else if (resource && !structure && has_workers(world)) {
+            } else if (resource && !structure && (has_workers(world) || has_trucks(world))) {
                 // Rear troops go to work; anyone else selected just goes there.
                 order_gather(lockstep, world, renderer, render::to_vector2(engine::tile_center(*resource)));
             } else if (structure && structure->owner == player_ && !structure->built &&
@@ -263,6 +263,10 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
     }
     if (s && engine::is_shelter(role)) {
         hint_ = s->owner == engine::kNoOwner || s->owner == player_ ? "RMB: go in" : "RMB: shell it";
+        return;
+    }
+    if (resource && !s && has_trucks(world) && !has_workers(world)) {
+        hint_ = "RMB: park by it; rear troops hand it their loads, it takes them in 40 at a time";
         return;
     }
     if (resource && !s && has_workers(world)) {
@@ -782,15 +786,23 @@ void PlayerController::order_gather(net::Lockstep& lockstep, const engine::World
     engine::Command gather;
     gather.type = engine::CommandType::Gather;
     gather.target = render::to_fixed_vec2(ground);
+    engine::Command collect{.type = engine::CommandType::Collect, .target = gather.target};
     engine::Command move;
     move.type = engine::CommandType::Move;
     move.target = gather.target;
     for (engine::EntityId id : selection_) {
         const engine::Unit* u = world.find_unit(id);
         if (!u) continue;
-        (engine::unit_type(u->type).worker ? gather : move).units.push_back(id);
+        if (engine::unit_type(u->type).worker) {
+            gather.units.push_back(id);
+        } else if (u->type == engine::UnitTypeId::Truck) {
+            collect.units.push_back(id);  // parks by the wood and takes their loads in
+        } else {
+            move.units.push_back(id);
+        }
     }
     if (!gather.units.empty()) lockstep.submit(std::move(gather));
+    if (!collect.units.empty()) lockstep.submit(std::move(collect));
     if (!move.units.empty()) lockstep.submit(std::move(move));
     renderer.add_order_ping(ground, false);
 }

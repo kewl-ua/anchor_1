@@ -20,6 +20,11 @@ void RtsCamera::set_bounds(Rectangle bounds) {
     clamp_to_world();
 }
 
+void RtsCamera::set_zoom(float zoom) {
+    camera_.zoom = std::clamp(zoom, kMinZoom, kMaxZoom);
+    clamp_to_world();
+}
+
 void RtsCamera::center_on(Vector2 world_pos) {
     fit_to_screen();
     camera_.target = world_pos;

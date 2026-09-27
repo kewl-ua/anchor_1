@@ -38,6 +38,7 @@ public:
     // Jumps the camera to the middle of the selected units (Space key).
     void center_camera_on_selection();
     void center_camera_on(Vector2 ground);
+    void set_camera_zoom(float zoom) { camera_.set_zoom(zoom); }
 
     // Development helpers for --smoke-test.
     void submit(engine::Command cmd) { lockstep_.submit(std::move(cmd)); }

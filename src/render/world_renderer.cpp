@@ -1397,6 +1397,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         if (d.unit && !d.unit->inside && d.unit->owner == viewer_) {
             draw_supply_warning(map, *d.unit, alpha);
             draw_radio_marks(world, *d.unit, alpha);
+            draw_load_bar(map, *d.unit, alpha);
         }
         if (d.unit && d.unit->owner != viewer_ && world.fixed_by(viewer_, *d.unit)) {
             // Located by our direction finders: a target marker around it.
@@ -1546,6 +1547,12 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
             }
             break;
         }
+        case engine::Order::Collect: {
+            const Vector2 to = on_terrain(map, to_vector2(u.order_point));
+            DrawLineV(from, to, ColorAlpha(theme::kSelection, 0.4f));
+            draw_ground_ellipse(to, 0.6f, ColorAlpha(theme::kSelection, 0.6f));
+            break;
+        }
         case engine::Order::Supply:
             if (const engine::Structure* post = world.find_structure(u.serves)) {
                 const Vector2 to = on_terrain(map, to_vector2(post->center));
@@ -1672,11 +1679,22 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
             break;
     }
     const Vector2 offset = iso_offset({facing.x * length, facing.y * length});
-    DrawLineEx(hands, {hands.x + offset.x, hands.y + offset.y}, thickness, weapon);
+    if (u.type == engine::UnitTypeId::Worker && u.order == engine::Order::Gather && u.work > 0) {
+        // At work: an axe (or a pick) swinging up and down, a stroke a second.
+        const float phase = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
+        const float lift = 7.0f * std::cos(phase * 6.2831853f);
+        const Vector2 head{hands.x + offset.x * 1.3f, hands.y + offset.y * 1.3f - lift};
+        DrawLineEx(hands, head, 1.5f, {110, 84, 54, 255});
+        DrawRectangleRec({head.x - 2.0f, head.y - 2.0f, 4.0f, 3.0f}, {150, 150, 150, 255});
+    } else {
+        DrawLineEx(hands, {hands.x + offset.x, hands.y + offset.y}, thickness, weapon);
+    }
     if (u.carrying > 0) {
-        // A bundle of timber or stone on the back.
+        // A bundle of timber or stone on the back, as big as it's got.
+        const float size = 0.4f + 0.6f * std::min(1.0f, static_cast<float>(u.carrying) / engine::kCarryCapacity);
         const Vector2 back = iso_offset({-facing.x * 0.12f, -facing.y * 0.12f});
-        DrawRectangleRec({hands.x + back.x - 3.5f, hands.y + back.y - 5.0f, 7.0f, 5.0f}, {120, 88, 52, 255});
+        DrawRectangleRec({hands.x + back.x - 3.5f * size, hands.y + back.y - 6.0f * size, 7.0f * size, 6.0f * size},
+                         {120, 88, 52, 255});
     }
     DrawRectangleRoundedLines({feet.x - 3.0f, feet.y - 13.0f, 6.0f, 12.0f}, 0.6f, 4, dark);
     if (u.type == engine::UnitTypeId::Signaler) {
@@ -1924,6 +1942,21 @@ void WorldRenderer::draw_supply_warning(const engine::TileMap& map, const engine
         DrawText(letter, static_cast<int>(x + 2), static_cast<int>(y + 1), 10, WHITE);
         x += 12.0f;
     }
+}
+
+// Our rear troops at the wood and trucks collecting there: how full they are.
+void WorldRenderer::draw_load_bar(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
+    float full = -1.0f;
+    if (u.order == engine::Order::Gather && u.carrying > 0) {
+        full = static_cast<float>(u.carrying) / static_cast<float>(engine::kCarryCapacity);
+    }
+    if (u.order == engine::Order::Collect) full = static_cast<float>(u.carrying) / static_cast<float>(engine::kTruckCapacity);
+    if (full < 0.0f) return;
+    const Vector2 feet = on_terrain(map, unit_ground_pos(u, alpha));
+    const float w = engine::unit_type(u.type).vehicle ? 26.0f : 14.0f;
+    const float y = feet.y - (engine::unit_type(u.type).vehicle ? 32.0f : 30.0f);
+    DrawRectangleRec({feet.x - w * 0.5f - 1, y - 1, w + 2, 5}, {0, 0, 0, 170});
+    DrawRectangleRec({feet.x - w * 0.5f, y, w * std::min(1.0f, full), 3}, {196, 150, 90, 255});
 }
 
 // Our own radios: silent ones, and the ones an order is on its way to by courier.
