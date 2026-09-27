@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <utility>
+#include <vector>
 
 #include "engine/economy.h"
 
@@ -26,6 +28,8 @@ constexpr Hill kHills[] = {
     {22, 60, 1, 3},
     {56, 80, 3, 1},
     {26, 76, 1, 2},  // a knoll in front of the first player's base
+    {30, 62, 1, 1},  // with the hill at (22, 60), a low ridge across the fields
+    {34, 64, 1, 1},
 };
 constexpr int32_t kTilesPerLevel = 3;  // slope length per elevation level
 
@@ -92,6 +96,10 @@ constexpr Segment kHighway = {18, 82, 50, 50};
 constexpr Segment kDirtRoads[] = {
     {34, 53, 34, 64}, {14, 63, 27, 73}, {20, 78, 20, 56}, {34, 64, 40, 60},
 };
+// Dry riverbeds in their gullies, running off the river: the plain is a
+// level above the rivers and the gullies, so a gully is a hidden way in.
+constexpr Segment kGullies[] = {{55, 62, 62, 74}, {24, 30, 12, 38}};
+constexpr int32_t kGullyHalfWidth = 1;  // three tiles across
 // The old front line: craters in the middle of the map.
 constexpr Rect kShelledBelt = {35, 48, 15, 17};
 
@@ -363,7 +371,33 @@ TileMap make_demo_map(int32_t size) {
         }
     }
 
+    // The gullies: a dry riverbed along the bottom (trees crossing it stay),
+    // left at the rivers' level when the plain is raised below.
+    std::vector<uint8_t> low(static_cast<size_t>(size * size), 0);
+    for (const Segment& g : kGullies) {
+        p.line(g, [&](int32_t x, int32_t y, int32_t) {
+            for (int32_t dx = -kGullyHalfWidth; dx <= kGullyHalfWidth; ++dx) {
+                for (const auto& [tx, ty] : {std::pair{x + dx, y}, std::pair{size - 1 - (x + dx), size - 1 - y}}) {
+                    if (!map.contains_tile(tx, ty)) continue;
+                    const Terrain under = map.terrain(tx, ty);
+                    if (under == Terrain::Water || under == Terrain::Bridge || under == Terrain::Rail) continue;
+                    low[static_cast<size_t>(ty * size + tx)] = 1;
+                    if (under != Terrain::Forest) map.set_terrain(tx, ty, Terrain::Riverbed);
+                }
+            }
+        });
+    }
+
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
+
+    // The plain a level above the rivers, the ponds and the gullies.
+    for (int32_t y = 0; y < size; ++y) {
+        for (int32_t x = 0; x < size; ++x) {
+            const Terrain t = map.terrain(x, y);
+            if (t == Terrain::Water || t == Terrain::Bridge || low[static_cast<size_t>(y * size + x)]) continue;
+            map.set_elevation(x, y, static_cast<uint8_t>(map.elevation(x, y) + 1));
+        }
+    }
     return map;
 }
 

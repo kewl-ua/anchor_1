@@ -50,6 +50,7 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Crops: return {138, 140, 64, 255};
         case engine::Terrain::Swamp: return {64, 86, 68, 255};
         case engine::Terrain::Crater: return {92, 82, 68, 255};
+        case engine::Terrain::Riverbed: return {150, 136, 106, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;

@@ -1991,6 +1991,43 @@ std::vector<EntityId> farm_crew(Simulation& sim) {
     return crew;
 }
 
+// The plain lies a level above the rivers and the dry riverbeds in their
+// gullies: a way in unseen from the fields, unless one looks from the edge.
+void test_demo_map_relief() {
+    for (const MapSizePreset& preset : kMapSizes) {
+        const TileMap map = make_demo_map(preset.tiles);
+        int riverbed = 0;
+        bool plain_raised = true;
+        for (int32_t y = 0; y < map.height(); ++y) {
+            for (int32_t x = 0; x < map.width(); ++x) {
+                const Terrain t = map.terrain(x, y);
+                if (t == Terrain::Riverbed) {
+                    ++riverbed;
+                    CHECK(map.elevation(x, y) == 0);
+                }
+                if (t == Terrain::Grass || t == Terrain::Road || t == Terrain::Plowed) {
+                    plain_raised = plain_raised && map.elevation(x, y) >= 1;
+                }
+            }
+        }
+        CHECK(riverbed > 0 && plain_raised);
+    }
+    // A man down in a gully three tiles wide: hidden from the field some way off, seen from its edge.
+    auto seen_from = [](int32_t x) {
+        TileMap map(40, 20);
+        for (int y = 0; y < 20; ++y) {
+            for (int tx = 0; tx < 40; ++tx) map.set_elevation(tx, y, tx >= 19 && tx <= 21 ? 0 : 1);
+        }
+        Simulation sim(1, map);
+        const EntityId man = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, tile_center({20, 10}));
+        sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, tile_center({x, 10}));
+        sim.step();
+        return seen(sim, 0, man);
+    };
+    CHECK(!seen_from(12));
+    CHECK(seen_from(18));
+}
+
 // The demo map has barns near the middle, two a side, well away from both bases.
 void test_demo_map_has_barns() {
     for (const MapSizePreset& preset : kMapSizes) {
@@ -3789,6 +3826,7 @@ int main() {
     test_idle_hands();
     test_service_vehicles_on_the_rail_run();
     test_demo_map_has_barns();
+    test_demo_map_relief();
     test_take_over_a_village_building();
     test_taking_over_rules();
     test_attached_supply();

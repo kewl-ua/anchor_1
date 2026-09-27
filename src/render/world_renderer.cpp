@@ -566,6 +566,15 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
             }
             break;
         }
+        case engine::Terrain::Riverbed: {
+            // Pebbles on the sand.
+            for (int i = 0; i < 5; ++i) {
+                const float u = 0.1f + 0.8f * static_cast<float>((h >> (i * 3)) & 7) / 7.0f;
+                const float v = 0.1f + 0.8f * static_cast<float>((h >> (i * 3 + 16)) & 7) / 7.0f;
+                DrawCircleV(at(u, v), 1.2f, lit({118, 108, 92, 255}));
+            }
+            break;
+        }
         case engine::Terrain::Crater: {
             fill_ground_ellipse(at(0.5f, 0.5f), 0.32f, {120, 108, 88, 255});  // thrown-up earth
             fill_ground_ellipse(at(0.5f, 0.5f), 0.2f, {58, 50, 42, 255});    // the hole
