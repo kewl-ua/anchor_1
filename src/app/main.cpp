@@ -787,6 +787,7 @@ int main(int argc, char** argv) {
             std::printf("SMOKE player=%d tick=%u checksum=%016llX alive=%d/%d\n", game->local_player() + 1,
                         game->world().tick(), static_cast<unsigned long long>(game->world().checksum()), alive[0],
                         alive[1]);
+            std::printf("FRAME fps=%d\n", GetFPS());
             Image shot = LoadImageFromScreen();
             ExportImage(shot, options->smoke_screenshot.c_str());
             UnloadImage(shot);

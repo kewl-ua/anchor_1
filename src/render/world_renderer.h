@@ -11,6 +11,7 @@
 
 #include "engine/world.h"
 #include "render/camera.h"
+#include "render/terrain_art.h"
 
 namespace render {
 
@@ -80,6 +81,12 @@ private:
     static constexpr int kRemembered = 1;  // explored, not in view now
     static constexpr int kInView = 2;
     int fog(const engine::World& world, int tx, int ty) const;
+    // A textured tile: its ground, then the soft edges of the materials next
+    // to it that spill over onto it.
+    void draw_ground(const engine::World& world, int tx, int ty, Material material, const float (&h)[4]) const;
+    // The light on the ground at a tile corner, from the slope around it:
+    // smooth across tiles.
+    float corner_light(int cx, int cy) const;
     bool in_view(const engine::World& world, Vector2 ground) const;
     bool shows(const engine::World& world, const engine::Unit& u) const;
     void remember(const engine::World& world);
@@ -122,6 +129,8 @@ private:
     bool reveal_ = false;
     // The ground as the viewer last saw it, and others' buildings likewise.
     std::vector<engine::Terrain> seen_terrain_;
+    // Ground textures (assets/terrain), loaded with the first frame.
+    TerrainArt art_;
     std::map<engine::EntityId, engine::Structure> remembered_;
     uint32_t remembered_revision_ = 0;
     // Each station's track, from its wall to the end of the line.

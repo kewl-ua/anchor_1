@@ -6,6 +6,8 @@
 #include <optional>
 #include <utility>
 
+#include <rlgl.h>
+
 #include "render/convert.h"
 #include "render/iso.h"
 #include "theme/palette.h"
@@ -61,6 +63,28 @@ void fill_triangle(Vector2 a, Vector2 b, Vector2 c, Color color) {
 void fill_quad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color) {
     fill_triangle(a, b, c, color);
     fill_triangle(a, c, d, color);
+}
+
+// A triangle of a texture (uv in texels), its corners shaded one by one;
+// either winding.
+void textured_triangle(const Texture2D& tex, std::array<Vector2, 3> p, std::array<Vector2, 3> uv,
+                       std::array<Color, 3> c) {
+    const float cross = (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[1].y - p[0].y) * (p[2].x - p[0].x);
+    if (cross > 0) {
+        std::swap(p[1], p[2]);
+        std::swap(uv[1], uv[2]);
+        std::swap(c[1], c[2]);
+    }
+    rlCheckRenderBatchLimit(3);
+    rlSetTexture(tex.id);
+    rlBegin(RL_TRIANGLES);
+    for (size_t i = 0; i < 3; ++i) {
+        rlColor4ub(c[i].r, c[i].g, c[i].b, c[i].a);
+        rlTexCoord2f(uv[i].x / static_cast<float>(tex.width), uv[i].y / static_cast<float>(tex.height));
+        rlVertex2f(p[i].x, p[i].y);
+    }
+    rlEnd();
+    rlSetTexture(0);
 }
 
 // Ground point -> iso pixel on the terrain surface, optionally lifted up.
@@ -243,6 +267,7 @@ void WorldRenderer::remember(const engine::World& world) {
 }
 
 void WorldRenderer::update(const engine::World& world, float dt) {
+    if (!art_.loaded()) art_.load(std::string(GetApplicationDirectory()) + "assets/terrain/");
     const engine::TileMap& map = world.map();
     if (map.width() != cache_width_ || map.height() != cache_height_) {
         cache_width_ = map.width();
@@ -1449,6 +1474,109 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     EndMode2D();
 }
 
+float WorldRenderer::corner_light(int cx, int cy) const {
+    auto at = [&](int x, int y) {
+        return corner(std::clamp(x, 0, cache_width_), std::clamp(y, 0, cache_height_));
+    };
+    // Light comes from the upper left of the screen, as for the flat tiles.
+    const float slope_x = (at(cx + 1, cy) - at(cx - 1, cy)) * 0.5f;
+    const float slope_y = (at(cx, cy + 1) - at(cx, cy - 1)) * 0.5f;
+    return 1.0f + slope_x * 0.30f - slope_y * 0.18f + at(cx, cy) * 0.05f;
+}
+
+void WorldRenderer::draw_ground(const engine::World& world, int tx, int ty, Material material,
+                                const float (&h)[4]) const {
+    const engine::TileMap& map = world.map();
+    const auto fx = static_cast<float>(tx);
+    const auto fy = static_cast<float>(ty);
+    // A point of the tile (local 0..1 each way) on the ground, and its texel.
+    auto point = [&](Vector2 l) {
+        const float height = (h[0] * (1 - l.x) + h[1] * l.x) * (1 - l.y) + (h[2] * (1 - l.x) + h[3] * l.x) * l.y;
+        return iso::project({fx + l.x, fy + l.y}, height);
+    };
+    auto texel = [](Rectangle piece, Vector2 l) { return Vector2{piece.x + l.x * piece.width, piece.y + l.y * piece.height}; };
+    // Level ground is shaded to 220/255 (the textures are made that much
+    // brighter), so a slope facing the light can still show brighter. The
+    // light is worked out at the corners and blended across the tile.
+    const float light[4] = {corner_light(tx, ty), corner_light(tx + 1, ty), corner_light(tx, ty + 1),
+                            corner_light(tx + 1, ty + 1)};
+    auto shaded = [&](Vector2 l, unsigned char alpha) {
+        const float k = (light[0] * (1 - l.x) + light[1] * l.x) * (1 - l.y) + (light[2] * (1 - l.x) + light[3] * l.x) * l.y;
+        Color c = shade({220, 220, 220, 255}, k * g_light);
+        c.a = alpha;
+        return c;
+    };
+    auto piece_of = [&](Material m) { return art_.piece(m, tx, ty); };
+    auto triangle = [&](Material m, Vector2 a, Vector2 b, Vector2 c, unsigned char aa, unsigned char ab, unsigned char ac) {
+        const Rectangle piece = piece_of(m);
+        textured_triangle(art_.atlas(), {point(a), point(b), point(c)}, {texel(piece, a), texel(piece, b), texel(piece, c)},
+                          {shaded(a, aa), shaded(b, ab), shaded(c, ac)});
+    };
+    triangle(material, {0, 0}, {1, 0}, {1, 1}, 255, 255, 255);
+    triangle(material, {0, 0}, {1, 1}, {0, 1}, 255, 255, 255);
+
+    // Soft edges: a neighbour's material of a higher rank spills over onto
+    // this tile, fading out halfway across it.
+    const int own = TerrainArt::rank(material);
+    if (own < 0) return;
+    auto neighbour = [&](int dx, int dy) -> std::optional<Material> {
+        const int x = tx + dx;
+        const int y = ty + dy;
+        if (!map.contains_tile(x, y) || fog(world, x, y) == kUnexplored) return std::nullopt;
+        const std::optional<Material> m = TerrainArt::material_of(seen_terrain_[static_cast<size_t>(y * map.width() + x)]);
+        if (!m || !art_.has(*m) || TerrainArt::rank(*m) <= own) return std::nullopt;
+        return m;
+    };
+    struct Spill {
+        int rank;
+        Material material;
+        int side;  // 0..3 the edges (y-, x+, y+, x-), 4..7 the corners (x-y-, x+y-, x+y+, x-y+)
+    };
+    std::array<Spill, 8> spills{};
+    size_t count = 0;
+    static constexpr int kEdge[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+    static constexpr int kCorner[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    std::array<std::optional<Material>, 4> edge{};
+    for (int i = 0; i < 4; ++i) {
+        edge[static_cast<size_t>(i)] = neighbour(kEdge[i][0], kEdge[i][1]);
+        if (edge[static_cast<size_t>(i)]) {
+            spills[count++] = {TerrainArt::rank(*edge[static_cast<size_t>(i)]), *edge[static_cast<size_t>(i)], i};
+        }
+    }
+    for (int i = 0; i < 4; ++i) {
+        const std::optional<Material> m = neighbour(kCorner[i][0], kCorner[i][1]);
+        // The two edges meeting at this corner: already covered if either spills the same.
+        if (!m || edge[static_cast<size_t>(i)] == m || edge[static_cast<size_t>((i + 3) % 4)] == m) continue;
+        spills[count++] = {TerrainArt::rank(*m), *m, 4 + i};
+    }
+    std::stable_sort(spills.begin(), spills.begin() + static_cast<std::ptrdiff_t>(count),
+                     [](const Spill& a, const Spill& b) { return a.rank < b.rank; });
+    constexpr unsigned char kEdgeAlpha = 215;
+    constexpr float kReach = 0.5f;
+    for (size_t k = 0; k < count; ++k) {
+        const Spill& s = spills[k];
+        if (s.side < 4) {
+            // The shared edge, and the line kReach in from it.
+            static constexpr Vector2 kFrom[4] = {{0, 0}, {1, 0}, {0, 1}, {0, 0}};
+            static constexpr Vector2 kTo[4] = {{1, 0}, {1, 1}, {1, 1}, {0, 1}};
+            static constexpr Vector2 kIn[4] = {{0, 1}, {-1, 0}, {0, -1}, {1, 0}};
+            const Vector2 a = kFrom[s.side];
+            const Vector2 b = kTo[s.side];
+            const Vector2 in{kIn[s.side].x * kReach, kIn[s.side].y * kReach};
+            const Vector2 ai{a.x + in.x, a.y + in.y};
+            const Vector2 bi{b.x + in.x, b.y + in.y};
+            triangle(s.material, a, b, bi, kEdgeAlpha, kEdgeAlpha, 0);
+            triangle(s.material, a, bi, ai, kEdgeAlpha, 0, 0);
+        } else {
+            static constexpr Vector2 kAt[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+            const Vector2 c = kAt[s.side - 4];
+            const float sx = c.x == 0 ? kReach : -kReach;
+            const float sy = c.y == 0 ? kReach : -kReach;
+            triangle(s.material, c, {c.x + sx, c.y}, {c.x, c.y + sy}, kEdgeAlpha, 0, 0);
+        }
+    }
+}
+
 void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) const {
     const engine::TileMap& map = world.map();
     if (map.width() != cache_width_ || map.height() != cache_height_) return;  // update() hasn't seen this map yet
@@ -1483,7 +1611,12 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         if (state == kUnexplored) return;  // black, like the background
         const engine::Terrain terrain = seen_terrain_[static_cast<size_t>(ty * map.width() + tx)];
         g_light = state == kInView ? 1.0f : kFogLight;
-        fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
+        if (const std::optional<Material> material = TerrainArt::material_of(terrain); material && art_.has(*material)) {
+            const float h[4] = {h00, h10, h01, h11};
+            draw_ground(world, tx, ty, *material, h);
+        } else {
+            fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
+        }
         if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
             terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit ||
             terrain == engine::Terrain::Wire || terrain == engine::Terrain::Hedgehogs) {

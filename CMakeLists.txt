@@ -111,6 +111,7 @@ target_link_libraries(theme INTERFACE engine raylib)
 add_library(render STATIC
     src/render/camera.cpp
     src/render/iso.cpp
+    src/render/terrain_art.cpp
     src/render/world_renderer.cpp
 )
 target_link_libraries(render PUBLIC engine raylib PRIVATE theme)
@@ -129,6 +130,18 @@ add_executable(anchor
 )
 target_link_libraries(anchor PRIVATE engine net net_enet render hud theme raylib)
 anchor_target_defaults(anchor)
+# The game's art goes next to the executable.
+add_custom_command(TARGET anchor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:anchor>/assets)
+
+# --- Tools -------------------------------------------------------------------
+
+# pixelize: photo textures (CC0) -> tileable pixel-art ground textures in
+# assets/terrain (see tools/make_terrain.sh). stb comes with raylib.
+add_executable(pixelize tools/pixelize.cpp)
+target_include_directories(pixelize SYSTEM PRIVATE ${raylib_SOURCE_DIR}/src/external)
+anchor_target_defaults(pixelize)
+target_compile_definitions(pixelize PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 # --- Tests -------------------------------------------------------------------
 
