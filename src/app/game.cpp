@@ -75,6 +75,7 @@ void Game::update(float dt) {
 
     camera_.update(dt);
     if (IsKeyPressed(KEY_SPACE)) center_camera_on_selection();
+    if (controller_.update_groups(sim_.world())) center_camera_on_selection();
 
     // Holding the left button on the minimap drags the camera around.
     // (With attack-move armed the click is an order instead.)

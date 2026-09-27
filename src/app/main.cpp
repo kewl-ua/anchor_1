@@ -467,6 +467,22 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return std::nullopt;
     }
 
+    if (options.scene == "rally") {
+        // The headquarters' rally point ahead of it, two rear troops hired to go there.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const engine::FixedVec2 point = base + engine::FixedVec2{engine::Fixed::from_int(me == 0 ? 7 : -7),
+                                                                 engine::Fixed::from_int(me == 0 ? 3 : -3)};
+        for (const engine::Structure& s : world.structures()) {
+            if (s.type != engine::StructureType::Headquarters || s.owner != me) continue;
+            game.submit({.type = engine::CommandType::Rally, .target = point, .target_unit = s.id});
+            for (int i = 0; i < 2; ++i) {
+                game.submit({.type = engine::CommandType::Train, .target_unit = s.id,
+                             .unit_type = static_cast<uint8_t>(engine::UnitTypeId::Worker)});
+            }
+        }
+        return render::to_vector2(base);
+    }
+
     if (options.scene == "build") {
         // Three rear troops put up an infantry barracks in front of the
         // headquarters, two a warehouse towards the woodline.
@@ -675,10 +691,11 @@ int main(int argc, char** argv) {
                 smoke_ordered = true;
             }
             game->update(GetFrameTime());
-            if (smoke && (options->scene == "build" || options->scene == "logistics")) {
-                // Show the barracks' or the station's card on the command panel.
-                const engine::StructureType shown = options->scene == "build" ? engine::StructureType::InfantryBarracks
-                                                                              : engine::StructureType::Station;
+            if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally")) {
+                // Show the barracks', the station's or the headquarters' card on the command panel.
+                const engine::StructureType shown = options->scene == "build"       ? engine::StructureType::InfantryBarracks
+                                                    : options->scene == "logistics" ? engine::StructureType::Station
+                                                                                    : engine::StructureType::Headquarters;
                 for (const engine::Structure& s : game->world().structures()) {
                     if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);
                 }

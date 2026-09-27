@@ -1413,6 +1413,48 @@ void test_trucks_collect_timber() {
     CHECK(sim.world().find_unit(loaded)->order != Order::Collect);
 }
 
+// A rally point: the headquarters sends the rear troops it hires to cut the
+// wood the point is on, and trucks to collect there; a barracks sends its
+// riflemen to a point. Only for our own buildings that hire anyone.
+void test_rally_points() {
+    Simulation sim = economy_sim({10, 200, 200, 200, 200});
+    World& w = sim.world_for_setup();
+    const EntityId hq = sim.world().structure_at({6, 10})->id;
+    const EntityId barracks = w.place_structure(StructureType::InfantryBarracks, 0, {20, 16}, 3, 3);
+    const EntityId store = w.place_structure(StructureType::Warehouse, 0, {26, 4}, 2, 2);
+    Command rally{.type = CommandType::Rally, .player = 0, .target = tile_center({12, 8}), .target_unit = hq};
+    issue(sim, rally);
+    Command drill{.type = CommandType::Rally, .player = 0, .target = at(30, 20), .target_unit = barracks};
+    issue(sim, drill);
+    Command foreign{.type = CommandType::Rally, .player = 1, .target = at(2, 2), .target_unit = barracks};
+    issue(sim, foreign);
+    Command nobody{.type = CommandType::Rally, .player = 0, .target = at(2, 2), .target_unit = store};
+    issue(sim, nobody);
+    sim.step();
+    sim.step();
+    sim.step();
+    CHECK(sim.world().find_structure(barracks)->rally == at(30, 20));  // not the enemy's point
+    CHECK(!sim.world().find_structure(store)->rally_set);              // hires nobody
+
+    auto train = [&](EntityId at_building, UnitTypeId type) {
+        issue(sim, Command{.type = CommandType::Train, .player = 0, .target_unit = at_building,
+                           .unit_type = static_cast<uint8_t>(type)});
+    };
+    train(hq, UnitTypeId::Worker);
+    train(hq, UnitTypeId::Truck);
+    train(barracks, UnitTypeId::Rifleman);
+    for (int i = 0; i < 1500; ++i) sim.step();
+    int gathering = 0;
+    int collecting = 0;
+    bool rifle_there = false;
+    for (const Unit& u : sim.world().units()) {
+        if (u.type == UnitTypeId::Worker && u.order == Order::Gather) ++gathering;
+        if (u.type == UnitTypeId::Truck && u.order == Order::Collect) ++collecting;
+        if (u.type == UnitTypeId::Rifleman) rifle_there = (u.pos - at(30, 20)).length() < Fixed::from_int(2);
+    }
+    CHECK(gathering == 1 && collecting == 1 && rifle_there);
+}
+
 void test_rear_troops_quarry_stone() {
     Simulation sim = economy_sim({}, false);
     issue(sim, gather_at(spawn_workers(sim, 2, 9, 13), 5, 15));
@@ -4060,6 +4102,7 @@ int main() {
     test_cut_down_forest_becomes_field();
     test_rear_troops_quarry_stone();
     test_trucks_collect_timber();
+    test_rally_points();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

@@ -129,6 +129,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         if (placing_ || targeting()) {
             placing_.reset();  // right click cancels, like in most RTS games
             targeting_ = Targeting::None;
+        } else if (const engine::Structure* building = world.find_structure(selected_structure_);
+                   selection_.empty() && building && building->owner == player_ &&
+                   engine::structure_type(building->type).roster_size > 0 && (!over_hud || minimap_ground)) {
+            // The building's rally point, like in AoE II: the units it hires go there.
+            const Vector2 ground = over_hud ? *minimap_ground : ground_under(world, camera, mouse);
+            lockstep.submit({.type = engine::CommandType::Rally, .target = render::to_fixed_vec2(ground),
+                             .target_unit = building->id});
+            renderer.add_order_ping(ground, false);
         } else if (over_hud) {
             if (minimap_ground) order_move(lockstep, renderer, *minimap_ground);
         } else if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
@@ -950,6 +958,14 @@ void PlayerController::click_select(const engine::World& world, const render::Rt
     }
     selected_structure_ = 0;
 
+    // A double click, or Ctrl+click: everyone of this type on screen (Shift: added).
+    const double now = GetTime();
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool double_click = hit->id == last_click_ && now - last_click_time_ < 0.35;
+    last_click_ = hit->id;
+    last_click_time_ = now;
+    if (double_click || ctrl) return select_type_on_screen(world, camera, hit->type, additive, alpha);
+
     const auto it = std::lower_bound(selection_.begin(), selection_.end(), hit->id);
     const bool already = it != selection_.end() && *it == hit->id;
     if (additive) {
@@ -962,6 +978,50 @@ void PlayerController::click_select(const engine::World& world, const render::Rt
     } else {
         selection_.assign(1, hit->id);
     }
+}
+
+void PlayerController::select_type_on_screen(const engine::World& world, const render::RtsCamera& camera,
+                                             engine::UnitTypeId type, bool additive, float alpha) {
+    if (!additive) selection_.clear();
+    selected_structure_ = 0;
+    const Rectangle screen{0, 0, static_cast<float>(GetScreenWidth()), static_cast<float>(GetScreenHeight())};
+    for (const engine::Unit& u : world.units()) {
+        if (u.owner != player_ || u.type != type || u.inside) continue;
+        if (CheckCollisionPointRec(render::unit_screen_pos(camera, world.map(), u, alpha), screen)) selection_.push_back(u.id);
+    }
+    std::sort(selection_.begin(), selection_.end());
+    selection_.erase(std::unique(selection_.begin(), selection_.end()), selection_.end());
+}
+
+bool PlayerController::update_groups(const engine::World& world) {
+    static constexpr KeyboardKey kDigits[] = {KEY_ZERO, KEY_ONE, KEY_TWO,   KEY_THREE, KEY_FOUR,
+                                              KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE};
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    for (int digit = 0; digit < 10; ++digit) {
+        if (!IsKeyPressed(kDigits[digit])) continue;
+        std::vector<engine::EntityId>& group = groups_[static_cast<size_t>(digit)];
+        // The dead drop out of their groups.
+        std::erase_if(group, [&](engine::EntityId id) { return world.find_unit(id) == nullptr; });
+        if (ctrl) {
+            group = selection_;
+            return false;
+        }
+        if (shift) {
+            group.insert(group.end(), selection_.begin(), selection_.end());
+            std::sort(group.begin(), group.end());
+            group.erase(std::unique(group.begin(), group.end()), group.end());
+        }
+        if (group.empty()) return false;
+        const double now = GetTime();
+        const bool again = digit == last_group_ && now - last_group_time_ < 0.4;
+        last_group_ = digit;
+        last_group_time_ = now;
+        select_units(group);
+        targeting_ = Targeting::None;
+        return again;
+    }
+    return false;
 }
 
 void PlayerController::box_select(const engine::World& world, const render::RtsCamera& camera,

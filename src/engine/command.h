@@ -34,6 +34,7 @@ enum class CommandType : uint8_t {
     Research,      // a building (target_unit) researches an upgrade (`upgrade`)
     Supply,        // tankers, ammunition trucks: look after one unit (target_unit) for good
     Collect,       // supply trucks: park by the wood or the stone at `target` and take the rear troops' loads in
+    Rally,         // a building (target_unit) sends the units it hires to `target`
 };
 
 // The only way anything outside the engine can change the game state.

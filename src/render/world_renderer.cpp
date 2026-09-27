@@ -1193,6 +1193,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                                     on_terrain(map, {r.x + r.width, r.y + r.height}),
                                     on_terrain(map, {r.x, r.y + r.height})};
         for (int i = 0; i < 4; ++i) DrawLineEx(corners[i], corners[(i + 1) % 4], 2.0f, theme::kSelection);
+        if (s->rally_set && s->owner == viewer_) {
+            // Its rally point: a flag on a pole, a line from the building.
+            const Vector2 to = on_terrain(map, to_vector2(s->rally));
+            DrawLineV(on_terrain(map, to_vector2(s->center)), to, ColorAlpha(theme::kSelection, 0.45f));
+            DrawLineEx(to, {to.x, to.y - 18.0f}, 1.5f, {40, 40, 40, 255});
+            DrawRectangleRec({to.x, to.y - 18.0f, 11.0f, 7.0f}, theme::player_color(s->owner));
+        }
         if (s->type == engine::StructureType::Headquarters && s->owner == viewer_) {
             draw_ground_ellipse(on_terrain(map, to_vector2(s->center)), to_float(engine::kHeadquartersRelay),
                                 ColorAlpha(kRadioColor, 0.5f));

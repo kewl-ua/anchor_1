@@ -532,6 +532,7 @@ private:
     void apply_build(const Command& cmd);
     void apply_haul(const Command& cmd);
     void apply_collect(const Command& cmd);
+    void apply_rally(const Command& cmd);
     void update_collect(Unit& u);
     // Of our trucks collecting by the wood, the one whose spot is nearest.
     Unit* nearest_collector(PlayerId owner, FixedVec2 from);

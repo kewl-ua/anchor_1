@@ -785,6 +785,10 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
         default: break;
     }
 
+    if (def.roster_size > 0 && s.research == engine::UpgradeId::Count) {
+        draw_text(s.rally_set ? "Rally point set: RMB on the ground moves it" : "RMB on the ground: rally point for the new units",
+                  area.x, area.y + area.height - 16, 12, theme::kTextDim);
+    }
     // The hiring queue: the front one with its progress.
     constexpr float kIconW = 34.0f;
     constexpr float kIconH = 28.0f;

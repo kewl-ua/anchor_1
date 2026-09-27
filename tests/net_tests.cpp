@@ -193,6 +193,10 @@ TickInput sample_input() {
     Command collect = make_move({24}, 70, 71);
     collect.type = CommandType::Collect;
     input.commands.push_back(collect);
+    Command rally = make_move({}, 80, 81);
+    rally.type = CommandType::Rally;
+    rally.target_unit = 25;
+    input.commands.push_back(rally);
     Command post = make_move({19}, 60, 61);
     post.type = CommandType::Observe;
     input.commands.push_back(post);

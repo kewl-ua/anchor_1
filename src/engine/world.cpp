@@ -351,6 +351,7 @@ void World::deliver(const Command& cmd) {
         case CommandType::Research: apply_research(cmd); break;
         case CommandType::Supply: apply_supply(cmd); break;
         case CommandType::Collect: apply_collect(cmd); break;
+        case CommandType::Rally: apply_rally(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -1386,6 +1387,8 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(s.converted));
         mix(static_cast<uint32_t>(s.cache));
         mix(s.cache_owner);
+        mix_vec(s.rally);
+        mix(s.rally_set ? 1 : 0);
     }
     for (const auto& [tile, work] : dig_work_) {
         mix(static_cast<uint32_t>(tile));

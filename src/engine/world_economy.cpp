@@ -376,6 +376,16 @@ void World::update_production() {
         if (type == UnitTypeId::Truck) find_unit_mut(id)->order = Order::Haul;  // straight onto the supply run
         // A tanker or an ammunition truck comes with what was paid for aboard; for more, the depot.
         if (def.supplies != Resource::Count) find_unit_mut(id)->carrying = def.cost[static_cast<size_t>(def.supplies)];
+        // Off to the rally point: to work, if it's on the wood or the stone.
+        if (s.rally_set && !def.aircraft) {
+            const TilePos t = map_.clamp_tile(tile_of(s.rally));
+            const bool resource = is_resource_terrain(map_.terrain(t)) && map_.resource(t) > 0;
+            Command go{.player = s.owner, .units = {id}, .target = s.rally};
+            go.type = resource && def.worker                    ? CommandType::Gather
+                      : resource && type == UnitTypeId::Truck ? CommandType::Collect
+                                                                : CommandType::Move;
+            deliver(go);
+        }
     }
 }
 
@@ -645,6 +655,13 @@ Unit* World::nearest_collector(PlayerId owner, FixedVec2 from) {
 
 // Supply trucks sent to the wood or the stone: parked by it on firm ground,
 // taking the rear troops' loads in.
+void World::apply_rally(const Command& cmd) {
+    Structure* s = find_structure_mut(cmd.target_unit);
+    if (!s || s->owner != cmd.player || structure_type(s->type).roster_size == 0) return;
+    s->rally = clamp_to_map(cmd.target, Fixed{});
+    s->rally_set = true;
+}
+
 void World::apply_collect(const Command& cmd) {
     const TilePos clicked = map_.clamp_tile(tile_of(cmd.target));
     const std::optional<TilePos> spot = nearest_passable(map_, clicked, MoveClass::Wheeled);

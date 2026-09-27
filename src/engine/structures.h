@@ -143,6 +143,11 @@ struct Structure {
     // player's men at the position (or inside) draw on it.
     int32_t cache = 0;
     PlayerId cache_owner = kNoOwner;
+
+    // Where the units it hires go (AoE's rally point): rear troops to work
+    // if it's on the wood or the stone, trucks to collect there.
+    FixedVec2 rally{};
+    bool rally_set = false;
 };
 
 // What a structure works as: a house turned into a depot is that depot.

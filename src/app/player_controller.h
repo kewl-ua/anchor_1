@@ -40,6 +40,10 @@ public:
     // The next rear trooper or supply truck with nothing to do, one after
     // another (AoE's idle villager key). False if there is none.
     bool select_next_idle(const engine::World& world);
+    // Control groups, as in AoE II: Ctrl+digit makes one of the selection,
+    // Shift+digit adds the selection to it, a digit selects it. True when
+    // the camera should go to it (the digit pressed twice quickly).
+    bool update_groups(const engine::World& world);
     void order_move(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground);
     void order_attack_move(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground);
     void order_attack(net::Lockstep& lockstep, engine::EntityId target);
@@ -103,6 +107,16 @@ private:
     bool has_workers(const engine::World& world) const;
     bool has_trucks(const engine::World& world) const;
     engine::EntityId last_idle_ = 0;
+    // Control groups by digit, and the last digit pressed and when (a double press centres the camera).
+    std::array<std::vector<engine::EntityId>, 10> groups_;
+    int last_group_ = -1;
+    double last_group_time_ = 0.0;
+    // The last unit clicked and when: a double click selects all of its kind on screen.
+    engine::EntityId last_click_ = 0;
+    double last_click_time_ = 0.0;
+    // Everyone of ours of this type on screen, added to the selection or instead of it.
+    void select_type_on_screen(const engine::World& world, const render::RtsCamera& camera, engine::UnitTypeId type,
+                               bool additive, float alpha);
     bool has_engineers(const engine::World& world) const;
     bool has_service_vehicles(const engine::World& world) const;
     bool has_ammo_trucks(const engine::World& world) const;
