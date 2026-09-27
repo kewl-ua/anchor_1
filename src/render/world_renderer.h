@@ -133,6 +133,9 @@ private:
     // Terrain doesn't change yet, so it's computed once per map.
     float corner(int cx, int cy) const { return corner_heights_[static_cast<size_t>(cy * (cache_width_ + 1) + cx)]; }
     std::vector<float> corner_heights_;
+    // The tops of the spoil tips (ground points), for the gullies down their sides.
+    std::vector<Vector2> spoil_peaks_;
+    void draw_spoil_gullies(const engine::World& world, Rectangle view) const;
     int cache_width_ = 0;
     int cache_height_ = 0;
 

@@ -40,6 +40,8 @@ struct Grain {
     float speck = 0.0f;
 };
 Vector3 g_grain{0.0f, 0.0f, 1.0f};
+// The view's zoom this frame: far out, crowns are drawn with fewer clumps.
+float g_zoom = 1.0f;
 void set_grain(Grain g) {
     g_grain = {g.fine, g.mottle, 1.0f - g.speck};
     rlNormal3f(g_grain.x, g_grain.y, g_grain.z);  // for raylib's shapes that don't set their own
@@ -356,6 +358,22 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 corner_heights_[static_cast<size_t>(cy * (cache_width_ + 1) + cx)] = iso::corner_height(map, cx, cy);
             }
         }
+        // A spoil tip's top: a corner among rock, higher than every corner round it.
+        spoil_peaks_.clear();
+        for (int cy = 1; cy < cache_height_; ++cy) {
+            for (int cx = 1; cx < cache_width_; ++cx) {
+                bool rock = true;
+                for (int ty = cy - 1; ty <= cy; ++ty) {
+                    for (int tx = cx - 1; tx <= cx; ++tx) rock = rock && map.terrain(tx, ty) == engine::Terrain::Slag;
+                }
+                const float here = corner(cx, cy);
+                bool top = rock && here >= 4.0f;
+                for (int dy = -1; dy <= 1 && top; ++dy) {
+                    for (int dx = -1; dx <= 1 && top; ++dx) top = (dx == 0 && dy == 0) || corner(cx + dx, cy + dy) < here;
+                }
+                if (top) spoil_peaks_.push_back({static_cast<float>(cx), static_cast<float>(cy)});
+            }
+        }
     }
 
     remember(world);
@@ -553,28 +571,49 @@ Vector2 draw_trunk(Vector2 base, float height, float w0, float w1, float bend, C
     return p[kSteps];
 }
 
-// A leafy crown: lumps inside a `w` x `h` oval about `c`, each tree lumpy its
-// own way, darker low on the right, lighter high on the left.
+// A fluffy crown in a `w` x `h` oval about `c`, like Postal's trees: a dark
+// mass inside, tufts of leaves poking out all round its edge, and over it
+// clumps of leaves, each shaded on its lower right and catching the light on
+// its upper left; the clumps high on the left are the brightest, the ones
+// low on the right sit in shade. Each tree tufted its own way.
 void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint, uint32_t seed) {
-    struct Lump {
+    auto rnd = [seed](int i, int salt) {
+        return hash_unit(tile_hash(static_cast<int>(seed >> 3) + i * 7 + salt * 131, i * 13 - salt * 17));
+    };
+    const bool far = g_zoom < 0.6f;
+    DrawEllipse(static_cast<int>(c.x + w * 0.05f), static_cast<int>(c.y + h * 0.06f), w * 0.45f, h * 0.45f,
+                lit(shade(leaf, 0.46f * tint)));
+    const int tufts = far ? 8 : 16;
+    for (int i = 0; i < tufts; ++i) {
+        const float a = (static_cast<float>(i) + rnd(i, 5)) * 6.2831853f / static_cast<float>(tufts);
+        const float reach = 0.9f + 0.16f * rnd(i, 9);
+        const Vector2 at{c.x + std::cos(a) * w * 0.5f * reach, c.y + std::sin(a) * h * 0.5f * reach};
+        const float k = 0.78f - 0.24f * (std::cos(a) + std::sin(a));
+        disc(at, lump * (0.26f + 0.14f * rnd(i, 11)), shade(leaf, k * tint));
+    }
+    struct Clump {
         Vector2 at;
         float r;
         float k;
     };
-    constexpr int kLumps = 8;
-    std::array<Lump, kLumps> lumps{};
-    for (int i = 0; i < kLumps; ++i) {
-        const float a = hash_unit(tile_hash(static_cast<int>(seed >> 3) + i * 7, i * 13)) * 6.2831853f;
-        const float r = std::sqrt(hash_unit(tile_hash(static_cast<int>(seed >> 5) - i * 11, i * 3 + 1)));
+    constexpr int kMaxClumps = 28;
+    std::array<Clump, kMaxClumps> clumps{};
+    int count = std::clamp(static_cast<int>(w * h / (lump * lump) * 2.4f), 12, kMaxClumps);
+    if (far) count /= 2;
+    for (int i = 0; i < count; ++i) {
+        const float a = rnd(i, 1) * 6.2831853f;
+        const float r = std::sqrt(rnd(i, 2)) * 0.8f;
         const Vector2 at{c.x + std::cos(a) * r * w * 0.5f, c.y + std::sin(a) * r * h * 0.5f};
-        const float k = 0.86f + 0.36f * ((c.x - at.x) / w + (c.y - at.y) / h);
-        lumps[static_cast<size_t>(i)] = {at, lump * (0.7f + 0.45f * hash_unit(tile_hash(i, static_cast<int>(seed)))), k};
+        const float k = 0.8f + 0.55f * ((c.x - at.x) / w + (c.y - at.y) / h) + 0.12f * (rnd(i, 3) - 0.5f);
+        clumps[static_cast<size_t>(i)] = {at, lump * (0.34f + 0.2f * rnd(i, 4)), k};
     }
-    std::sort(lumps.begin(), lumps.end(), [](const Lump& a, const Lump& b) { return a.k < b.k; });
-    disc({c.x + w * 0.16f, c.y + h * 0.2f}, lump * 1.15f, shade(leaf, 0.66f * tint));  // the shaded underside
-    for (const Lump& l : lumps) disc(l.at, l.r, shade(leaf, l.k * tint));
-    disc({c.x - w * 0.17f, c.y - h * 0.22f}, lump * 0.7f, shade(leaf, 1.25f * tint));
-    disc({c.x - w * 0.22f, c.y - h * 0.3f}, lump * 0.38f, shade(leaf, 1.45f * tint));
+    std::sort(clumps.begin(), clumps.begin() + count, [](const Clump& a, const Clump& b) { return a.k < b.k; });
+    for (int i = 0; i < count; ++i) {
+        const Clump& l = clumps[static_cast<size_t>(i)];
+        disc({l.at.x + l.r * 0.25f, l.at.y + l.r * 0.3f}, l.r, shade(leaf, l.k * 0.72f * tint));
+        disc(l.at, l.r * 0.8f, shade(leaf, l.k * tint));
+        if (!far) disc({l.at.x - l.r * 0.3f, l.at.y - l.r * 0.34f}, l.r * 0.38f, shade(leaf, l.k * 1.25f * tint));
+    }
 }
 
 void draw_tree(const engine::TileMap& map, const Tree& t) {
@@ -643,6 +682,8 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
             const float bare = (old ? 11.0f : 4.0f) * s * t.height;
             const Vector2 top = draw_trunk(b, bare + 6.0f * s, 3.0f * s * t.girth, 1.8f * s, bend * 0.5f,
                                            old ? Color{146, 92, 62, 255} : Color{64, 46, 34, 255});
+            // Each tier a dark cone under drooping boughs of needle tufts,
+            // rows of them widening downwards, lit on the left.
             const Color needles = shade({38, 74, 52, 255}, t.tint);
             const int tiers = old ? 2 : 3;
             for (int k = 0; k < tiers; ++k) {
@@ -650,8 +691,23 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
                 const float y0 = b.y - bare - 6.0f * static_cast<float>(k) * s + (old ? 2.0f * s : 0.0f);
                 const float apex_y = y0 - (10.0f - static_cast<float>(k)) * s;
                 const float x = top.x;
-                fill_triangle({x - wid, y0}, {x, y0 + 1.5f * s}, {x, apex_y}, shade(needles, 1.2f));
-                fill_triangle({x, y0 + 1.5f * s}, {x + wid, y0}, {x, apex_y}, shade(needles, 0.75f));
+                fill_triangle({x - wid, y0 + 1.0f * s}, {x + wid, y0 + 1.0f * s}, {x, apex_y}, shade(needles, 0.5f));
+                constexpr int kRows = 4;
+                for (int row = 0; row < kRows; ++row) {
+                    const float f = static_cast<float>(row + 1) / kRows;
+                    const float y = apex_y + (y0 - apex_y) * f;
+                    const int n = row + 2;
+                    for (int i = 0; i < n; ++i) {
+                        const float u = static_cast<float>(i) / static_cast<float>(n - 1) * 2.0f - 1.0f;  // -1 left .. 1 right
+                        const float jitter = (hash_unit(tile_hash(static_cast<int>(t.seed >> 5) + k * 17 + row * 5 + i, i)) - 0.5f) * s;
+                        const Vector2 at{x + u * wid * f * 0.85f + jitter, y + std::fabs(u) * 1.4f * s - 1.0f * s};
+                        const float r = (1.4f + 0.5f * static_cast<float>(row)) * s * 0.8f;
+                        const float light = 1.15f - 0.4f * (u + 1.0f) * 0.5f;
+                        disc({at.x + r * 0.25f, at.y + r * 0.3f}, r, shade(needles, light * 0.7f));
+                        disc(at, r * 0.75f, shade(needles, light));
+                        if (u < 0.2f && !(g_zoom < 0.6f)) disc({at.x - r * 0.3f, at.y - r * 0.3f}, r * 0.35f, shade(needles, light * 1.3f));
+                    }
+                }
             }
             break;
         }
@@ -673,14 +729,26 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
         case TreeKind::Poplar: {
             // Tall and narrow, along a road or a field.
             const Vector2 top = draw_trunk(b, 5.0f * s, 2.4f * s * t.girth, 1.8f * s, bend, {72, 56, 40, 255});
+            // A dark column, clumps of leaves up it, lit on the left.
             const Color leaf = shade({58, 100, 48, 255}, t.tint);
             const float tall = t.height;
-            const float mid = top.y - 13.0f * s * tall;
-            DrawEllipse(static_cast<int>(top.x + 0.8f * s), static_cast<int>(mid), 5.0f * s, 13.0f * s * tall,
-                        lit(shade(leaf, 0.72f)));
-            DrawEllipse(static_cast<int>(top.x - 0.6f * s), static_cast<int>(mid - 1.0f * s), 3.8f * s, 11.5f * s * tall, lit(leaf));
-            DrawEllipse(static_cast<int>(top.x - 1.8f * s), static_cast<int>(mid - 3.0f * s), 1.8f * s, 7.5f * s * tall,
-                        lit(shade(leaf, 1.3f)));
+            const float half = 13.0f * s * tall;
+            const float mid = top.y - half;
+            DrawEllipse(static_cast<int>(top.x + 0.6f * s), static_cast<int>(mid), 5.0f * s, half, lit(shade(leaf, 0.5f)));
+            constexpr int kClumps = 11;
+            for (int i = 0; i < kClumps; ++i) {
+                const float f = static_cast<float>(i) / (kClumps - 1);  // 0 at the bottom
+                const float y = mid + half * 0.86f - f * half * 1.72f;
+                const float along = (y - mid) / half;
+                const float wide = 5.0f * s * std::sqrt(std::max(0.08f, 1.0f - along * along));
+                const float u = (i % 2 == 0 ? -0.45f : 0.4f) + (hash_unit(tile_hash(static_cast<int>(t.seed >> 4) + i, i * 3)) - 0.5f) * 0.3f;
+                const Vector2 at{top.x + u * wide, y};
+                const float r = wide * 0.62f + 0.6f * s;
+                const float light = u < 0.0f ? 1.1f : 0.78f;
+                disc({at.x + r * 0.25f, at.y + r * 0.3f}, r, shade(leaf, light * 0.72f));
+                disc(at, r * 0.78f, shade(leaf, light));
+                if (u < 0.0f && !(g_zoom < 0.6f)) disc({at.x - r * 0.3f, at.y - r * 0.32f}, r * 0.36f, shade(leaf, 1.35f));
+            }
             break;
         }
     }
@@ -1963,6 +2031,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         grain_zoom_loc_ = GetShaderLocation(grain_, "zoom");
     }
     const float zoom = camera.camera2d().zoom;
+    g_zoom = zoom;
     SetShaderValue(grain_, grain_zoom_loc_, &zoom, SHADER_UNIFORM_FLOAT);
     BeginShaderMode(grain_);
 
@@ -2524,22 +2593,14 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
         return;
     }
     if (terrain == Terrain::Slag) {
-        // Loose black rock: gullies washed straight down its sides, lumps of
-        // burnt rock, and low on the slopes the odd birch sapling seeding itself.
+        // Loose black rock (the gullies down its sides are drawn whole, from
+        // the top: draw_spoil_gullies): lumps of burnt rock, and low on the
+        // slopes the odd birch sapling seeding itself.
         const float shadow = std::clamp(light, 0.5f, 1.4f);
         // At the foot, where the scree lies flat, the grass comes through.
         bool foot = true;
         for (const auto& [dx, dy] : {std::pair{-1, 0}, std::pair{1, 0}, std::pair{0, -1}, std::pair{0, 1}}) {
             foot = foot && (!map.contains_tile(tx + dx, ty + dy) || map.elevation(tx + dx, ty + dy) >= map.elevation(tx, ty));
-        }
-        const float away = -(down.x + down.y) * 0.7071f * steep * 0.5f;  // levels a tile the ground rises towards the viewer
-        for (int k = 0; k < 2 && away < 0.9f && !foot; ++k) {
-            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 4 + 2)), fy + 0.1f + 0.8f * hash01(h >> (k * 4 + 15))};
-            const Vector2 end{at.x + down.x * 0.55f, at.y + down.y * 0.55f};
-            if (!shows(at, terrain) || !shows(end, terrain) || steep < 0.01f) continue;
-            DrawLineEx(screen(at), screen(end), 1.1f, lit(shade({30, 28, 28, 255}, shadow)));
-            DrawLineEx(screen({at.x + down.y * 0.04f, at.y - down.x * 0.04f}), screen({end.x + down.y * 0.04f, end.y - down.x * 0.04f}),
-                       0.8f, lit(shade({96, 90, 86, 255}, shadow)));
         }
         for (int k = 0; k < 3; ++k) {
             const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 3 + 1)), fy + 0.1f + 0.8f * hash01(h >> (k * 3 + 14))};
@@ -2698,6 +2759,64 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         paint_ground(world, tx, ty, terrain, true);
     });
     g_light = 1.0f;
+    draw_spoil_gullies(world, view);
+}
+
+// Gullies the rain washed down the spoil tips: rays from the top to the foot,
+// some from the very top, some starting lower, each wavering a little; a
+// dark furrow with its lip catching the light on the left. The ones down the
+// far side are out of sight.
+void WorldRenderer::draw_spoil_gullies(const engine::World& world, Rectangle view) const {
+    const engine::TileMap& map = world.map();
+    const Rectangle near{view.x - 400.0f, view.y - 300.0f, view.width + 800.0f, view.height + 600.0f};
+    auto foot = [&](int tx, int ty) {
+        for (const auto& [dx, dy] : {std::pair{-1, 0}, std::pair{1, 0}, std::pair{0, -1}, std::pair{0, 1}}) {
+            if (map.contains_tile(tx + dx, ty + dy) && map.elevation(tx + dx, ty + dy) < map.elevation(tx, ty)) return false;
+        }
+        return true;
+    };
+    set_grain(grain_of(engine::Terrain::Slag));
+    for (const Vector2 peak : spoil_peaks_) {
+        if (!CheckCollisionPointRec(on_terrain(map, peak), near)) continue;
+        const uint32_t h = tile_hash(static_cast<int>(peak.x), static_cast<int>(peak.y));
+        constexpr int kGullies = 46;
+        for (int k = 0; k < kGullies; ++k) {
+            const uint32_t hk = tile_hash(static_cast<int>(h >> 4) + k * 7, k * 31);
+            const float angle = (static_cast<float>(k) + 0.5f * (hash_unit(hk) - 0.5f)) * 6.2831853f / kGullies;
+            const Vector2 dir{std::cos(angle), std::sin(angle)};
+            if ((dir.x + dir.y) * 0.7071f < -0.45f) continue;  // down the far side
+            const Vector2 side{-dir.y, dir.x};
+            const float from = k % 3 == 0 ? 0.25f : 0.7f + 1.8f * hash_unit(hk >> 8);
+            const float phase = hash_unit(hk >> 16) * 6.2831853f;
+            const float deep = 0.8f + 0.8f * hash_unit(hk >> 24);
+            Vector2 prev{};
+            bool have = false;
+            for (float r = from; r < 8.0f; r += 0.2f) {
+                const float wobble = 0.06f * std::sin(r * 2.4f + phase);
+                const Vector2 g{peak.x + dir.x * r + side.x * wobble, peak.y + dir.y * r + side.y * wobble};
+                const int tx = static_cast<int>(std::floor(g.x));
+                const int ty = static_cast<int>(std::floor(g.y));
+                if (!map.contains_tile(tx, ty) || seen_terrain_[static_cast<size_t>(ty * map.width() + tx)] != engine::Terrain::Slag ||
+                    foot(tx, ty)) {
+                    break;
+                }
+                const int state = fog(world, tx, ty);
+                if (state == kUnexplored) break;
+                const Vector2 p = on_terrain(map, g);
+                if (have) {
+                    g_light = state == kInView ? 1.0f : kFogLight;
+                    const float k2 = std::clamp(light_at(g), 0.5f, 1.4f);
+                    const float width = deep * (0.7f + 1.1f * std::min(1.0f, (r - from) / 2.5f));
+                    DrawLineEx({prev.x - 1.0f, prev.y}, {p.x - 1.0f, p.y}, 0.9f, lit(shade({112, 104, 96, 255}, k2)));
+                    DrawLineEx(prev, p, width, lit(shade({26, 24, 24, 255}, k2)));
+                }
+                prev = p;
+                have = true;
+            }
+        }
+    }
+    g_light = 1.0f;
+    set_grain({});
 }
 
 void WorldRenderer::draw_remains(const engine::TileMap& map) const {
