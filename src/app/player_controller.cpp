@@ -193,6 +193,10 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Signaler: return "Signaller";
         case engine::UnitTypeId::FieldHq: return "Cmd vehicle";
         case engine::UnitTypeId::DfStation: return "DF station";
+        case engine::UnitTypeId::Su25: return "Su-25";
+        case engine::UnitTypeId::Manpads: return "MANPADS";
+        case engine::UnitTypeId::Shilka: return "Shilka";
+        case engine::UnitTypeId::AirRadar: return "AD radar";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -206,6 +210,8 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::ArtilleryBarracks: return "Artillery";
         case engine::StructureType::EngineerBarracks: return "Engineers";
         case engine::StructureType::SignalsBarracks: return "Signals";
+        case engine::StructureType::AirDefenseBarracks: return "Air defence";
+        case engine::StructureType::Airfield: return "Airfield";
         case engine::StructureType::Warehouse: return "Warehouse";
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
@@ -276,7 +282,8 @@ void PlayerController::rebuild_grid(const engine::World& world) {
     const engine::UnitTypeDef& def = engine::unit_type(*lead);
 
     if (def.worker && build_menu_) {
-        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 10, 11, 12, 13};
+        // Barracks along the top and middle rows, depots along the bottom one.
+        static constexpr size_t kBuildSlots[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12};
         static_assert(std::size(kBuildSlots) >= std::size(engine::kBuildable));
         for (size_t i = 0; i < std::size(engine::kBuildable); ++i) {
             const engine::StructureDef& b = engine::structure_type(engine::kBuildable[i]);
@@ -338,6 +345,13 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         const engine::Unit* u = world.find_unit(id);
         return u && engine::is_armed(engine::unit_type(u->type));
     });
+    if (def.aircraft) {
+        // Aircraft fly missions, nothing else: one mission a sortie.
+        put(9, Action::FireAt, 0, "Mission",
+            "Mission: a rocket run at a spot (right-click an enemy we see to strike him). One mission a sortie")
+            .active = targeting_ == Targeting::AttackGround;
+        return;
+    }
     if (armed) {
         put(5, Action::AttackMove, 0, "Attack", "Attack-move: go there, fighting on the way").active =
             targeting_ == Targeting::AttackMove;

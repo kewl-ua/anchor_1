@@ -38,6 +38,9 @@ struct WeaponDef {
     Fixed min_range{};
     // Lobbed at what the unit sees (a grenade launcher): over cover, into trenches.
     bool lobbed = false;
+    // Air defence: can fire at aircraft in the air; `air_only` never at anything else.
+    bool anti_air = false;
+    bool air_only = false;
 };
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.
@@ -146,6 +149,10 @@ struct UnitTypeDef {
     bool emitter = false;
     Fixed relay_range{};
     Fixed df_range{};
+    // Aviation: flies combat missions from an airfield, one mission a sortie.
+    bool aircraft = false;
+    // Air defence radar, set up and on the air: sees enemy aircraft this far off.
+    Fixed radar_range{};
 };
 
 enum class UnitTypeId : uint8_t {
@@ -169,6 +176,10 @@ enum class UnitTypeId : uint8_t {
     Signaler,    // a radio on his back: relays orders to silent units nearby
     FieldHq,     // command vehicle: a relay on wheels
     DfStation,   // direction finder: bearings on enemy radios; two of them fix one
+    Su25,        // attack aircraft: a rocket run at the target of its mission
+    Manpads,     // MANPADS crew (Igla): missiles at aircraft, nothing else
+    Shilka,      // ZSU-23-4 self-propelled AA guns: aircraft first, infantry too
+    AirRadar,    // air defence radar: sees enemy aircraft far out
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

@@ -32,8 +32,15 @@ constexpr float kFogLight = 0.5f;
 constexpr Color kRadioColor = {120, 170, 255, 255};
 constexpr Color kBearingColor = {255, 160, 60, 255};
 
+// Aircraft in the air are drawn this high above their shadow, pixels.
+constexpr float kFlightLift =
+    static_cast<float>(engine::kFlightHeight.raw) / static_cast<float>(engine::Fixed::kOneRaw) * iso::kElevationStep;
+
 // How high a unit's body is above its feet, pixels.
-float body_lift(const engine::Unit& u) { return engine::unit_type(u.type).vehicle ? 6.0f : 9.0f; }
+float body_lift(const engine::Unit& u) {
+    if (u.airborne) return kFlightLift;
+    return engine::unit_type(u.type).vehicle ? 6.0f : 9.0f;
+}
 
 Color shade(Color c, float k) {
     auto channel = [k](unsigned char v) {
@@ -871,7 +878,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     std::vector<Drawable> drawables;
     drawables.reserve(world.units().size() + world.projectiles().size() + 1024);
     for (const engine::Unit& u : world.units()) {
-        if (u.inside || !shows(world, u)) continue;  // behind walls, or unseen
+        if (u.inside || u.airborne || !shows(world, u)) continue;  // behind walls, up in the sky, or unseen
         const Vector2 g = unit_ground_pos(u, alpha);
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
@@ -925,7 +932,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     // Field works and dugouts are holes in the ground, drawn with it.
     auto is_building = [](const engine::Structure& s) {
         return s.type != engine::StructureType::House && s.type != engine::StructureType::Bridge &&
-               !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout;
+               !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout &&
+               s.type != engine::StructureType::Airfield;
     };
     for (const engine::Structure& s : world.structures()) {
         if (is_building(s) && s.owner == viewer_) add_building(s, 1.0f);
@@ -973,6 +981,11 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             fill_ground_ellipse(on_terrain(map, g, 10.0f + static_cast<float>(i % 3) * 6.0f), r * 0.6f,
                                 ColorAlpha({200, 200, 196, 255}, 0.55f * fade));
         }
+    }
+
+    // Aircraft in the air: a shadow on the ground, the aircraft high above it.
+    for (const engine::Unit& u : world.units()) {
+        if (u.airborne && shows(world, u)) draw_aircraft(map, u, alpha);
     }
 
     draw_shots(world, alpha);
@@ -1062,6 +1075,16 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
                 return t == engine::Terrain::Trench || t == engine::Terrain::Foxhole || t == engine::Terrain::Dugout;
             });
         }
+        if (terrain == engine::Terrain::Airstrip) {
+            // Concrete slabs; a dashed centre line down the middle row of the runway.
+            const Color seam = shade(theme::terrain_color(terrain), 0.8f);
+            DrawLineV(lerp(top, right, 0.5f), lerp(left, bottom, 0.5f), lit(seam));
+            if (const engine::Structure* s = world.structure_at({tx, ty});
+                s && s->type == engine::StructureType::Airfield && ty == s->tiles.front().y + 1) {
+                DrawLineEx(lerp(lerp(top, left, 0.5f), lerp(right, bottom, 0.5f), 0.2f),
+                           lerp(lerp(top, left, 0.5f), lerp(right, bottom, 0.5f), 0.6f), 2.0f, lit({230, 230, 220, 255}));
+            }
+        }
         if (terrain == engine::Terrain::Rail) {
             auto track = [&](int x, int y) {
                 return map.contains_tile(x, y) &&
@@ -1146,8 +1169,32 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
     }
 }
 
+// An attack aircraft from above: swept wings, a long nose, twin engines.
+// Up in the air its shadow is on the ground below.
+void WorldRenderer::draw_aircraft(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
+    const Vector2 ground = unit_ground_pos(u, alpha);
+    const Vector2 f = unit_facing(u);
+    const Vector2 side{-f.y, f.x};
+    auto shape = [&](float lift, Color body, Color wings) {
+        auto at = [&](float along, float across) {
+            return on_terrain(map, {ground.x + f.x * along + side.x * across, ground.y + f.y * along + side.y * across},
+                              lift);
+        };
+        for (const float s : {-1.0f, 1.0f}) {
+            fill_quad(at(0.18f, 0.0f), at(-0.08f, 0.62f * s), at(-0.2f, 0.62f * s), at(-0.12f, 0.0f), wings);
+            fill_quad(at(-0.4f, 0.0f), at(-0.52f, 0.24f * s), at(-0.58f, 0.24f * s), at(-0.55f, 0.0f), wings);
+        }
+        DrawLineEx(at(0.6f, 0.0f), at(-0.6f, 0.0f), 4.0f, body);
+        for (const float s : {-1.0f, 1.0f}) DrawLineEx(at(0.05f, 0.1f * s), at(-0.3f, 0.1f * s), 3.0f, body);
+    };
+    const Color color = shade(theme::player_color(u.owner), 0.8f);
+    if (u.airborne) shape(0.0f, {0, 0, 0, 60}, {0, 0, 0, 50});
+    shape(u.airborne ? kFlightLift : 4.0f, color, shade(color, 0.8f));
+}
+
 void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
     const engine::UnitTypeDef& def = engine::unit_type(u.type);
+    if (def.aircraft) return draw_aircraft(map, u, alpha);
     const Vector2 ground = unit_ground_pos(u, alpha);
     const Vector2 feet = on_terrain(map, ground);
     const Vector2 facing = unit_facing(u);
@@ -1362,13 +1409,23 @@ void WorldRenderer::draw_projectile(const engine::Projectile& p, float alpha) co
     const float total = std::hypot(target.x - origin.x, target.y - origin.y);
     const float t = total > 0.0f ? std::hypot(ground.x - origin.x, ground.y - origin.y) / total : 1.0f;
     float height = to_float(p.origin_height) + (to_float(p.target_height) - to_float(p.origin_height)) * t;
-    if (p.lobbed) height += 4.0f * t * (1.0f - t) * std::max(1.0f, total * 0.3f);  // an arc
+    const bool from_air = engine::unit_type(p.shooter_type).aircraft;
+    if (p.lobbed && !from_air) height += 4.0f * t * (1.0f - t) * std::max(1.0f, total * 0.3f);  // an arc
     const Vector2 pos = iso::project(ground, height);
 
     Vector2 dir = iso_offset(to_vector2(p.target - p.origin));
     const float len = std::hypot(dir.x, dir.y);
     dir = len > 0.0f ? Vector2{dir.x / len, dir.y / len} : Vector2{1.0f, 0.0f};
 
+    if (from_air || p.at_air) {
+        // A rocket diving from an aircraft, or a missile climbing to one: a smoke trail.
+        const Vector2 prev = to_vector2(p.prev_pos);
+        const float tp = total > 0.0f ? std::hypot(prev.x - origin.x, prev.y - origin.y) / total : 1.0f;
+        const float hp = to_float(p.origin_height) + (to_float(p.target_height) - to_float(p.origin_height)) * tp;
+        DrawLineEx(iso::project(prev, hp), pos, 2.0f, {220, 220, 210, 150});
+        DrawCircleV(pos, 2.5f, {255, 170, 60, 255});
+        return;
+    }
     if (p.lobbed) {
         if (p.weapon.indirect) {
             // A shell high on its arc, with a faint trail just behind it.
@@ -1414,7 +1471,9 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
         DrawCircleV(muzzle, def.vehicle ? 4.0f : 2.0f, {255, 230, 140, 220});
         const bool sweep = u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MgSweep;
         if (engine::weapon_of(u).projectile_speed.raw == 0 || sweep) {  // instant hit: draw the tracer
-            DrawLineV(muzzle, on_terrain(map, to_vector2(u.last_shot_at), 6.0f), {255, 235, 160, 140});
+            const engine::Unit* target = world.find_unit(u.engaged);
+            const float lift = target && target->airborne ? kFlightLift : 6.0f;  // up at an aircraft
+            DrawLineV(muzzle, on_terrain(map, to_vector2(u.last_shot_at), lift), {255, 235, 160, 140});
         }
     }
 }

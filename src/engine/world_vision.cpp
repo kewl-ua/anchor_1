@@ -38,6 +38,7 @@ int32_t structure_sight(const Structure& s) {
 // Cover: forests, the trails under their canopy, trenches and foxholes, and
 // the inside of a house or dugout.
 bool in_cover(const TileMap& map, const Unit& u) {
+    if (u.airborne) return false;  // up in the open sky
     if (u.inside || u.camouflaged) return true;
     const Terrain t = map.terrain_at(u.pos);
     return t == Terrain::Forest || t == Terrain::Trail || t == Terrain::Trench || t == Terrain::Foxhole ||
@@ -227,7 +228,7 @@ void World::update_vision() {
             if (s->type == StructureType::Dugout) continue;  // underground: sees nothing
             look(u.owner, s->center, def.sight, kWindowHeight, s->id);
         } else {
-            look(u.owner, u.pos, def.sight, eye_height(def), 0);
+            look(u.owner, u.pos, def.sight, u.airborne ? kFlightHeight : eye_height(def), 0);
         }
     }
     for (const Structure& s : structures_) {
@@ -279,7 +280,8 @@ void World::update_vision() {
             if (!present[p] || player == u.owner) continue;
             // A garrison is where its house is, and the house is seen if any wall is.
             const bool in_view = house ? sees(player, *house) : visible(player, tile);
-            if ((in_view && !hidden) || spotted(player, u) || betrayed(player, u) || fixed_by(player, u)) {
+            if ((in_view && !hidden) || spotted(player, u) || betrayed(player, u) || fixed_by(player, u) ||
+                sky_watch(player, u)) {
                 u.seen_by = static_cast<uint8_t>(u.seen_by | (1u << p));
             }
         }

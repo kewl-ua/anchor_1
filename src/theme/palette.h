@@ -43,6 +43,7 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Wire: return {88, 112, 64, 255};
         case engine::Terrain::Hedgehogs: return {90, 108, 66, 255};
         case engine::Terrain::Pillbox: return {96, 86, 66, 255};
+        case engine::Terrain::Airstrip: return {118, 120, 116, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;

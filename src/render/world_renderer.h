@@ -87,6 +87,7 @@ private:
     void draw_pings(const engine::TileMap& map) const;
     void draw_orders(const engine::World& world, const engine::Unit& u, float alpha) const;
     void draw_unit(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
+    void draw_aircraft(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const;
     void draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground, Vector2 facing) const;
     void draw_projectile(const engine::Projectile& p, float alpha) const;

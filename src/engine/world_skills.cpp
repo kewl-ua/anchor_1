@@ -462,6 +462,7 @@ void World::serve(Unit& u) {
     for (const Unit& v : units_) {
         if (v.owner != u.owner || v.inside || v.id == u.id) continue;
         const UnitTypeDef& vd = unit_type(v.type);
+        if (vd.aircraft) continue;  // rearmed at the airfield
         int64_t missing = 0;
         if (fuel && vd.fuel_capacity.raw > 0) {
             missing = static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;

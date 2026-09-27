@@ -65,6 +65,7 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
                 case StructureType::Hedgehogs: map_.set_terrain(t.x, t.y, Terrain::Hedgehogs); break;
                 case StructureType::Pillbox: map_.set_terrain(t.x, t.y, Terrain::Pillbox); break;
                 case StructureType::Parapet: break;  // a mound on the ground it stands on
+                case StructureType::Airfield: map_.set_terrain(t.x, t.y, Terrain::Airstrip); break;
                 default: map_.set_terrain(t.x, t.y, Terrain::Building); break;
             }
             map_.set_resource(t, 0);
@@ -314,10 +315,12 @@ void World::update_production() {
         if (++s.progress < unit_type(type).train_time) continue;
         s.progress = 0;
         s.queue.erase(s.queue.begin());
-        const EntityId id = spawn_unit(s.owner, type, door_of(s, move_class(unit_type(type))));
+        const UnitTypeDef& def = unit_type(type);
+        // Aircraft are rolled out onto the runway; the rest walk out of the door.
+        const FixedVec2 out = def.aircraft ? parking_spot(s, 0) : door_of(s, move_class(def));
+        const EntityId id = spawn_unit(s.owner, type, out);
         if (type == UnitTypeId::Truck) find_unit_mut(id)->order = Order::Haul;  // straight onto the supply run
         // A tanker or an ammunition truck comes with what was paid for aboard; for more, the depot.
-        const UnitTypeDef& def = unit_type(type);
         if (def.supplies != Resource::Count) find_unit_mut(id)->carrying = def.cost[static_cast<size_t>(def.supplies)];
     }
 }
@@ -453,7 +456,7 @@ const Structure* World::nearest_headquarters(PlayerId owner, FixedVec2 from) con
 void World::burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire) {
     recent_impacts_.push_back({tick_, at, UnitTypeId::FuelTanker, fire.splash_radius});
     for (const Unit& u : units_) {
-        if (u.inside || u.hp <= 0) continue;
+        if (u.inside || u.airborne || u.hp <= 0) continue;
         if ((u.pos - at).length_sq_raw() <= square_raw(fire.splash_radius + unit_type(u.type).radius)) {
             hurt(u, fire, {at, 0, true, true});
         }

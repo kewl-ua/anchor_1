@@ -11,7 +11,7 @@ namespace net {
 
 // Bump whenever the wire format OR the simulation rules change: peers running
 // different rules would desync.
-inline constexpr uint16_t kProtocolVersion = 18;
+inline constexpr uint16_t kProtocolVersion = 19;
 inline constexpr uint16_t kDefaultPort = 7777;
 
 // Limits that keep a malicious peer from making us allocate unbounded memory.

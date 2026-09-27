@@ -29,6 +29,7 @@ enum class Terrain : uint8_t {
     Wire,      // barbed wire: infantry crawls through, tracks crush it, wheels stop
     Hedgehogs, // anti-tank obstacles: no vehicle gets through
     Pillbox,   // a log-and-earth firing point (a Pillbox structure)
+    Airstrip,  // an airfield's runway: flat concrete anyone can cross
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -67,6 +68,7 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Barbed wire", {20, 80, 0}},
     {"Hedgehogs", {60, 0, 0}},
     {"Pillbox", {0, 0, 0}},
+    {"Airstrip", {100, 100, 100}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

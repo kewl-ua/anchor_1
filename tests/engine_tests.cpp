@@ -52,6 +52,8 @@ Command make_move(PlayerId player, std::vector<EntityId> units, int32_t x, int32
     return make_order(CommandType::Move, player, std::move(units), x, y);
 }
 
+Command fire_at(PlayerId player, std::vector<EntityId> units, int32_t x, int32_t y);
+
 int32_t hp_of(const Simulation& sim, EntityId id) {
     const Unit* u = sim.world().find_unit(id);
     return u ? u->hp : 0;
@@ -69,6 +71,7 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
     std::array<EntityId, 2> rockets{};
     std::array<EntityId, 2> sappers{};
     std::array<EntityId, 2> stations{};
+    std::array<EntityId, 2> planes{};
     for (PlayerId p = 0; p < 2; ++p) {
         const FixedVec2 base = demo_base_position(sim.world().map().width(), p);
         const Fixed step = Fixed::from_int(p == 0 ? 8 : -8);
@@ -80,6 +83,18 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
         // Each side listens for the other's radios; its rockets keep silence.
         stations[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::DfStation, {base.x, base.y + step});
         sim.world_for_setup().unit_for_setup(rockets[p])->silent = true;
+        // An airfield behind each base with an attack aircraft on it, and air defence.
+        const TilePos b = tile_of(base);
+        for (int32_t r = 8; r < 40 && planes[p] == 0; ++r) {
+            const TilePos origin{b.x + (p == 0 ? -r : r) - 3, b.y + (p == 0 ? r : -r) - 1};
+            if (!sim.world().can_place(StructureType::Airfield, origin)) continue;
+            sim.world_for_setup().place_structure(StructureType::Airfield, p, origin, 6, 3);
+            planes[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Su25, tile_center(origin));
+        }
+        sim.world_for_setup().spawn_unit(p, UnitTypeId::Manpads, {base.x + step, base.y});
+        sim.world_for_setup().spawn_unit(p, UnitTypeId::Shilka, {base.x, base.y + step * 2});
+        const EntityId radar = sim.world_for_setup().spawn_unit(p, UnitTypeId::AirRadar, {base.x - step, base.y});
+        sim.world_for_setup().unit_for_setup(radar)->deployed = true;
     }
 
     std::vector<uint64_t> checksums;
@@ -91,6 +106,11 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
                 Command deploy = make_order(CommandType::Ability, p, {stations[p]}, 0, 0);
                 deploy.ability = static_cast<uint8_t>(AbilityId::Deploy);
                 issue(sim, deploy);
+            }
+        }
+        if (t == 30 || t == 1500) {
+            for (PlayerId p = 0; p < 2; ++p) {
+                if (planes[p]) issue(sim, fire_at(p, {planes[p]}, center + (p == 0 ? 6 : -6), center));
             }
         }
         if (t == 5) {
@@ -388,7 +408,8 @@ void test_demo_map_is_fair() {
             const auto terrain = static_cast<Terrain>(t);
             const bool made = terrain == Terrain::Ruins || terrain == Terrain::Building || terrain == Terrain::Trench ||
                               terrain == Terrain::Foxhole || terrain == Terrain::Dugout || terrain == Terrain::GunPit ||
-                              terrain == Terrain::Wire || terrain == Terrain::Hedgehogs || terrain == Terrain::Pillbox;
+                              terrain == Terrain::Wire || terrain == Terrain::Hedgehogs || terrain == Terrain::Pillbox ||
+                              terrain == Terrain::Airstrip;
             if (!made) CHECK(counts[t] > 0);
         }
         CHECK(counts[static_cast<size_t>(Terrain::Ruins)] == 0);  // nothing destroyed yet
@@ -2505,6 +2526,388 @@ void test_signals_barracks() {
     CHECK(unit_type(UnitTypeId::Tank).emitter && !unit_type(UnitTypeId::DfStation).emitter);
 }
 
+// --- Aviation and air defence ---------------------------------------------------
+
+// A plain 80 x 40 with our airfield at (4..9, 18..20), an attack aircraft
+// on it and plenty of ammunition and fuel for rearming.
+struct AirSetup {
+    Simulation sim;
+    EntityId airfield = 0;
+    EntityId plane = 0;
+};
+
+AirSetup air_setup(uint64_t seed = 1, TileMap map = TileMap(80, 40)) {
+    AirSetup a{Simulation(seed, std::move(map))};
+    World& w = a.sim.world_for_setup();
+    a.airfield = w.place_structure(StructureType::Airfield, 0, {4, 18}, 6, 3);
+    a.plane = w.spawn_unit(0, UnitTypeId::Su25, tile_center({4, 18}));
+    w.set_stock(0, {0, 0, 0, 100, 100});
+    return a;
+}
+
+bool on_airfield(const Simulation& sim, EntityId plane, EntityId airfield) {
+    const Unit* u = sim.world().find_unit(plane);
+    const Structure* s = u ? sim.world().structure_at(tile_of(u->pos)) : nullptr;
+    return u && !u->airborne && s && s->id == airfield;
+}
+
+// Steps until the aircraft, sent on a mission, is back on its airfield.
+void fly_sortie(AirSetup& a) {
+    for (int i = 0; i < 5; ++i) a.sim.step();
+    for (int i = 0; i < 800 && !on_airfield(a.sim, a.plane, a.airfield); ++i) a.sim.step();
+    CHECK(on_airfield(a.sim, a.plane, a.airfield) || a.sim.world().find_unit(a.plane) == nullptr);
+}
+
+// Aircraft fly missions only: one mission a sortie. It takes off, makes its
+// rocket run along the target, flies home, lands and rearms from the stock.
+// In the air, new orders don't reach it.
+void test_aircraft_fly_missions() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    const FixedVec2 parked = sim.world().find_unit(a.plane)->pos;
+    issue(sim, make_move(0, {a.plane}, 30, 30));  // not a mission
+    for (int i = 0; i < 20; ++i) sim.step();
+    CHECK(sim.world().find_unit(a.plane)->pos == parked && !sim.world().find_unit(a.plane)->airborne);
+    CHECK(sim.world().find_unit(a.plane)->order == Order::Idle);
+
+    issue(sim, fire_at(0, {a.plane}, 50, 20));
+    for (int i = 0; i < 12; ++i) sim.step();
+    CHECK(sim.world().find_unit(a.plane)->airborne);
+    issue(sim, fire_at(0, {a.plane}, 50, 35));  // a new mission in the air: ignored
+    Command stop = make_order(CommandType::Stop, 0, {a.plane}, 0, 0);
+    issue(sim, stop);
+    const std::vector<FixedVec2> rockets = shell_landings(sim, 400);
+    CHECK(rockets.size() == static_cast<size_t>(unit_type(UnitTypeId::Su25).rounds_capacity));
+    for (const FixedVec2& r : rockets) CHECK((r - at(50, 20)).length() <= Fixed::from_int(6));
+
+    for (int i = 0; i < 600 && !on_airfield(sim, a.plane, a.airfield); ++i) sim.step();
+    CHECK(on_airfield(sim, a.plane, a.airfield));
+    CHECK(sim.world().find_unit(a.plane)->order == Order::Idle);  // the mission is over
+    const Fixed flown = sim.world().find_unit(a.plane)->fuel;
+    CHECK(flown < unit_type(UnitTypeId::Su25).fuel_capacity);
+    for (Tick i = 0; i < 40 * kAirRearmInterval; ++i) sim.step();
+    const Unit* u = sim.world().find_unit(a.plane);
+    CHECK(u->rounds == unit_type(UnitTypeId::Su25).rounds_capacity && u->fuel == unit_type(UnitTypeId::Su25).fuel_capacity);
+    CHECK(stock_of(sim, Resource::Ammo) == 100 - unit_type(UnitTypeId::Su25).rounds_capacity);
+    CHECK(stock_of(sim, Resource::Fuel) < 100);
+    CHECK(u->hp == unit_type(UnitTypeId::Su25).max_hp);
+}
+
+// The run is made lined up on the target: a target off to the side of the
+// runway gets the rockets once the aircraft has come round to it.
+void test_run_lines_up() {
+    AirSetup a = air_setup();
+    issue(a.sim, fire_at(0, {a.plane}, 8, 25));
+    const std::vector<FixedVec2> rockets = shell_landings(a.sim, 200);
+    CHECK(!rockets.empty());
+    bool close = false;
+    for (const FixedVec2& r : rockets) close = close || (r - at(8, 25)).length() <= Fixed::from_ratio(5, 2);
+    CHECK(close);
+}
+
+// A mission against an enemy we see follows him while we see him.
+void test_strike_follows_the_target() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(55, 8));
+    for (int y = 6; y <= 34; y += 7) w.spawn_unit(0, UnitTypeId::Scout, at(49, y));  // watching the road south
+    sim.step();
+    issue(sim, attack_order(0, {a.plane}, tank));
+    issue(sim, make_move(1, {tank}, 55, 34));
+    const std::vector<FixedVec2> rockets = shell_landings(sim, 400);
+    CHECK(rockets.size() == static_cast<size_t>(unit_type(UnitTypeId::Su25).rounds_capacity));
+    Fixed y{};
+    for (const FixedVec2& r : rockets) y += r.y;
+    CHECK(!rockets.empty() && y / static_cast<int32_t>(rockets.size()) > Fixed::from_int(14));  // not where he was
+}
+
+// Short of fuel for the way there and back, the aircraft turns home early,
+// its rockets unfired.
+void test_bingo_fuel() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    sim.world_for_setup().unit_for_setup(a.plane)->fuel = Fixed::from_int(80);
+    sim.world_for_setup().set_stock(0, {});
+    issue(sim, fire_at(0, {a.plane}, 70, 20));
+    const std::vector<FixedVec2> rockets = shell_landings(sim, 300);
+    CHECK(rockets.empty());
+    for (int i = 0; i < 600 && !on_airfield(sim, a.plane, a.airfield); ++i) sim.step();
+    CHECK(on_airfield(sim, a.plane, a.airfield));
+    CHECK(sim.world().find_unit(a.plane)->fuel > Fixed{});
+    // Empty racks or next to no fuel: it doesn't take off at all.
+    for (const bool racks : {false, true}) {
+        Unit* p = sim.world_for_setup().unit_for_setup(a.plane);
+        p->rounds = racks ? unit_type(UnitTypeId::Su25).rounds_capacity : 0;
+        p->fuel = racks ? Fixed{} : unit_type(UnitTypeId::Su25).fuel_capacity;
+        issue(sim, fire_at(0, {a.plane}, 40, 20));
+        for (int i = 0; i < 20; ++i) sim.step();
+        CHECK(sim.world().find_unit(a.plane) && !sim.world().find_unit(a.plane)->airborne &&
+              sim.world().find_unit(a.plane)->order == Order::Idle);
+    }
+    // Off the runway (set down there for the test) it isn't rearmed.
+    Unit* p = sim.world_for_setup().unit_for_setup(a.plane);
+    p->pos = at(30, 30);
+    p->rounds = 0;
+    sim.world_for_setup().set_stock(0, {0, 0, 0, 100, 100});
+    for (Tick i = 0; i < 10 * kAirRearmInterval; ++i) sim.step();
+    CHECK(sim.world().find_unit(a.plane)->rounds == 0 && stock_of(sim, Resource::Ammo) == 100);
+}
+
+// Nothing but air defence reaches an aircraft in the air: a firefight under
+// its path doesn't touch it, and no one shoots at it but the AA.
+void test_only_air_defence_reaches_aircraft() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(30, 22));
+    const EntityId mg = w.spawn_unit(1, UnitTypeId::MachineGunner, at(30, 19));
+    w.spawn_unit(0, UnitTypeId::Rifleman, at(33, 20));
+    w.spawn_unit(0, UnitTypeId::Rifleman, at(27, 20));
+    issue(sim, fire_at(0, {a.plane}, 60, 20));
+    bool told = false;
+    for (int i = 0; i < 300; ++i) {
+        sim.step();
+        if (told || !seen(sim, 1, a.plane)) continue;
+        // Seen overhead, but a tank or a machine gun can't be told to shoot at it.
+        issue(sim, attack_order(1, {tank, mg}, a.plane));
+        for (int k = 0; k < 3; ++k) sim.step();
+        for (const EntityId id : {tank, mg}) {
+            const Unit* gun = sim.world().find_unit(id);
+            CHECK(!gun || gun->order != Order::Attack);
+        }
+        told = true;
+    }
+    CHECK(told);
+    const Unit* u = sim.world().find_unit(a.plane);
+    CHECK(u && u->hp == unit_type(UnitTypeId::Su25).max_hp);
+
+    // Alone under its path, with nothing else to shoot at, the ground troops
+    // hold fire; a machine gun firing along the path doesn't touch it.
+    AirSetup c = air_setup(3);
+    World& cw = c.sim.world_for_setup();
+    const EntityId lone_tank = cw.spawn_unit(1, UnitTypeId::Tank, at(20, 22));
+    const EntityId gunner = cw.spawn_unit(1, UnitTypeId::MachineGunner, at_half(72, 37));
+    const EntityId target = cw.spawn_unit(0, UnitTypeId::Tank, at_half(62, 37));
+    cw.unit_for_setup(target)->rounds = 0;  // takes it, can't answer
+    issue(c.sim, fire_at(0, {c.plane}, 60, 18));
+    bool overhead = false;
+    for (int i = 0; i < 200 && !overhead; ++i) {
+        c.sim.step();
+        const Unit* p = c.sim.world().find_unit(c.plane);
+        overhead = p && (p->pos - c.sim.world().find_unit(lone_tank)->pos).length() < Fixed::from_int(5);
+    }
+    CHECK(overhead);
+    CHECK(c.sim.world().find_unit(lone_tank)->engaged != c.plane);  // not even taken aim at
+    fly_sortie(c);
+    CHECK(c.sim.world().find_unit(lone_tank)->last_shot_tick == kNeverFired);
+    CHECK(c.sim.world().find_unit(gunner)->last_shot_tick != kNeverFired);
+    CHECK(hp_of(c.sim, c.plane) == unit_type(UnitTypeId::Su25).max_hp);
+
+    // Two strikes crossing: neither is hurt by the other's rockets bursting below.
+    AirSetup b = air_setup(2);
+    World& bw = b.sim.world_for_setup();
+    bw.place_structure(StructureType::Airfield, 1, {70, 18}, 6, 3);
+    const EntityId other = bw.spawn_unit(1, UnitTypeId::Su25, tile_center({75, 20}));
+    issue(b.sim, fire_at(0, {b.plane}, 40, 20));
+    issue(b.sim, fire_at(1, {other}, 40, 20));
+    const std::vector<FixedVec2> rockets = shell_landings(b.sim, 300);
+    CHECK(rockets.size() == 2 * static_cast<size_t>(unit_type(UnitTypeId::Su25).rounds_capacity));
+    CHECK(hp_of(b.sim, b.plane) == unit_type(UnitTypeId::Su25).max_hp);
+    CHECK(hp_of(b.sim, other) == unit_type(UnitTypeId::Su25).max_hp);
+}
+
+// A MANPADS crew under the aircraft's path: a missile hits about every
+// other time, and it never fires at anything on the ground.
+void test_manpads() {
+    int damaged = 0;
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        AirSetup a = air_setup(seed);
+        const EntityId crew = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(40, 21));
+        issue(a.sim, fire_at(0, {a.plane}, 60, 20));
+        fly_sortie(a);
+        const int32_t lost = unit_type(UnitTypeId::Su25).max_hp - hp_of(a.sim, a.plane);
+        const int32_t per_hit = unit_type(UnitTypeId::Manpads).weapon.damage - unit_type(UnitTypeId::Su25).armor[1];
+        CHECK(lost % per_hit == 0);  // whole missiles
+        damaged += lost > 0 ? 1 : 0;
+        CHECK(a.sim.world().find_unit(crew)->last_shot_tick != kNeverFired);
+    }
+    CHECK(damaged >= 5 && damaged <= 19);
+
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId crew = sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(10, 10));
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(14, 10));
+    issue(sim, attack_order(1, {crew}, rifle));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(crew) == nullptr || sim.world().find_unit(crew)->last_shot_tick == kNeverFired);
+    CHECK(hp_of(sim, rifle) == unit_type(UnitTypeId::Rifleman).max_hp);
+
+    // Nor from a window.
+    Simulation village(1, village_map());
+    const EntityId inside = village.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(9, 12));
+    issue(village, garrison(1, {inside}, house_id(village)));
+    for (int i = 0; i < 100; ++i) village.step();
+    CHECK(village.world().find_unit(inside)->inside != 0);
+    const EntityId passer = village.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(14, 11));
+    for (int i = 0; i < 100; ++i) village.step();
+    CHECK(village.world().find_unit(inside)->last_shot_tick == kNeverFired);
+    CHECK(hp_of(village, passer) == unit_type(UnitTypeId::Rifleman).max_hp);
+}
+
+// An aircraft in the air is seen by whoever has it within his sight, over
+// the trees too; an air defence radar, set up and on the air, sees it far out.
+void test_radar_sees_aircraft() {
+    auto seen_at_nine = [](bool radar, bool deployed, bool quiet) {
+        AirSetup a = air_setup();
+        World& w = a.sim.world_for_setup();
+        w.spawn_unit(1, UnitTypeId::Manpads, at(40, 20));
+        if (radar) {
+            const EntityId r = w.spawn_unit(1, UnitTypeId::AirRadar, at(70, 35));
+            w.unit_for_setup(r)->deployed = deployed;
+            w.unit_for_setup(r)->silent = quiet;
+        }
+        Unit* p = w.unit_for_setup(a.plane);
+        p->airborne = true;
+        p->pos = at(31, 20);
+        p->order = Order::AttackGround;
+        p->order_point = at(60, 20);
+        a.sim.step();
+        return seen(a.sim, 1, a.plane);
+    };
+    CHECK(!seen_at_nine(false, false, false));
+    CHECK(seen_at_nine(true, true, false));
+    CHECK(!seen_at_nine(true, false, false));  // packed up
+    CHECK(!seen_at_nine(true, true, true));    // switched off
+
+    // Out of the radar's reach: not seen.
+    AirSetup far = air_setup();
+    far.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(40, 20));
+    Unit* r = far.sim.world_for_setup().unit_for_setup(far.sim.world_for_setup().spawn_unit(1, UnitTypeId::AirRadar, at(79, 39)));
+    r->deployed = true;
+    Unit* p = far.sim.world_for_setup().unit_for_setup(far.plane);
+    p->airborne = true;
+    p->pos = at(31, 20);
+    p->order = Order::AttackGround;
+    p->order_point = at(60, 20);
+    far.sim.step();
+    CHECK(!seen(far.sim, 1, far.plane));
+
+    // Over a forest an aircraft is still in the open sky.
+    TileMap woods(80, 40);
+    for (int y = 17; y <= 23; ++y) {
+        for (int x = 27; x <= 33; ++x) woods.set_terrain(x, y, Terrain::Forest);
+    }
+    AirSetup forest = air_setup(1, woods);
+    World& fw = forest.sim.world_for_setup();
+    fw.spawn_unit(1, UnitTypeId::Manpads, at(36, 20));
+    Unit* q = fw.unit_for_setup(forest.plane);
+    q->airborne = true;
+    q->pos = at(30, 20);
+    q->order = Order::AttackGround;
+    q->order_point = at(60, 20);
+    forest.sim.step();
+    CHECK(seen(forest.sim, 1, forest.plane));
+    // Seen by a building's lookouts too: over the trees, out in the open sky.
+    TileMap grove(80, 40);
+    for (int y = 16; y <= 18; ++y) {
+        for (int x = 40; x <= 43; ++x) grove.set_terrain(x, y, Terrain::Forest);
+    }
+    AirSetup hq = air_setup(1, grove);
+    hq.sim.world_for_setup().place_structure(StructureType::Headquarters, 1, {40, 10}, 3, 3);
+    Unit* h = hq.sim.world_for_setup().unit_for_setup(hq.plane);
+    h->airborne = true;
+    h->pos = at_half(83, 33);
+    h->order = Order::AttackGround;
+    h->order_point = at(60, 20);
+    hq.sim.step();
+    CHECK(seen(hq.sim, 1, hq.plane));
+}
+
+// The Shilka fires at aircraft and at the ground; with its radar off it
+// aims by eye and hits aircraft half as often.
+void test_shilka() {
+    int32_t radar_on = 0;
+    int32_t radar_off = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        for (const bool quiet : {false, true}) {
+            AirSetup a = air_setup(seed);
+            const EntityId zsu = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Shilka, at(40, 22));
+            a.sim.world_for_setup().unit_for_setup(zsu)->silent = quiet;
+            issue(a.sim, fire_at(0, {a.plane}, 60, 20));
+            fly_sortie(a);
+            (quiet ? radar_off : radar_on) += unit_type(UnitTypeId::Su25).max_hp - hp_of(a.sim, a.plane);
+        }
+    }
+    CHECK(radar_off > 0 && radar_on > 0);
+    CHECK(radar_off * 100 <= radar_on * 75);
+
+    Simulation sim(1, TileMap(40, 20));
+    sim.world_for_setup().spawn_unit(1, UnitTypeId::Shilka, at(10, 10));
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(15, 10));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(hp_of(sim, rifle) < unit_type(UnitTypeId::Rifleman).max_hp);
+}
+
+// On the ground an aircraft is a target like any other, and the runway
+// takes the ones parked on it with it; an aircraft in the air with no
+// airfield left to land on is lost to the fight.
+void test_airfield_losses() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(11, 19));
+    sim.step();
+    issue(sim, attack_order(1, {tank}, a.plane));
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(hp_of(sim, a.plane) < unit_type(UnitTypeId::Su25).max_hp);
+
+    AirSetup b = air_setup();
+    const EntityId parked = b.sim.world_for_setup().spawn_unit(0, UnitTypeId::Su25, tile_center({6, 19}));
+    issue(b.sim, fire_at(0, {b.plane}, 60, 20));
+    for (int i = 0; i < 20; ++i) b.sim.step();
+    CHECK(b.sim.world().find_unit(b.plane)->airborne);
+    b.sim.world_for_setup().structure_for_setup(b.airfield)->hp = 0;
+    b.sim.step();
+    CHECK(b.sim.world().find_structure(b.airfield) == nullptr);
+    CHECK(b.sim.world().find_unit(parked) == nullptr);
+    CHECK(b.sim.world().find_unit(b.plane) != nullptr);
+    CHECK(b.sim.world().map().terrain(6, 19) == Terrain::Grass);
+    for (int i = 0; i < 400; ++i) b.sim.step();
+    CHECK(b.sim.world().find_unit(b.plane) == nullptr);
+}
+
+// The airfield (a runway anyone can cross) and the air defence barracks
+// are built by rear troops and hire the aircraft and the air defence.
+void test_aviation_buildings() {
+    for (StructureType t : {StructureType::Airfield, StructureType::AirDefenseBarracks}) {
+        CHECK(std::find(std::begin(kBuildable), std::end(kBuildable), t) != std::end(kBuildable));
+    }
+    CHECK(can_train(StructureType::Airfield, UnitTypeId::Su25));
+    for (UnitTypeId t : {UnitTypeId::Manpads, UnitTypeId::Shilka, UnitTypeId::AirRadar}) {
+        CHECK(can_train(StructureType::AirDefenseBarracks, t));
+    }
+    for (MoveClass c : {MoveClass::Foot, MoveClass::Vehicle, MoveClass::Wheeled}) {
+        CHECK(terrain_def(Terrain::Airstrip).speed_percent[static_cast<size_t>(c)] == 100);
+    }
+    // A new aircraft is rolled out onto a free spot of the runway.
+    AirSetup a = air_setup();
+    a.sim.world_for_setup().set_stock(0, {10, 0, 1000, 1000, 1000});
+    Command train{.type = CommandType::Train, .player = 0, .target_unit = a.airfield,
+                  .unit_type = static_cast<uint8_t>(UnitTypeId::Su25)};
+    issue(a.sim, train);
+    issue(a.sim, train);
+    for (Tick i = 0; i < 2 * unit_type(UnitTypeId::Su25).train_time + 5; ++i) a.sim.step();
+    std::vector<FixedVec2> spots;
+    for (const Unit& u : a.sim.world().units()) {
+        if (u.type == UnitTypeId::Su25 && on_airfield(a.sim, u.id, a.airfield)) spots.push_back(u.pos);
+    }
+    CHECK(spots.size() == 3);
+    for (size_t i = 0; i < spots.size(); ++i) {
+        for (size_t j = i + 1; j < spots.size(); ++j) CHECK(spots[i] != spots[j]);
+    }
+    CHECK(a.sim.world().find_unit(a.plane)->pos == tile_center({4, 18}));
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -2664,6 +3067,16 @@ int main() {
     test_couriers_reach_silent_units();
     test_direction_finding();
     test_signals_barracks();
+    test_aircraft_fly_missions();
+    test_strike_follows_the_target();
+    test_run_lines_up();
+    test_bingo_fuel();
+    test_only_air_defence_reaches_aircraft();
+    test_manpads();
+    test_radar_sees_aircraft();
+    test_shilka();
+    test_airfield_losses();
+    test_aviation_buildings();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

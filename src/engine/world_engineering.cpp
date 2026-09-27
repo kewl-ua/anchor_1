@@ -150,7 +150,7 @@ void World::update_mines() {
     std::vector<uint32_t> gone;
     for (const Mine& m : mines_) {
         for (const Unit& u : units_) {
-            if (u.owner == m.owner || u.inside || u.hp <= 0) continue;
+            if (u.owner == m.owner || u.inside || u.airborne || u.hp <= 0) continue;
             if (unit_type(u.type).vehicle != m.anti_tank || tile_of(u.pos) != m.tile) continue;
             const FixedVec2 at = tile_center(m.tile);
             const WeaponDef& blast = m.anti_tank ? kAtMine : kApMine;
@@ -158,7 +158,7 @@ void World::update_mines() {
             hurt(u, blast, {at, 0, true, true});
             if (!m.anti_tank) {  // the fragments fly
                 for (const Unit& other : units_) {
-                    if (other.id == u.id || other.inside || unit_type(other.type).vehicle) continue;
+                    if (other.id == u.id || other.inside || other.airborne || unit_type(other.type).vehicle) continue;
                     if ((other.pos - u.pos).length_sq_raw() <= square_raw(blast.splash_radius)) {
                         hurt(other, blast, {at, 0, true, true});
                     }
@@ -193,7 +193,7 @@ void World::update_charges() {
         recent_impacts_.push_back({tick_, c.pos, UnitTypeId::Sapper, kChargeBlast.splash_radius});
         if (const Structure* s = find_structure(c.target)) hurt_structure(*s, kCharge);
         for (const Unit& u : units_) {
-            if (u.inside) continue;
+            if (u.inside || u.airborne) continue;
             if ((u.pos - c.pos).length_sq_raw() <= square_raw(kChargeBlast.splash_radius)) {
                 hurt(u, kChargeBlast, {c.pos, 0, true, true});
             }
@@ -212,7 +212,7 @@ const Unit* World::find_enemy_in_slit(Unit& u, const Structure& pillbox) {
     const Unit* best = nullptr;
     uint64_t best_sq = 0;
     for (const Unit& other : units_) {
-        if (other.owner == u.owner || !sees(u.owner, other)) continue;
+        if (other.owner == u.owner || other.airborne || !sees(u.owner, other)) continue;
         const FixedVec2 v = other.pos - pillbox.center;
         const uint64_t d = v.length_sq_raw();
         if (d > sight_sq) continue;

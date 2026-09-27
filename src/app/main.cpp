@@ -342,6 +342,40 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(12.0f, 0.0f));
     }
 
+    if (options.scene == "air" && options.mode == Options::Mode::Offline) {
+        // Offline: an airfield behind our base with two attack aircraft on
+        // it; both fly a mission at the ground ahead of the army, where the
+        // enemy's air defence waits: a MANPADS crew, a Shilka and a radar.
+        // The camera follows the lead aircraft.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        const engine::TilePos t = engine::tile_of(base);
+        const int32_t step = me == 0 ? 1 : -1;
+        std::optional<engine::TilePos> origin;
+        for (int32_t r = 6; r < 40 && !origin; ++r) {
+            const engine::TilePos o{t.x - r * step - 3, t.y + r * step - 1};
+            if (w.can_place(engine::StructureType::Airfield, o)) origin = o;
+        }
+        if (!origin) return std::nullopt;
+        w.place_structure(engine::StructureType::Airfield, me, *origin, 6, 3);
+        std::vector<engine::EntityId> planes;
+        for (int i = 0; i < 2; ++i) {
+            planes.push_back(w.spawn_unit(me, engine::UnitTypeId::Su25, engine::tile_center({origin->x + i, origin->y})));
+        }
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        w.spawn_unit(enemy, engine::UnitTypeId::Manpads, ahead(24.0f, 2.0f));
+        w.spawn_unit(enemy, engine::UnitTypeId::Shilka, ahead(25.0f, -2.0f));
+        w.unit_for_setup(w.spawn_unit(enemy, engine::UnitTypeId::AirRadar, ahead(32.0f, 0.0f)))->deployed = true;
+        game.submit({.type = engine::CommandType::AttackGround, .units = planes, .target = ahead(22.0f, 0.0f)});
+        game.select_units({planes.front()});
+        return std::nullopt;
+    }
+
     if (options.scene == "build") {
         // Three rear troops put up an infantry barracks in front of the
         // headquarters, two a warehouse towards the woodline.

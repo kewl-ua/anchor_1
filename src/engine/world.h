@@ -155,6 +155,32 @@ inline constexpr Fixed kHeadquartersRelay = Fixed::from_int(12);
 // (sin^2 20 = 0.117): from nearly the same spot they only give a direction.
 inline constexpr int64_t kFixSinSqPermille = 117;
 
+// Aviation. Aircraft fly this high over the ground (elevation levels), see
+// and are seen from up there, and only air defence reaches them.
+inline constexpr Fixed kFlightHeight = Fixed::from_int(3);
+// A unit of fuel from the stock takes an aircraft this many tiles.
+inline constexpr int32_t kAircraftTilesPerFuel = 4;
+// On the airfield: a rocket and a unit of fuel every so often, from the stock.
+inline constexpr Tick kAirRearmInterval = 10;
+// The rocket run: it begins this far short of the target, lined up on it
+// within 15 degrees; a rocket every kRocketInterval, each at the ground this
+// far ahead of the aircraft and up to kRocketScatter off.
+inline constexpr Fixed kRunStart = Fixed::from_int(9);
+inline constexpr Fixed kRunAlignedCos = Fixed::from_ratio(966, 1000);
+inline constexpr Fixed kRocketAhead = Fixed::from_int(5);
+inline constexpr Tick kRocketInterval = 2;
+inline constexpr Fixed kRocketScatter = Fixed::from_int(1);
+// Turning: the heading swings this much sideways a tick (8.5 degrees); this
+// close to the heading wanted, it's on it. Closer than kTurnClearance to the
+// target an aircraft flies straight on and comes round again.
+inline constexpr Fixed kAircraftTurn = Fixed::from_ratio(3, 20);
+inline constexpr Fixed kAlignedCos = Fixed::from_ratio(989, 1000);
+inline constexpr Fixed kTurnClearance = Fixed::from_ratio(7, 2);
+// Turns home with this much fuel (tiles) to spare over the way back.
+inline constexpr Fixed kBingoReserve = Fixed::from_int(10);
+// Air defence guns with their radar switched off aim by eye: this share of the hits (percent).
+inline constexpr int32_t kOpticalSightPercent = 50;
+
 // A DF station's bearing on an enemy radio: from the station towards it.
 struct Bearing {
     PlayerId owner = 0;
@@ -261,6 +287,7 @@ struct Unit {
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
 
     bool silent = false;  // radio silence: no bearings on it, orders by courier
+    bool airborne = false;  // an aircraft in the air: only air defence reaches it
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -281,6 +308,10 @@ struct Projectile {
     WeaponDef weapon{};     // what was fired
     bool lobbed = false;    // arcs over everything and only comes down at the target
     bool enters = false;    // a hand grenade: goes in through a window or a dugout's entrance
+    // Fired at an aircraft: bursts in the air, never touches the ground. A
+    // missile that is going to hit flies after `homing`; one that misses, 0.
+    bool at_air = false;
+    EntityId homing = 0;
 };
 
 // Where a projectile went off, kept for a few seconds so the renderer (and
@@ -290,6 +321,7 @@ struct Impact {
     FixedVec2 pos{};
     UnitTypeId shooter_type = UnitTypeId::Rifleman;
     Fixed splash{};  // radius of the burst, tiles
+    bool air = false;  // up in the sky: a missile bursting at an aircraft
 };
 
 // The round a unit's gun is loaded with: the main one, or the alternative.
@@ -323,6 +355,7 @@ public:
     const Unit* find_unit(EntityId id) const;
     // Setup and tests: direct access to a unit (to hand it a nearly empty tank...).
     Unit* unit_for_setup(EntityId id) { return find_unit_mut(id); }
+    Structure* structure_for_setup(EntityId id) { return find_structure_mut(id); }
 
     // Houses and bridges come from the map's House/Bridge tiles; player
     // buildings are placed with place_structure().
@@ -531,6 +564,20 @@ private:
     // Work a job takes a unit, shortened by the owner's upgrades (shovels).
     Tick work_needed(const Unit& u, Tick base) const;
     void find_mines();
+
+    // Aviation and air defence (world_air.cpp).
+    enum class Steer : uint8_t { Turn, Straight, Direct };
+    void give_mission(Unit& plane, FixedVec2 point, EntityId target);
+    void update_aircraft(Unit& u);
+    void fly(Unit& u, FixedVec2 goal, Steer how);
+    void fire_rocket(Unit& u);
+    void rearm_aircraft(Unit& u);
+    const Structure* home_airfield(const Unit& u) const;
+    FixedVec2 parking_spot(const Structure& airfield, EntityId self) const;
+    const Unit* find_air_target(Unit& u);
+    void fire_at_air(Unit& u, const Unit& target);
+    void move_missile(Projectile& p);
+    bool sky_watch(PlayerId player, const Unit& plane) const;
 
     // Electronic warfare (world_signals.cpp).
     void update_couriers();

@@ -648,6 +648,10 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     } else if (u.type == engine::UnitTypeId::Truck) {
         armament = TextFormat("Unarmed. Carries %d from the station to the depots.", engine::kTruckCapacity);
     }
+    if (def.aircraft) {
+        armament = TextFormat("%s: %d explosive each, all of them in one run along the target", weapon.name,
+                              weapon.damage);
+    }
     draw_text(armament, area.x, line2, fitting_font(armament, kCardFontSize, area.width), theme::kTextDim);
     draw_text(TextFormat("Armor: bullet %d, explosive %d, anti-tank %d", def.armor[0], def.armor[1], def.armor[2]),
               area.x, line2 + step, kCardFontSize, theme::kTextDim);
@@ -670,6 +674,19 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
         }
     }
     if (def.worker && u.carrying > 0) state = TextFormat("%s, carrying %d materials", state, u.carrying);
+    if (def.aircraft) {
+        const bool full = u.rounds >= def.rounds_capacity && u.fuel >= def.fuel_capacity;
+        if (!u.airborne) {
+            state = u.order == engine::Order::Idle ? (full ? "On the runway, ready" : "On the runway, rearming")
+                                                   : "Taking off";
+        } else if (u.shots_left > 0) {
+            state = "Rocket run";
+        } else if (u.order == engine::Order::Attack || u.order == engine::Order::AttackGround) {
+            state = "On a mission";
+        } else {
+            state = "Back to the airfield";
+        }
+    }
     if (u.type == engine::UnitTypeId::Truck) {
         if (u.carrying > 0) {
             state = TextFormat("%s, %d %s aboard", state, u.carrying, engine::resource_name(u.carrying_type));

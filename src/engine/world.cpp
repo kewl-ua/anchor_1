@@ -243,6 +243,7 @@ void World::update_garrisoned(Unit& u) {
     if (home && home->type == StructureType::Dugout) return;  // sheltering
     const Unit* target = home && home->type == StructureType::Pillbox ? find_enemy_in_slit(u, *home) : find_enemy_in_sight(u);
     if (!target) return;
+    if (target->airborne) return engage(u, *target);  // a missile out of the window
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius + def_of(*target).radius;
     const FixedVec2 to_target = target->pos - u.pos;
@@ -261,7 +262,15 @@ void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
 // into the river.
 void World::collapse(const Structure& s) {
     if (s.type == StructureType::FuelDepot) burn_fuel_depot(s);
-    if (s.type != StructureType::Bridge) {
+    if (s.type == StructureType::Airfield) {
+        // The aircraft parked on the runway go with it.
+        for (Unit& u : units_) {
+            const TilePos t = tile_of(u.pos);
+            if (def_of(u).aircraft && !u.airborne && std::find(s.tiles.begin(), s.tiles.end(), t) != s.tiles.end()) {
+                u.hp = 0;
+            }
+        }
+    } else if (s.type != StructureType::Bridge) {
         for (EntityId id : s.garrison) {
             if (Unit* u = find_unit_mut(id)) u->hp = 0;
         }
@@ -274,8 +283,8 @@ void World::collapse(const Structure& s) {
     }
     Terrain rubble = s.type == StructureType::Bridge ? Terrain::Water : Terrain::Ruins;
     if (is_fieldwork(s.type) || is_obstacle(s.type) || s.type == StructureType::Dugout ||
-        s.type == StructureType::Pillbox) {
-        rubble = Terrain::Grass;  // filled in, cut, torn down
+        s.type == StructureType::Pillbox || s.type == StructureType::Airfield) {
+        rubble = Terrain::Grass;  // filled in, cut, torn down, cratered
     }
     for (const TilePos& t : s.tiles) {
         if (s.type == StructureType::Parapet) {  // just a mound on the ground
@@ -336,6 +345,7 @@ void World::deliver(const Command& cmd) {
 
 void World::apply_group_move(const Command& cmd, Order order) {
     std::vector<Unit*> group = collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); });
+    std::erase_if(group, [](const Unit* u) { return def_of(*u).aircraft; });  // aircraft fly missions only
     if (group.empty()) return;
     for (Unit* u : group) leave_structure(*u);  // any order to go somewhere starts at the door
 
@@ -403,6 +413,12 @@ void World::apply_attack(const Command& cmd) {
     if (!target || target->owner == cmd.player || !sees(cmd.player, *target)) return;
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
         if (!is_armed(def_of(*u))) continue;  // a truck has nothing to attack with
+        if (def_of(*u).aircraft) {
+            if (!target->airborne) give_mission(*u, target->pos, target->id);
+            continue;
+        }
+        // Only air defence reaches an aircraft in the air, and a missile nothing else.
+        if (target->airborne ? !weapon_of(*u).anti_air : weapon_of(*u).air_only) continue;
         leave_structure(*u);
         u->order = Order::Attack;
         u->order_target = target->id;
@@ -416,7 +432,11 @@ void World::apply_attack_ground(const Command& cmd) {
     const FixedVec2 target = clamp_to_map(cmd.target, Fixed{});
     const TilePos goal = map_.clamp_tile(tile_of(target));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
-        if (!is_armed(def_of(*u))) continue;
+        if (!is_armed(def_of(*u)) || weapon_of(*u).air_only) continue;
+        if (def_of(*u).aircraft) {
+            give_mission(*u, target, 0);
+            continue;
+        }
         leave_structure(*u);
         u->order = Order::AttackGround;
         u->order_point = target;  // everyone fires at the same spot
@@ -431,6 +451,7 @@ void World::apply_attack_ground(const Command& cmd) {
 
 void World::apply_stop(const Command& cmd) {
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
+        if (u->airborne) continue;  // a mission in the air is flown to the end
         u->order = Order::Idle;
         u->order_target = 0;
         u->engaged = 0;
@@ -473,6 +494,7 @@ void World::step() {
 
 void World::update_unit(Unit& u) {
     if (u.cooldown > 0) --u.cooldown;
+    if (def_of(u).aircraft) return update_aircraft(u);
     if (u.inside) return update_garrisoned(u);
 
     auto finish_order = [&u] {
@@ -555,17 +577,28 @@ void World::update_unit(Unit& u) {
 // the nearest one (ties go to the lower id, so every peer picks the same).
 // Only enemies the player sees count: nobody shoots into the fog.
 const Unit* World::find_enemy_in_sight(Unit& u) {
+    // Air defence watches the sky first; a missile crew nothing else.
+    if (weapon_of(u).anti_air) {
+        if (const Unit* plane = find_air_target(u)) {
+            u.engaged = plane->id;
+            return plane;
+        }
+        if (weapon_of(u).air_only) {
+            u.engaged = 0;
+            return nullptr;
+        }
+    }
     const uint64_t sight_sq = square_raw(def_of(u).sight);
 
-    if (const Unit* current = find_unit(u.engaged);
-        current && sees(u.owner, *current) && (current->pos - u.pos).length_sq_raw() <= sight_sq) {
+    if (const Unit* current = find_unit(u.engaged); current && !current->airborne && sees(u.owner, *current) &&
+                                                    (current->pos - u.pos).length_sq_raw() <= sight_sq) {
         return current;
     }
 
     const Unit* best = nullptr;
     uint64_t best_sq = 0;
     for (const Unit& other : units_) {
-        if (other.owner == u.owner || !sees(u.owner, other)) continue;
+        if (other.owner == u.owner || other.airborne || !sees(u.owner, other)) continue;
         const uint64_t d = (other.pos - u.pos).length_sq_raw();
         if (d <= sight_sq && (!best || d < best_sq)) {
             best = &other;
@@ -578,6 +611,20 @@ const Unit* World::find_enemy_in_sight(Unit& u) {
 
 void World::engage(Unit& u, const Unit& target) {
     u.engaged = target.id;
+    if (target.airborne) {
+        // Air defence fires at an aircraft in reach; nobody chases one.
+        const FixedVec2 to_target = target.pos - u.pos;
+        const Fixed reach = weapon_of(u).range + def_of(u).radius + def_of(target).radius;
+        if (!weapon_of(u).anti_air || to_target.length_sq_raw() > square_raw(reach)) return;
+        if (to_target.x.raw != 0 || to_target.y.raw != 0) u.facing = to_target;
+        if (u.cooldown == 0 && !out_of_rounds(u)) fire_at_air(u, target);
+        return;
+    }
+    if (weapon_of(u).air_only) {  // down on the ground it's none of a missile crew's business
+        u.engaged = 0;
+        if (u.order == Order::Attack) u.order = Order::Idle;
+        return;
+    }
     if (weapon_of(u).indirect) return engage_indirect(u, target.pos, u.chase_path, tile_of(target.pos), weapon_of(u));
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius + def_of(target).radius;
@@ -784,7 +831,7 @@ const Unit* World::first_unit_on(const FireLine& line, Fixed t0, Fixed t1, Entit
     const Unit* best = nullptr;
     Fixed best_t{};
     for (const Unit& u : units_) {
-        if (u.id == ignore || u.inside) continue;  // the garrison is behind walls
+        if (u.id == ignore || u.inside || u.airborne) continue;  // the garrison is behind walls, aircraft up high
         if (u.pos.x < min_x || u.pos.x > max_x || u.pos.y < min_y || u.pos.y > max_y) continue;
         const FixedVec2 w = u.pos - line.from;
         const Fixed t = clamp((w.x * d.x + w.y * d.y) / len_sq, t0, t1);
@@ -806,7 +853,7 @@ bool World::own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed 
     const Fixed len_sq = d.x * d.x + d.y * d.y;
     if (len_sq.raw == 0) return false;
     for (const Unit& u : units_) {
-        if (u.owner != shooter.owner || u.id == shooter.id || u.inside) continue;
+        if (u.owner != shooter.owner || u.id == shooter.id || u.inside || u.airborne) continue;
         if (map_.terrain_at(u.pos) == Terrain::Forest) continue;
         const FixedVec2 w = u.pos - line.from;
         const Fixed t = (w.x * d.x + w.y * d.y) / len_sq;
@@ -926,6 +973,10 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
 
 void World::move_projectiles() {
     for (Projectile& p : projectiles_) {
+        if (p.at_air) {
+            move_missile(p);
+            continue;
+        }
         p.prev_pos = p.pos;
         const Fixed speed = p.weapon.projectile_speed;
         const FixedVec2 to_target = p.target - p.pos;
@@ -976,7 +1027,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         // Explosions don't care whose units they hit (except the gun that
         // fired). A garrison is safe behind its walls until the house falls.
         for (const Unit& u : units_) {
-            if (u.id == p.shooter || u.inside) continue;
+            if (u.id == p.shooter || u.inside || u.airborne) continue;
             if ((u.pos - at).length_sq_raw() <= square_raw(weapon.splash_radius + def_of(u).radius)) {
                 hurt(u, weapon, blast);
             }
@@ -1008,7 +1059,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         // Landed: hits whoever stands right at the spot, friend or foe.
         uint64_t best_sq = 0;
         for (const Unit& u : units_) {
-            if (u.id == p.shooter || u.inside) continue;
+            if (u.id == p.shooter || u.inside || u.airborne) continue;
             const uint64_t d = (u.pos - at).length_sq_raw();
             if (d <= square_raw(def_of(u).radius + kHitTolerance) && (!direct_hit || d < best_sq)) {
                 direct_hit = &u;
@@ -1054,8 +1105,8 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
     amount = amount * shot.damage_percent / 100;
 
     const uint8_t victim_elevation = map_.elevation_at(victim.pos);
-    if (shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
-    if (shot.elevation < victim_elevation) amount = amount * kLowGroundPercent / 100;
+    if (!victim.airborne && shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
+    if (!victim.airborne && shot.elevation < victim_elevation) amount = amount * kLowGroundPercent / 100;
 
     pending_damage_.push_back({victim.id, std::max(1, amount)});
 }
@@ -1111,7 +1162,7 @@ void World::separate_units() {
         for (size_t j = i + 1; j < units_.size(); ++j) {
             Unit& a = units_[i];
             Unit& b = units_[j];
-            if (a.inside || b.inside) continue;
+            if (a.inside || b.inside || def_of(a).aircraft || def_of(b).aircraft) continue;
 
             const FixedVec2 delta = b.pos - a.pos;
             const Fixed min_dist = def_of(a).radius + def_of(b).radius;
@@ -1200,6 +1251,7 @@ uint64_t World::checksum() const {
         mix(u.camouflaged ? 1 : 0);
         mix(u.perfect_burst ? 1 : 0);
         mix(u.silent ? 1 : 0);
+        mix(u.airborne ? 1 : 0);
     }
     for (const Courier& c : couriers_) {
         mix(c.arrives);
@@ -1282,6 +1334,8 @@ uint64_t World::checksum() const {
         mix_fixed(p.weapon.splash_radius);
         mix(p.lobbed ? 1 : 0);
         mix(p.enters ? 1 : 0);
+        mix(p.at_air ? 1 : 0);
+        mix(p.homing);
     }
     return hash;
 }
