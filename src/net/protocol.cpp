@@ -70,7 +70,8 @@ bool has_target_point(engine::CommandType type) {
 bool has_target_unit(engine::CommandType type) {
     return type == engine::CommandType::Attack || type == engine::CommandType::Garrison ||
            type == engine::CommandType::Train || type == engine::CommandType::Build ||
-           type == engine::CommandType::Upgrade || type == engine::CommandType::Unload;
+           type == engine::CommandType::Upgrade || type == engine::CommandType::Unload ||
+           type == engine::CommandType::Research;
 }
 
 void write_command(Writer& w, const engine::Command& cmd) {
@@ -84,6 +85,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
     if (has_target_unit(cmd.type)) w.u32(cmd.target_unit);
     if (cmd.type == engine::CommandType::Train) w.u8(cmd.unit_type);
     if (cmd.type == engine::CommandType::Build) w.u8(cmd.structure_type);
+    if (cmd.type == engine::CommandType::Research) w.u8(cmd.upgrade);
     if (cmd.type == engine::CommandType::Ability) {
         w.u8(cmd.ability);
         w.i32(cmd.target_end.x.raw);
@@ -94,7 +96,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
 std::optional<engine::Command> read_command(Reader& r) {
     engine::Command cmd;
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(engine::CommandType::Unload)) return std::nullopt;
+    if (type > static_cast<uint8_t>(engine::CommandType::Research)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
 
     const uint16_t count = r.u16();
@@ -109,6 +111,7 @@ std::optional<engine::Command> read_command(Reader& r) {
     if (has_target_unit(cmd.type)) cmd.target_unit = r.u32();
     if (cmd.type == engine::CommandType::Train) cmd.unit_type = r.u8();
     if (cmd.type == engine::CommandType::Build) cmd.structure_type = r.u8();
+    if (cmd.type == engine::CommandType::Research) cmd.upgrade = r.u8();
     if (cmd.type == engine::CommandType::Ability) {
         cmd.ability = r.u8();
         cmd.target_end.x = engine::Fixed::from_raw(r.i32());

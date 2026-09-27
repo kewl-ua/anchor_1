@@ -61,6 +61,17 @@ struct StructureDef {
 
 const StructureDef& structure_type(StructureType type);
 
+struct UpgradeDef {
+    const char* name;
+    const char* label;  // short, for the button
+    const char* description;
+    StructureType building;  // where it's researched
+    Stock cost;
+    Tick time;
+};
+
+const UpgradeDef& upgrade_def(UpgradeId id);
+
 // What rear troops can build, in button order (1, 2, 3, ...).
 inline constexpr StructureType kBuildable[] = {
     StructureType::InfantryBarracks,
@@ -105,6 +116,10 @@ struct Structure {
     FixedVec2 facing{};
     bool upgrading = false;
     Tick upgrade_work = 0;
+
+    // A building researching an upgrade (Count: nothing), and how far along.
+    UpgradeId research = UpgradeId::Count;
+    Tick research_progress = 0;
 };
 
 // Which depot takes in a resource that trucks bring (food, ammo, fuel).

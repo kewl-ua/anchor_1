@@ -243,6 +243,22 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         if (engine::is_shelter(s->type) && !s->garrison.empty()) {
             put(0, Action::Unload, 0, "Leave", "Everyone out");
         }
+        // Research: the bottom row, whatever this building can research.
+        size_t research_slot = 2 * hud::kGridColumns;
+        for (size_t i = 0; i < engine::kUpgradeCount && research_slot < hud::kGridSlots; ++i) {
+            const auto id = static_cast<engine::UpgradeId>(i);
+            const engine::UpgradeDef& up = engine::upgrade_def(id);
+            if (up.building != s->type) continue;
+            const bool done = world.has_upgrade(player_, id);
+            hud::CommandButton& b = put(research_slot++, Action::Research, static_cast<uint8_t>(i), up.label,
+                                        TextFormat("%s: %s%s", up.name, up.description, done ? " (done)" : ""),
+                                        done ? engine::Stock{} : up.cost);
+            b.enabled = !done && s->research == engine::UpgradeId::Count;
+            b.active = done || s->research == id;
+            if (s->research == id) {
+                b.cooldown = 1.0f - static_cast<float>(s->research_progress) / static_cast<float>(up.time);
+            }
+        }
         const engine::StructureDef& def = engine::structure_type(s->type);
         for (uint8_t i = 0; i < def.roster_size; ++i) {
             const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
@@ -298,6 +314,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             cooldown = std::min(cooldown, left);
         }
         const char* label = ability.label;
+        const bool locked = ability.needs != engine::UpgradeId::Count && !world.has_upgrade(player_, ability.needs);
         if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
         if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
         if (id == engine::AbilityId::DigGunPit) label = *lead == engine::UnitTypeId::Mortar ? "Position" : "Capunier";
@@ -305,6 +322,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         const size_t slot = i < hud::kGridColumns ? i : 2 * hud::kGridColumns + (i - hud::kGridColumns);
         hud::CommandButton& b = put(slot, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
+        b.enabled = !locked;
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);
     }
 
@@ -342,6 +360,12 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             targeting_ = Targeting::None;
             break;
         case Action::Hire: order_train(lockstep, world, static_cast<engine::UnitTypeId>(cell.param)); break;
+        case Action::Research: {
+            engine::Command cmd{.type = engine::CommandType::Research, .target_unit = selected_structure_,
+                                .upgrade = cell.param};
+            lockstep.submit(std::move(cmd));
+            break;
+        }
         case Action::Upgrade:
         case Action::Unload: {
             engine::Command cmd{.type = cell.action == Action::Upgrade ? engine::CommandType::Upgrade

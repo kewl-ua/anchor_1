@@ -40,6 +40,19 @@ struct WeaponDef {
     bool lobbed = false;
 };
 
+// Upgrades researched in buildings, as in AoE II's blacksmith and university.
+enum class UpgradeId : uint8_t {
+    SmokeGrenades,     // ammunition depot: tanks can lay a smoke screen
+    SabotRounds,       // ammunition depot: tank AP rounds hit harder
+    ClusterRockets,    // ammunition depot: MLRS rockets burst wider
+    TrainSchedule,     // station: trains come more often
+    TrainCapacity,     // station: trains bring more
+    Optics,            // recon barracks: scouts and observation posts see more
+    EntrenchingTools,  // infantry barracks: riflemen dig faster
+    Count,
+};
+inline constexpr size_t kUpgradeCount = static_cast<size_t>(UpgradeId::Count);
+
 // Skills, used with a command-grid button. Each unit type lists its own.
 enum class AbilityId : uint8_t {
     AreaShot,    // tank: one HE-FRAG shell with a wide burst at a point
@@ -64,6 +77,7 @@ enum class AbilityId : uint8_t {
     PlaceHedgehogs,  // sapper: anti-tank obstacles along a line
     BuildPillbox,  // sapper: a firing point facing a direction
     Demolish,      // sapper: a charge against a building or a bridge
+    Smoke,         // tank: a smoke screen ahead (needs smoke grenades)
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -84,6 +98,7 @@ struct AbilityDef {
     Fixed range;    // Point: how close the unit must come; Direction: how far it reaches
     Tick cooldown;  // after use
     WeaponDef weapon{};  // what it fires, if anything
+    UpgradeId needs = UpgradeId::Count;  // researched first (Count: nothing)
 };
 
 const AbilityDef& ability_def(AbilityId id);

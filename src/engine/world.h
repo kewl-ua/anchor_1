@@ -133,6 +133,26 @@ inline constexpr Tick kPlantWork = 8 * kTicksPerSecond;
 inline constexpr Tick kFuseTicks = 5 * kTicksPerSecond;
 inline constexpr Fixed kSapperRetreat = Fixed::from_int(3);  // runs this far from the charge
 
+// Upgrades' effects.
+inline constexpr Tick kTrainIntervalUpgraded = 45 * kTicksPerSecond;
+inline constexpr int32_t kTrainCapacityPercent = 150;
+inline constexpr int32_t kSabotPercent = 130;
+inline constexpr int32_t kClusterPercent = 150;
+inline constexpr Fixed kOpticsDetection = Fixed::from_int(2);
+inline constexpr int32_t kOpticsSectorTiles = 3;
+inline constexpr int32_t kShovelWorkPercent = 67;  // of the digging time
+// A smoke screen: this wide around a point this far ahead of the tank, this long.
+inline constexpr Fixed kSmokeRadius = Fixed::from_int(2);
+inline constexpr Fixed kSmokeAhead = Fixed::from_int(2);
+inline constexpr Tick kSmokeTicks = 20 * kTicksPerSecond;
+
+// A smoke screen: nothing is seen into or through it.
+struct Smoke {
+    FixedVec2 center{};
+    Fixed radius{};
+    Tick clears = 0;
+};
+
 // A mine on a tile.
 struct Mine {
     uint32_t id = 0;
@@ -302,6 +322,14 @@ public:
         return m.owner == player || (player < kMaxPlayers && ((m.found_by >> player) & 1) != 0);
     }
     const std::vector<Charge>& charges() const { return charges_; }
+    const std::vector<Smoke>& smokes() const { return smokes_; }
+    bool has_upgrade(PlayerId player, UpgradeId id) const {
+        return player < kMaxPlayers && ((upgrades_[player] >> static_cast<uint32_t>(id)) & 1u) != 0;
+    }
+    // Setup and tests: an upgrade without the research.
+    void upgrade_for_setup(PlayerId player, UpgradeId id) {
+        upgrades_[player % kMaxPlayers] |= 1u << static_cast<uint32_t>(id);
+    }
 
     // Fog of war, updated every kVisionInterval ticks. A tile is visible when
     // one of the player's units or buildings has a line of sight to it;
@@ -458,6 +486,12 @@ private:
     void plant_charge(Unit& u);
     void update_mines();
     void update_charges();
+    void apply_research(const Command& cmd);
+    void update_research();
+    void update_smoke();
+    bool in_smoke(FixedVec2 p) const;
+    // Work a job takes a unit, shortened by the owner's upgrades (shovels).
+    Tick work_needed(const Unit& u, Tick base) const;
     void find_mines();
     // The nearest visible enemy a pillbox's garrison can fire at through its slit.
     const Unit* find_enemy_in_slit(Unit& u, const Structure& pillbox);
@@ -531,6 +565,8 @@ private:
     std::vector<Mine> mines_;
     uint32_t next_mine_id_ = 1;
     std::vector<Charge> charges_;
+    std::array<uint32_t, kMaxPlayers> upgrades_{};  // bit per UpgradeId
+    std::vector<Smoke> smokes_;
 };
 
 }  // namespace engine

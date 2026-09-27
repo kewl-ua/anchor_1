@@ -308,6 +308,7 @@ void World::apply(const Command& cmd) {
         case CommandType::Ability: apply_ability(cmd); break;
         case CommandType::Upgrade: apply_upgrade(cmd); break;
         case CommandType::Unload: apply_unload(cmd); break;
+        case CommandType::Research: apply_research(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -424,6 +425,8 @@ void World::step() {
     update_trains();
     update_production();
     update_upgrades();
+    update_research();
+    update_smoke();
     for (Unit& u : units_) {
         u.prev_pos = u.pos;
         u.moving = false;
@@ -891,6 +894,10 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     p.origin_height = line.from_height;
     p.target_height = line.height(end);
     p.weapon = weapon;
+    // Sabot rounds: the same round, a harder punch.
+    if (&weapon == &def_of(shooter).alt_weapon && has_upgrade(shooter.owner, UpgradeId::SabotRounds)) {
+        p.weapon.damage = weapon.damage * kSabotPercent / 100;
+    }
     shooter.last_shot_at = p.target;
     projectiles_.push_back(p);
 }
@@ -1180,6 +1187,16 @@ uint64_t World::checksum() const {
         mix(m.found_by);
     }
     mix(next_mine_id_);
+    for (uint32_t bits : upgrades_) mix(bits);
+    for (const Smoke& s : smokes_) {
+        mix_vec(s.center);
+        mix_fixed(s.radius);
+        mix(s.clears);
+    }
+    for (const Structure& s : structures_) {
+        mix(static_cast<uint8_t>(s.research));
+        mix(s.research_progress);
+    }
     for (const Charge& c : charges_) {
         mix(c.owner);
         mix(c.target);

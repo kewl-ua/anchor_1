@@ -943,6 +943,21 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     g_light = 1.0f;
 
+    // Smoke screens: billowing puffs over whatever is in them.
+    for (const engine::Smoke& s : world.smokes()) {
+        const Vector2 c = to_vector2(s.center);
+        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
+        const float r = to_float(s.radius);
+        const float left = std::clamp(static_cast<float>(s.clears - world.tick()) / engine::kSmokeTicks, 0.0f, 1.0f);
+        const float fade = std::min(1.0f, left * 4.0f);  // thins out at the end
+        for (int i = 0; i < 7; ++i) {
+            const float a = static_cast<float>(i) * 0.9f;
+            const Vector2 g{c.x + std::cos(a) * r * 0.5f, c.y + std::sin(a) * r * 0.5f};
+            fill_ground_ellipse(on_terrain(map, g, 10.0f + static_cast<float>(i % 3) * 6.0f), r * 0.6f,
+                                ColorAlpha({200, 200, 196, 255}, 0.55f * fade));
+        }
+    }
+
     draw_shots(world, alpha);
     draw_blasts(map);
     draw_structure_overlays(world, view);

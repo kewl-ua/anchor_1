@@ -2043,6 +2043,136 @@ void test_self_propelled_howitzer() {
     CHECK(sim.world().find_unit(spg)->deployed);
 }
 
+// --- Upgrades ------------------------------------------------------------------
+
+// Research in the ammunition depot: paid up front, done after its time, not
+// twice; until then the tank's smoke screen isn't there.
+void test_research() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const UpgradeDef& smoke = upgrade_def(UpgradeId::SmokeGrenades);
+    Stock twice = smoke.cost;
+    for (int32_t& amount : twice) amount *= 2;
+    w.set_stock(0, twice);
+    const EntityId depot = w.place_structure(StructureType::AmmoDepot, 0, {20, 5}, 2, 2);
+    const EntityId barracks = w.place_structure(StructureType::InfantryBarracks, 0, {25, 5}, 3, 3);
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    Command research{.type = CommandType::Research, .player = 0, .target_unit = depot,
+                     .upgrade = static_cast<uint8_t>(UpgradeId::SmokeGrenades)};
+    Command wrong = research;
+    wrong.target_unit = barracks;  // not researched there
+    issue(sim, wrong);
+    issue(sim, research);
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().stock(0) == smoke.cost);  // paid once
+    CHECK(sim.world().find_structure(barracks)->research == UpgradeId::Count);
+    CHECK(sim.world().find_structure(depot)->research == UpgradeId::SmokeGrenades);
+    issue(sim, use_ability(0, {tank}, AbilityId::Smoke, 0, 0));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().smokes().empty());  // not yet researched
+
+    for (Tick i = 0; i < smoke.time; ++i) sim.step();
+    CHECK(sim.world().has_upgrade(0, UpgradeId::SmokeGrenades));
+    CHECK(!sim.world().has_upgrade(1, UpgradeId::SmokeGrenades));
+    issue(sim, research);  // already have it
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().stock(0) == smoke.cost);
+    issue(sim, use_ability(0, {tank}, AbilityId::Smoke, 0, 0));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().smokes().size() == 1);
+}
+
+// Nothing is seen into or through a smoke screen, until it clears.
+void test_smoke_screen() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.upgrade_for_setup(0, UpgradeId::SmokeGrenades);
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    const EntityId enemy = w.spawn_unit(1, UnitTypeId::Truck, at(15, 10));
+    w.spawn_unit(0, UnitTypeId::Truck, at(10, 6));  // another pair of eyes, beside the screen
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(seen(sim, 0, enemy) && seen(sim, 1, tank));
+    issue(sim, {.type = CommandType::Stop, .player = 0, .units = {tank}});
+    w.unit_for_setup(tank)->facing = {Fixed::from_int(1), Fixed{}};  // towards the enemy
+    issue(sim, use_ability(0, {tank}, AbilityId::Smoke, 0, 0));
+    for (Tick i = 0; i < 2 * kVisionInterval + 2; ++i) sim.step();
+    CHECK(sim.world().smokes().size() == 1);
+    CHECK(!seen(sim, 1, tank));
+    for (Tick i = 0; i < kSmokeTicks; ++i) sim.step();
+    CHECK(sim.world().smokes().empty());
+    CHECK(seen(sim, 1, tank));
+}
+
+// Trains: a new schedule brings them every 45 s, heavier ones bring half as much again.
+void test_train_upgrades() {
+    Simulation sim = logistics_sim({});
+    sim.world_for_setup().upgrade_for_setup(0, UpgradeId::TrainSchedule);
+    sim.world_for_setup().upgrade_for_setup(0, UpgradeId::TrainCapacity);
+    for (Tick i = 0; i <= kTrainInterval; ++i) sim.step();  // the first one, on the old timetable
+    CHECK(stock_of(sim, Resource::Personnel) == kTrainCargo[kMen] * kTrainCapacityPercent / 100);
+    for (Tick i = 0; i < kTrainIntervalUpgraded; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Personnel) == 2 * (kTrainCargo[kMen] * kTrainCapacityPercent / 100));
+}
+
+// Sabot rounds hit harder; optics let scouts make men out farther; shovels
+// dig faster; cluster rockets burst wider.
+void test_upgrade_effects() {
+    auto ap_hit = [](bool sabot) {
+        Simulation sim(3, TileMap(30, 20));
+        if (sabot) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::SabotRounds);
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+        const EntityId target = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(11, 10));
+        sim.world_for_setup().unit_for_setup(gun)->round_type = 1;
+        sim.schedule(0, make_move(1, {target}, 11, 10));
+        for (int i = 0; i < 300; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < unit_type(UnitTypeId::Tank).max_hp) break;
+        }
+        return unit_type(UnitTypeId::Tank).max_hp - hp_of(sim, target);
+    };
+    const WeaponDef& ap = unit_type(UnitTypeId::Tank).alt_weapon;
+    const int32_t armor = unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::AntiTank)];
+    CHECK(ap_hit(false) == ap.damage - armor);
+    CHECK(ap_hit(true) == ap.damage * kSabotPercent / 100 - armor);
+
+    auto scout_sees = [](bool optics) {
+        TileMap map(40, 20);
+        for (int y = 3; y <= 17; ++y) {
+            for (int x = 12; x <= 15; ++x) map.set_terrain(x, y, Terrain::Forest);
+        }
+        Simulation sim(1, map);
+        if (optics) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::Optics);
+        const EntityId hidden = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at_half(25, 21));
+        sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at_half(15, 21));  // 5 tiles off
+        sim.step();
+        return seen(sim, 0, hidden);
+    };
+    CHECK(!scout_sees(false));
+    CHECK(scout_sees(true));
+
+    auto foxhole_ticks = [](bool shovels) {
+        Simulation sim(1, TileMap(20, 20));
+        if (shovels) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::EntrenchingTools);
+        const EntityId man = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, post());
+        sim.schedule(0, use_ability(0, {man}, AbilityId::DigFoxhole, 0, 0));
+        int ticks = 0;
+        for (; ticks < 1000 && !sim.world().structure_at({10, 10}); ++ticks) sim.step();
+        return ticks;
+    };
+    CHECK(foxhole_ticks(true) * 100 < foxhole_ticks(false) * 75);
+
+    Simulation rockets(1, TileMap(40, 30));
+    rockets.world_for_setup().upgrade_for_setup(0, UpgradeId::ClusterRockets);
+    const EntityId mlrs = rockets.world_for_setup().spawn_unit(0, UnitTypeId::Mlrs, at(5, 15));
+    rockets.schedule(0, use_ability(0, {mlrs}, AbilityId::Salvo, 25, 15));
+    Fixed burst{};
+    for (int i = 0; i < 200 && burst.raw == 0; ++i) {
+        rockets.step();
+        for (const Projectile& p : rockets.world().projectiles()) burst = p.weapon.splash_radius;
+    }
+    CHECK(burst == unit_type(UnitTypeId::Mlrs).weapon.splash_radius * kClusterPercent / 100);
+}
+
 // --- Engineering ---------------------------------------------------------------
 
 // A sapper of `player` lays a mine on (x, y), with the ammunition for it.
@@ -2363,6 +2493,10 @@ int main() {
     test_mlrs_salvo();
     test_tank_indirect_fire();
     test_self_propelled_howitzer();
+    test_research();
+    test_smoke_screen();
+    test_train_upgrades();
+    test_upgrade_effects();
     test_mines();
     test_sappers_find_and_clear_mines();
     test_wire_and_hedgehogs();

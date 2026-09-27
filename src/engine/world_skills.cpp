@@ -21,6 +21,50 @@ constexpr Fixed kDigReach = Fixed::from_ratio(3, 4);
 
 }  // namespace
 
+Tick World::work_needed(const Unit& u, Tick base) const {
+    const bool shovels = u.type == UnitTypeId::Rifleman && has_upgrade(u.owner, UpgradeId::EntrenchingTools);
+    return shovels ? base * kShovelWorkPercent / 100 : base;
+}
+
+// A building researches one upgrade at a time, paid up front.
+void World::apply_research(const Command& cmd) {
+    Structure* s = find_structure_mut(cmd.target_unit);
+    if (!s || !s->built || s->owner != cmd.player || cmd.upgrade >= kUpgradeCount) return;
+    const auto id = static_cast<UpgradeId>(cmd.upgrade);
+    const UpgradeDef& def = upgrade_def(id);
+    if (def.building != s->type || s->research != UpgradeId::Count || has_upgrade(cmd.player, id)) return;
+    // Nobody researches the same thing twice at once.
+    for (const Structure& other : structures_) {
+        if (other.owner == cmd.player && other.research == id) return;
+    }
+    Stock& stock = stock_[cmd.player % kMaxPlayers];
+    if (!can_afford(stock, def.cost)) return;
+    pay(stock, def.cost);
+    s->research = id;
+    s->research_progress = 0;
+}
+
+void World::update_research() {
+    for (Structure& s : structures_) {
+        if (s.research == UpgradeId::Count || !s.built || s.owner >= kMaxPlayers) continue;
+        if (++s.research_progress < upgrade_def(s.research).time) continue;
+        upgrades_[s.owner] |= 1u << static_cast<uint32_t>(s.research);
+        s.research = UpgradeId::Count;
+        s.research_progress = 0;
+    }
+}
+
+void World::update_smoke() {
+    const size_t before = smokes_.size();
+    std::erase_if(smokes_, [&](const Smoke& s) { return tick_ >= s.clears; });
+    if (smokes_.size() != before) sight_cache_.clear();  // lines of sight have changed
+}
+
+bool World::in_smoke(FixedVec2 p) const {
+    return std::any_of(smokes_.begin(), smokes_.end(),
+                       [&](const Smoke& s) { return (p - s.center).length_sq_raw() <= square_raw(s.radius); });
+}
+
 std::vector<TilePos> trench_line(TilePos a, TilePos b) {
     std::vector<TilePos> line{a};
     TilePos t = a;
@@ -108,6 +152,19 @@ void World::apply_ability(const Command& cmd) {
         if (!u || u->owner != cmd.player) continue;
         const int slot = ability_slot(unit_type(u->type), id);
         if (slot < 0 || u->ability_ready[static_cast<size_t>(slot)] > tick_) continue;
+        if (const UpgradeId needs = ability_def(id).needs; needs != UpgradeId::Count && !has_upgrade(u->owner, needs)) {
+            continue;
+        }
+        if (id == AbilityId::Smoke) {
+            // A screen right ahead, at once.
+            FixedVec2 facing = u->facing;
+            if (facing.x.raw == 0 && facing.y.raw == 0) facing = {Fixed::from_int(1), Fixed{}};
+            const FixedVec2 ahead = u->pos + facing * (kSmokeAhead / facing.length());
+            smokes_.push_back({clamp_to_map(ahead, Fixed{}), kSmokeRadius, tick_ + kSmokeTicks});
+            sight_cache_.clear();  // lines of sight have changed
+            u->ability_ready[static_cast<size_t>(slot)] = tick_ + ability_def(id).cooldown;
+            continue;
+        }
 
         if (id == AbilityId::SwitchAmmo) {
             if (unit_type(u->type).alt_weapon.damage > 0) {
@@ -219,7 +276,7 @@ void World::update_ability(Unit& u) {
                 return;
             }
             const int32_t index = best->y * map_.width() + best->x;
-            if (++dig_work_[index] >= kTrenchWork) {
+            if (++dig_work_[index] >= work_needed(u, kTrenchWork)) {
                 dig_work_.erase(index);
                 place_fieldwork(StructureType::Trench, u.owner, *best, {});
             }
@@ -233,7 +290,7 @@ void World::update_ability(Unit& u) {
                 navigate(u, tile_center(t), u.order_path, t, false);  // pushed off the spot
                 return;
             }
-            if (++u.work < kFoxholeWork) return;
+            if (++u.work < work_needed(u, kFoxholeWork)) return;
             place_fieldwork(StructureType::Foxhole, u.owner, t, {});
             return finish_ability(u);
         }
@@ -247,7 +304,7 @@ void World::update_ability(Unit& u) {
                                   !works->parapet;
             if (!on_works && !diggable(t)) return finish_ability(u);
             u.facing = to_point;
-            if (++u.work < kParapetWork) return;
+            if (++u.work < work_needed(u, kParapetWork)) return;
             if (on_works) {
                 works->parapet = true;
                 works->facing = to_point;
@@ -323,6 +380,9 @@ void World::update_ability(Unit& u) {
             aim.y += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
             WeaponDef rocket = weapon;
             rocket.accuracy = 100;
+            if (has_upgrade(u.owner, UpgradeId::ClusterRockets)) {
+                rocket.splash_radius = rocket.splash_radius * kClusterPercent / 100;
+            }
             u.rounds = std::max(0, u.rounds - 1);
             lob(u, aim, rocket, false);
             if (out_of_rounds(u)) finish_ability(u);

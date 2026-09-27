@@ -105,6 +105,7 @@ bool World::line_of_sight(FixedVec2 from, Fixed eye, TilePos target, EntityId ow
         const TilePos tile = tile_of(p);
         if (tile == target) break;         // the rest of the way is on the tile itself
         if (tile == from_tile) continue;   // still on our own tile
+        if (!smokes_.empty() && in_smoke(p)) return false;  // nothing is seen into smoke or through it
         const Fixed h = eye + (to_height - eye) * t;
         const Fixed ground = ground_at(p);
         if (h < ground) return false;
@@ -169,7 +170,9 @@ bool World::spotted(PlayerId player, const Unit& target) const {
     if (unit_type(target.type).stealthy) percent = percent * kSpotStealthyPercent / 100;
     for (const Unit& o : units_) {
         if (o.owner != player) continue;
-        const Fixed range = unit_type(o.type).detection * percent / 100;
+        Fixed detection = unit_type(o.type).detection;
+        if (unit_type(o.type).sector_range.raw > 0 && has_upgrade(player, UpgradeId::Optics)) detection += kOpticsDetection;
+        const Fixed range = detection * percent / 100;
         if ((o.pos - target.pos).length_sq_raw() <= square_raw(range)) return true;
     }
 
@@ -243,7 +246,8 @@ void World::update_vision() {
         const int64_t dx = (u.order_point - from).x.raw >> 8;
         const int64_t dy = (u.order_point - from).y.raw >> 8;
         if (dx == 0 && dy == 0) continue;
-        const int32_t radius = def.sector_range.to_int() + kSightPerLevel * map_.elevation(tile.x, tile.y);
+        const int32_t optics = has_upgrade(u.owner, UpgradeId::Optics) ? kOpticsSectorTiles : 0;
+        const int32_t radius = def.sector_range.to_int() + optics + kSightPerLevel * map_.elevation(tile.x, tile.y);
         Sector sector{u.owner, from, {}, u.order_point - from, radius};
         for (int32_t i : sight_from(tile, radius, eye_height(def), 0)) {
             const int64_t tx = i % map_.width() - tile.x;

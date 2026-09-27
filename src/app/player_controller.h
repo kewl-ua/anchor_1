@@ -102,7 +102,8 @@ private:
 
     // The command grid. Each cell holds an action; its hotkey is the cell's.
     enum class Action : uint8_t {
-        None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload
+        None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload,
+        Research
     };
     struct Cell {
         Action action = Action::None;

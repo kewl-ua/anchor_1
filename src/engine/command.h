@@ -30,6 +30,7 @@ enum class CommandType : uint8_t {
     Ability,       // use a skill (`ability`) at `target` (a line: to `target_end`)
     Upgrade,       // a foxhole (target_unit) is dug out into a dugout
     Unload,        // everyone inside a house or dugout (target_unit) comes out
+    Research,      // a building (target_unit) researches an upgrade (`upgrade`)
 };
 
 // The only way anything outside the engine can change the game state.
@@ -44,6 +45,7 @@ struct Command {
     uint8_t structure_type = 0;  // Build: a StructureType
     uint8_t ability = 0;         // Ability: an AbilityId
     FixedVec2 target_end{};      // Ability along a line: its other end
+    uint8_t upgrade = 0;         // Research: an UpgradeId
 };
 
 }  // namespace engine

@@ -430,6 +430,15 @@ void Hud::draw_tooltip(const CommandButton& b, const engine::Stock& stock) const
 
 void Hud::draw_structure_card(const engine::World& world, const engine::Structure& s, Rectangle area) const {
     const engine::StructureDef& def = engine::structure_type(s.type);
+    if (s.research != engine::UpgradeId::Count) {
+        const engine::UpgradeDef& up = engine::upgrade_def(s.research);
+        const float done = static_cast<float>(s.research_progress) / static_cast<float>(up.time);
+        const float y = area.y + area.height - 12;
+        draw_text(TextFormat("Researching %s: %d%%", up.name, static_cast<int>(done * 100)), area.x, y - 16,
+                  kCardFontSize, theme::kWarning);
+        DrawRectangleRec({area.x, y, area.width, 5}, {0, 0, 0, 170});
+        DrawRectangleRec({area.x, y, area.width * done, 5}, {230, 200, 60, 255});
+    }
     draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(s.owner));
     const char* hp = TextFormat("HP %d / %d", s.hp, def.max_hp);
     const float hp_x = area.x + area.width - 90 - 10 - static_cast<float>(MeasureText(hp, kCardFontSize));

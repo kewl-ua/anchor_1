@@ -327,13 +327,15 @@ void World::update_production() {
 void World::update_trains() {
     for (Structure& s : structures_) {
         if (s.type != StructureType::Station || s.owner >= kMaxPlayers || tick_ < s.next_train) continue;
-        s.next_train += kTrainInterval;
+        s.next_train += has_upgrade(s.owner, UpgradeId::TrainSchedule) ? kTrainIntervalUpgraded : kTrainInterval;
+        const int32_t percent = has_upgrade(s.owner, UpgradeId::TrainCapacity) ? kTrainCapacityPercent : 100;
         Stock& stock = stock_[s.owner];
         for (size_t r = 0; r < kResourceCount; ++r) {
+            const int32_t load = kTrainCargo[r] * percent / 100;
             if (static_cast<Resource>(r) == Resource::Personnel) {
-                stock[r] += kTrainCargo[r];
+                stock[r] += load;
             } else {
-                s.cargo[r] += kTrainCargo[r];
+                s.cargo[r] += load;
             }
         }
     }

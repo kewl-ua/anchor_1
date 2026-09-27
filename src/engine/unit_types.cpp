@@ -100,8 +100,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
                        .range = tiles(7), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
                        .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1)},
-        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire},
-        .ability_count = 3,
+        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke},
+        .ability_count = 4,
     },
     {
         .name = "IFV",
@@ -449,6 +449,8 @@ constexpr AbilityDef kAbilities[] = {
      .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
     {.name = "Demolition charge against a building or a bridge", .label = "Charge", .target = AbilityTarget::Point,
      .range = tiles(0), .cooldown = 0},
+    {.name = "Smoke screen ahead: nothing is seen through it (needs smoke grenades)", .label = "Smoke",
+     .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = seconds(30), .needs = UpgradeId::SmokeGrenades},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -515,5 +517,30 @@ static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::C
 }  // namespace
 
 const StructureDef& structure_type(StructureType type) { return kStructureTypes[static_cast<size_t>(type)]; }
+
+namespace {
+
+constexpr UpgradeDef kUpgrades[] = {
+    {.name = "Smoke grenades", .label = "Smoke", .description = "Tanks can lay a smoke screen: nothing is seen through it",
+     .building = StructureType::AmmoDepot, .cost = {0, 0, 50, 60, 0}, .time = seconds(45)},
+    {.name = "Sabot rounds", .label = "Sabot", .description = "Tank armor-piercing rounds hit 30% harder",
+     .building = StructureType::AmmoDepot, .cost = {0, 0, 80, 100, 0}, .time = seconds(60)},
+    {.name = "Cluster rockets", .label = "Cluster", .description = "MLRS rockets burst 50% wider",
+     .building = StructureType::AmmoDepot, .cost = {0, 0, 60, 120, 0}, .time = seconds(60)},
+    {.name = "More trains", .label = "Schedule", .description = "A train every 45 s instead of every 60 s",
+     .building = StructureType::Station, .cost = {0, 200, 150, 0, 50}, .time = seconds(90)},
+    {.name = "Heavier trains", .label = "Capacity", .description = "Trains bring 50% more",
+     .building = StructureType::Station, .cost = {0, 200, 200, 0, 50}, .time = seconds(90)},
+    {.name = "Optics", .label = "Optics",
+     .description = "Scouts make out men in cover 2 tiles farther; posts watch 3 tiles farther",
+     .building = StructureType::ReconBarracks, .cost = {0, 0, 60, 40, 0}, .time = seconds(45)},
+    {.name = "Entrenching tools", .label = "Shovels", .description = "Riflemen dig a third faster",
+     .building = StructureType::InfantryBarracks, .cost = {0, 0, 60, 0, 0}, .time = seconds(30)},
+};
+static_assert(std::size(kUpgrades) == kUpgradeCount);
+
+}  // namespace
+
+const UpgradeDef& upgrade_def(UpgradeId id) { return kUpgrades[static_cast<size_t>(id)]; }
 
 }  // namespace engine

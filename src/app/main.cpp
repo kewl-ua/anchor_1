@@ -175,6 +175,10 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         };
         skill(tanks, engine::AbilityId::SwitchAmmo, {});
         skill(tanks, engine::AbilityId::AreaShot, ahead(4.0f));
+        if (options.mode == Options::Mode::Offline) {
+            game.world_for_setup().upgrade_for_setup(me, engine::UpgradeId::SmokeGrenades);
+            skill({tanks.front()}, engine::AbilityId::Smoke, {});
+        }
         skill(ifvs, engine::AbilityId::MgSweep, ahead(6.0f));
         game.select_units(tanks);
         return center;
