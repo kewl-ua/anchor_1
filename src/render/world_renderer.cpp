@@ -30,6 +30,106 @@ constexpr float kCircleRy = iso::kTileHeight * 0.5f * 1.41421356f;
 float g_light = 1.0f;
 constexpr float kFogLight = 0.5f;
 
+// The grain of what is being drawn, like a painted texture: fine grain,
+// blotches, specks of gravel (0 = none, about 1 = strong). Surfaces take it
+// to the shader in their vertex normals; raylib's own normal, (0, 0, 1),
+// means no grain.
+struct Grain {
+    float fine = 0.0f;
+    float mottle = 0.0f;
+    float speck = 0.0f;
+};
+Vector3 g_grain{0.0f, 0.0f, 1.0f};
+void set_grain(Grain g) {
+    g_grain = {g.fine, g.mottle, 1.0f - g.speck};
+    rlNormal3f(g_grain.x, g_grain.y, g_grain.z);  // for raylib's shapes that don't set their own
+}
+// Buildings, trees, rocks, wagons: painted surfaces.
+constexpr Grain kObjectGrain{0.6f, 0.55f, 0.2f};
+
+// The grain itself, in world pixels (so it stays put on the ground as the
+// view scrolls): value noise at a pixel and a half and at three and a half
+// for the grain, at 11 and 27 for the blotches (a little warmer and cooler in
+// places too), bright and dark specks of gravel two pixels across. Grains
+// finer than a screen pixel would shimmer, so they fade out as the view
+// zooms out.
+constexpr const char* kGrainVertex = R"(#version 330
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+uniform mat4 mvp;
+out vec2 fragTexCoord;
+out vec4 fragColor;
+out vec3 fragGrain;
+out vec2 fragWorld;
+void main() {
+    fragTexCoord = vertexTexCoord;
+    fragColor = vertexColor;
+    fragGrain = vertexNormal;
+    fragWorld = vertexPosition.xy;
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+)";
+constexpr const char* kGrainFragment = R"(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+in vec3 fragGrain;
+in vec2 fragWorld;
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+uniform float zoom;
+out vec4 finalColor;
+float hash(vec2 p) {
+    uvec2 q = uvec2(ivec2(floor(p)));
+    uint h = (q.x * 1597334677u) ^ (q.y * 3812015801u);
+    h ^= h >> 16u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    h *= 3266489917u;
+    h ^= h >> 16u;
+    return float(h) * (1.0 / 4294967295.0);
+}
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+void main() {
+    vec4 c = texture(texture0, fragTexCoord) * colDiffuse * fragColor;
+    float fine = fragGrain.x;
+    float mottle = fragGrain.y;
+    float speck = 1.0 - fragGrain.z;
+    if (fine + mottle + speck > 0.001) {
+        vec2 w = fragWorld;
+        float sharp = smoothstep(0.3, 0.8, zoom);
+        // Each layer turned its own way, so no grid shows through.
+        vec2 a = mat2(0.80, 0.60, -0.60, 0.80) * w;
+        vec2 b = mat2(0.28, -0.96, 0.96, 0.28) * w;
+        float grain = (noise(a / 2.2) - 0.5) * sharp + (noise(b / 5.0) - 0.5) * 0.7;
+        float blotch = (noise(b / 11.0) - 0.5) + (noise(a / 27.0) - 0.5) * 0.8;
+        float k = 1.0 + fine * grain * 0.5 + mottle * blotch * 0.4;
+        // Pebbles: a cell of three pixels may hold a stone, pale or dark,
+        // round with a soft edge, lit on its upper left.
+        vec2 cell = floor(w / 3.0);
+        vec2 f = fract(w / 3.0);
+        float h1 = hash(cell + vec2(71.0, 13.0));
+        float h2 = hash(cell + vec2(3.0, 157.0));
+        vec2 centre = vec2(0.3 + 0.4 * h2, 0.3 + 0.4 * fract(h2 * 7.13));
+        vec2 d = (f - centre) / (0.26 + 0.14 * fract(h1 * 11.7));
+        float stone = (1.0 - smoothstep(0.7, 1.0, length(d))) * sharp;
+        float lit = clamp(-(d.x + d.y) * 0.35, -0.35, 0.35);
+        float pale = step(1.0 - 0.06 * speck, h1);
+        float dark = step(h1, 0.08 * speck);
+        k *= 1.0 + stone * (pale * (0.3 + lit) + dark * (lit * 0.5 - 0.45));
+        vec3 tint = vec3(0.12, 0.03, -0.1) * mottle * (noise(w / 19.0 + vec2(5.0, 9.0)) - 0.5);
+        c.rgb = clamp(c.rgb * k * (1.0 + tint), 0.0, 1.0);
+    }
+    finalColor = c;
+}
+)";
+
 // Electronic warfare: relays' reach, and bearings of our direction finders.
 constexpr Color kRadioColor = {120, 170, 255, 255};
 constexpr Color kBearingColor = {255, 160, 60, 255};
@@ -53,11 +153,12 @@ Color shade(Color c, float k) {
 
 Color lit(Color c) { return g_light >= 1.0f ? c : shade(c, g_light); }
 
-// raylib skips triangles with the "wrong" winding; accept either.
+void gradient_triangle(Vector2 a, Vector2 b, Vector2 c, Color ca, Color cb, Color cc, const Vector3* grain = nullptr);
+
+// A triangle in one colour, with the grain of what is being drawn; either winding.
 void fill_triangle(Vector2 a, Vector2 b, Vector2 c, Color color) {
-    const float cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if (cross > 0) std::swap(b, c);
-    DrawTriangle(a, b, c, lit(color));
+    const Color k = lit(color);
+    gradient_triangle(a, b, c, k, k, k);
 }
 
 void fill_quad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color color) {
@@ -1175,12 +1276,15 @@ int reach_rank(engine::Terrain t) {
 }
 
 // A triangle shaded corner by corner, batched with raylib's own shapes;
-// either winding.
-void gradient_triangle(Vector2 a, Vector2 b, Vector2 c, Color ca, Color cb, Color cc) {
+// either winding. Its grain: the one of what is being drawn, or corner by corner.
+void gradient_triangle(Vector2 a, Vector2 b, Vector2 c, Color ca, Color cb, Color cc, const Vector3* grain) {
+    Vector3 g[3] = {g_grain, g_grain, g_grain};
+    if (grain) g[0] = grain[0], g[1] = grain[1], g[2] = grain[2];
     const float cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     if (cross > 0) {
         std::swap(b, c);
         std::swap(cb, cc);
+        std::swap(g[1], g[2]);
     }
     const Texture2D shapes = GetShapesTexture();
     const Rectangle r = GetShapesTextureRectangle();
@@ -1188,22 +1292,60 @@ void gradient_triangle(Vector2 a, Vector2 b, Vector2 c, Color ca, Color cb, Colo
     const float v = (r.y + r.height * 0.5f) / static_cast<float>(shapes.height);
     rlSetTexture(shapes.id);
     rlBegin(RL_QUADS);
-    rlNormal3f(0.0f, 0.0f, 1.0f);
     const Vector2 p[4] = {a, b, c, c};
     const Color k[4] = {ca, cb, cc, cc};
+    const Vector3 n[4] = {g[0], g[1], g[2], g[2]};
     for (int i = 0; i < 4; ++i) {
+        rlNormal3f(n[i].x, n[i].y, n[i].z);
         rlColor4ub(k[i].r, k[i].g, k[i].b, k[i].a);
         rlTexCoord2f(u, v);
         rlVertex2f(p[i].x, p[i].y);
     }
     rlEnd();
     rlSetTexture(0);
+    rlNormal3f(g_grain.x, g_grain.y, g_grain.z);
 }
 
-void gradient_quad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color ca, Color cb, Color cc, Color cd) {
-    gradient_triangle(a, b, c, ca, cb, cc);
-    gradient_triangle(a, c, d, ca, cc, cd);
+void gradient_quad(Vector2 a, Vector2 b, Vector2 c, Vector2 d, Color ca, Color cb, Color cc, Color cd,
+                   const Vector3* grain = nullptr) {
+    if (!grain) {
+        gradient_triangle(a, b, c, ca, cb, cc);
+        gradient_triangle(a, c, d, ca, cc, cd);
+        return;
+    }
+    const Vector3 first[3] = {grain[0], grain[1], grain[2]};
+    const Vector3 second[3] = {grain[0], grain[2], grain[3]};
+    gradient_triangle(a, b, c, ca, cb, cc, first);
+    gradient_triangle(a, c, d, ca, cc, cd, second);
 }
+
+// The grain of each kind of ground: black scree coarse and full of gravel,
+// earth and tracks gritty, grass and crops mottled, water barely.
+Grain grain_of(engine::Terrain t) {
+    using engine::Terrain;
+    switch (t) {
+        case Terrain::Slag: return {1.3f, 0.8f, 1.4f};
+        case Terrain::Chalk: return {0.6f, 0.7f, 0.3f};
+        case Terrain::Rock: return {0.8f, 0.6f, 0.6f};
+        case Terrain::Water: return {0.15f, 0.35f, 0.0f};
+        case Terrain::Swamp: return {0.5f, 0.8f, 0.1f};
+        case Terrain::Riverbed:
+        case Terrain::DirtRoad:
+        case Terrain::Trail:
+        case Terrain::Crater: return {0.9f, 0.6f, 0.6f};
+        case Terrain::Plowed:
+        case Terrain::Garden: return {0.9f, 0.6f, 0.4f};
+        case Terrain::Road:
+        case Terrain::Airstrip: return {0.6f, 0.6f, 0.5f};
+        case Terrain::Wheat: return {0.9f, 0.4f, 0.1f};
+        case Terrain::Crops:
+        case Terrain::Orchard: return {0.6f, 0.8f, 0.05f};
+        case Terrain::Urban:
+        case Terrain::Ruins: return {0.7f, 0.6f, 0.35f};
+        default: return {0.6f, 0.62f, 0.05f};  // grass, the forest floor
+    }
+}
+Vector3 grain_normal(Grain g) { return {g.fine, g.mottle, 1.0f - g.speck}; }
 
 // How high a structure is drawn above its tiles, pixels: what a click on it may hit.
 float drawn_height(const engine::Structure& s) {
@@ -1816,6 +1958,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
 
     BeginMode2D(camera.camera2d());
+    if (grain_.id == 0) {
+        grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
+        grain_zoom_loc_ = GetShaderLocation(grain_, "zoom");
+    }
+    const float zoom = camera.camera2d().zoom;
+    SetShaderValue(grain_, grain_zoom_loc_, &zoom, SHADER_UNIFORM_FLOAT);
+    BeginShaderMode(grain_);
 
     draw_terrain(world, view);
     draw_remains(map);
@@ -2032,6 +2181,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
     for (const Drawable& d : drawables) {
         g_light = d.light;
+        set_grain(d.unit || d.projectile ? Grain{} : kObjectGrain);
         if (d.unit) {
             draw_unit(map, *d.unit, alpha);
         } else if (d.projectile) {
@@ -2067,6 +2217,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
     }
     g_light = 1.0f;
+    set_grain({});
 
     // Fires: flames flickering over the burning ground.
     for (const engine::Fire& f : world.fires()) {
@@ -2148,6 +2299,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
     }
 
+    EndShaderMode();
     EndMode2D();
 }
 
@@ -2268,6 +2420,7 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
         const float grain = terrain == Terrain::Wheat ? 1.0f : 1.0f + (hash01(h >> 3) - 0.5f) * 0.04f;
         Vector2 pos[kSub + 1][kSub + 1];
         Color col[kSub + 1][kSub + 1];
+        Vector3 grn[kSub + 1][kSub + 1];
         for (int j = 0; j <= kSub; ++j) {
             for (int i = 0; i <= kSub; ++i) {
                 const float lx = static_cast<float>(i) / kSub;
@@ -2298,6 +2451,7 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
                 } else if (g.water > 0) {
                     c = mix(c, kSand, smooth01((g.water - 0.1f) / 0.22f));  // sand along the water
                 }
+                grn[j][i] = grain_normal(grain_of(g.water > 0.5f ? Terrain::Water : g.terrain));
                 float k = light_at(p);
                 if (g.terrain == Terrain::Chalk) k = 1.0f + (k - 1.0f) * 2.2f;
                 k = std::clamp(k, 0.5f, 1.4f);  // the steep sides of a spoil tip
@@ -2306,10 +2460,12 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
         }
         for (int j = 0; j < kSub; ++j) {
             for (int i = 0; i < kSub; ++i) {
+                const Vector3 corners[4] = {grn[j][i], grn[j][i + 1], grn[j + 1][i + 1], grn[j + 1][i]};
                 gradient_quad(pos[j][i], pos[j][i + 1], pos[j + 1][i + 1], pos[j + 1][i], col[j][i], col[j][i + 1],
-                              col[j + 1][i + 1], col[j + 1][i]);
+                              col[j + 1][i + 1], col[j + 1][i], corners);
             }
         }
+        rlNormal3f(g_grain.x, g_grain.y, g_grain.z);
         return;
     }
 
@@ -2381,7 +2537,7 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
             const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 4 + 2)), fy + 0.1f + 0.8f * hash01(h >> (k * 4 + 15))};
             const Vector2 end{at.x + down.x * 0.55f, at.y + down.y * 0.55f};
             if (!shows(at, terrain) || !shows(end, terrain) || steep < 0.01f) continue;
-            DrawLineEx(screen(at), screen(end), 1.4f, lit(shade({22, 20, 20, 255}, shadow)));
+            DrawLineEx(screen(at), screen(end), 1.1f, lit(shade({30, 28, 28, 255}, shadow)));
             DrawLineEx(screen({at.x + down.y * 0.04f, at.y - down.x * 0.04f}), screen({end.x + down.y * 0.04f, end.y - down.x * 0.04f}),
                        0.8f, lit(shade({96, 90, 86, 255}, shadow)));
         }

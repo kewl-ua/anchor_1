@@ -75,6 +75,10 @@ private:
     };
 
     void draw_terrain(const engine::World& world, Rectangle view) const;
+    // The world is drawn through a shader that gives surfaces their grain
+    // (loaded on the first frame: it needs the window).
+    mutable Shader grain_{};
+    mutable int grain_zoom_loc_ = -1;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;
     static constexpr int kRemembered = 1;  // explored, not in view now
