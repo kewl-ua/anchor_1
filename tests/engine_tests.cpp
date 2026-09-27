@@ -4799,7 +4799,7 @@ void test_field_hospital() {
     const int32_t healing = hp_of(sim, hurt);
     for (Tick i = 0; i < 5 * kTicksPerSecond; ++i) sim.step();
     CHECK(sim.world().find_unit(hurt)->last_shot_tick == kNeverFired);
-    CHECK(hp_of(sim, hurt) == healing + 5 * kTicksPerSecond / kHealTicks);
+    CHECK(hp_of(sim, hurt) == healing + static_cast<int32_t>(5 * kTicksPerSecond / kHealTicks));
     w.unit_for_setup(passer)->hp = 0;
 
     // Well again: out by himself, and the bed is free.
@@ -4815,6 +4815,49 @@ void test_field_hospital() {
     CHECK(sim.world().find_unit(other)->inside == 0);
     CHECK(hp_of(sim, other) < unit_type(UnitTypeId::MachineGunner).max_hp);
     CHECK(sim.world().find_structure(ward)->owner == 0);
+}
+
+// The Donbas on the demo map: spoil tips of black rock, the highest ground
+// about, that wheels can't climb; a chalk ridge along the river; tree lines
+// down both sides of the concrete highway, with gaps to cross.
+void test_donbas_landmarks() {
+    const TileMap map = make_demo_map();
+    int slag = 0;
+    int chalk = 0;
+    int top_slag = 0;
+    int top_else = 0;
+    int road = 0;
+    int lined = 0;
+    int gaps = 0;
+    for (int y = 0; y < map.height(); ++y) {
+        for (int x = 0; x < map.width(); ++x) {
+            const Terrain t = map.terrain(x, y);
+            slag += t == Terrain::Slag ? 1 : 0;
+            chalk += t == Terrain::Chalk ? 1 : 0;
+            if (t == Terrain::Slag) {
+                top_slag = std::max<int>(top_slag, map.elevation(x, y));
+            } else {
+                top_else = std::max<int>(top_else, map.elevation(x, y));
+            }
+            if (t != Terrain::Road) continue;
+            ++road;
+            bool trees = false;
+            for (int dx = -3; dx <= 3; ++dx) trees = trees || (map.contains_tile(x + dx, y) && map.terrain(x + dx, y) == Terrain::Forest);
+            lined += trees ? 1 : 0;
+            // The left lane, where the tree line beyond its verge is open ground: a gap to cross.
+            const bool left_lane = x >= 2 && map.terrain(x - 1, y) != Terrain::Road;
+            const Terrain beyond = x >= 2 ? map.terrain(x - 2, y) : Terrain::Water;
+            gaps += left_lane && (beyond == Terrain::Grass || beyond == Terrain::Plowed || beyond == Terrain::Crops) ? 1 : 0;
+        }
+    }
+    CHECK(slag > 40 && chalk > 20);
+    CHECK(top_slag > top_else);  // nothing stands higher
+    CHECK(lined * 2 > road);     // mostly lined...
+    CHECK(gaps > 0);             // ...with gaps to cross
+    const TerrainDef& rock = terrain_def(Terrain::Slag);
+    CHECK(rock.speed_percent[static_cast<size_t>(MoveClass::Wheeled)] == 0);
+    CHECK(rock.speed_percent[static_cast<size_t>(MoveClass::Vehicle)] < rock.speed_percent[static_cast<size_t>(MoveClass::Foot)]);
+    CHECK(terrain_def(Terrain::Chalk).speed_percent[static_cast<size_t>(MoveClass::Wheeled)] < 100);
 }
 
 // Every upgrade is researched in its own building, as offered on its card.
@@ -4960,6 +5003,7 @@ int main() {
     test_signals_upgrades();
     test_air_upgrades();
     test_upgrade_buildings();
+    test_donbas_landmarks();
     test_armor_upgrades_more();
     test_artillery_shells();
     test_workshop();

@@ -852,6 +852,16 @@ Color ground_colour(engine::Terrain t, Vector2 p) {
         // Bare trodden earth in patches of their own.
         return mix(grass, kBareEarth, 0.85f * smooth01((field(p, 9) - kBareFrom) / 0.1f));
     }
+    if (t == engine::Terrain::Slag) {
+        // Black rock, burnt rusty red in places.
+        const float burnt = smooth01((field(p, 13) - 0.6f) / 0.15f);
+        return mix(shade(theme::terrain_color(t), 0.9f + 0.2f * tone), {112, 70, 52, 255}, 0.7f * burnt);
+    }
+    if (t == engine::Terrain::Chalk) {
+        // White, greyer where it's washed down, grass taking hold here and there.
+        const float grass = smooth01((field(p, 17) - 0.62f) / 0.12f);
+        return mix(shade(theme::terrain_color(t), 0.92f + 0.14f * tone), {120, 132, 88, 255}, 0.55f * grass);
+    }
     return shade(theme::terrain_color(t), 0.94f + 0.12f * tone);
 }
 
@@ -875,8 +885,10 @@ int reach_rank(engine::Terrain t) {
         case Terrain::Grass:
         case Terrain::Wire:
         case Terrain::Hedgehogs: return 11;
-        case Terrain::Forest: return 12;
+        case Terrain::Forest:
+        case Terrain::Chalk: return 12;
         case Terrain::Rock: return 13;
+        case Terrain::Slag: return 14;
         default: return -1;
     }
 }
@@ -1950,7 +1962,9 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
                 } else if (g.water > 0) {
                     c = mix(c, kSand, smooth01((g.water - 0.1f) / 0.22f));  // sand along the water
                 }
-                col[j][i] = lit(shade(c, light_at(p) * grain));
+                float k = light_at(p);
+                if (g.terrain == Terrain::Slag || g.terrain == Terrain::Chalk) k = 1.0f + (k - 1.0f) * 2.2f;
+                col[j][i] = lit(shade(c, k * grain));
             }
         }
         for (int j = 0; j < kSub; ++j) {
@@ -1982,6 +1996,67 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
             for (int k = 0; k < 2; ++k) {
                 const Vector2 p = screen({fx + 0.2f + 0.6f * hash01(h >> (k * 5)), fy + 0.2f + 0.6f * hash01(h >> (k * 5 + 9))});
                 DrawLineV(p, {p.x + 5.0f, p.y}, lit({104, 142, 176, 255}));
+            }
+        }
+        return;
+    }
+    // Which way is down the slope here: rills and screes run that way.
+    const float h00 = corner(tx, ty);
+    const float h10 = corner(tx + 1, ty);
+    const float h01 = corner(tx, ty + 1);
+    const float h11 = corner(tx + 1, ty + 1);
+    Vector2 down{-(h10 + h11 - h00 - h01), -(h01 + h11 - h00 - h10)};
+    const float steep = std::sqrt(down.x * down.x + down.y * down.y);
+    if (steep > 0.01f) down = {down.x / steep, down.y / steep};
+    auto rill = [&](Vector2 at, float length, Color c, float width) {
+        const Vector2 end{at.x + down.x * length, at.y + down.y * length};
+        DrawLineEx(screen(at), screen(end), width, lit(shade(c, light)));
+    };
+    if (terrain == Terrain::Chalk) {
+        // Streaks washed down the slope, steppe grass in tufts.
+        for (int k = 0; k < 3; ++k) {
+            const Vector2 at{fx + 0.15f + 0.7f * hash01(h >> (k * 3)), fy + 0.15f + 0.7f * hash01(h >> (k * 3 + 11))};
+            if (!shows(at, terrain) || steep < 0.01f) continue;
+            rill(at, 0.3f, {150, 146, 136, 255}, 1.0f);
+        }
+        for (int k = 0; k < static_cast<int>(h & 1u) + 1; ++k) {
+            const Vector2 at{fx + 0.2f + 0.6f * hash01(h >> (k * 5 + 2)), fy + 0.2f + 0.6f * hash01(h >> (k * 5 + 17))};
+            if (!shows(at, terrain)) continue;
+            const Vector2 base = screen(at);
+            for (int side = -1; side <= 1; ++side) {
+                DrawLineV(base, {base.x + static_cast<float>(side) * 1.8f, base.y - (side == 0 ? 4.5f : 3.0f)},
+                          lit(shade({132, 138, 82, 255}, light)));
+            }
+        }
+        return;
+    }
+    if (terrain == Terrain::Slag) {
+        // Loose black rock: rills down its sides, lumps, dry tufts, and birch
+        // saplings seeding themselves on it.
+        for (int k = 0; k < 2; ++k) {
+            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 4 + 2)), fy + 0.1f + 0.8f * hash01(h >> (k * 4 + 15))};
+            if (!shows(at, terrain) || steep < 0.01f) continue;
+            rill(at, 0.3f, {40, 38, 36, 255}, 1.0f);
+        }
+        for (int k = 0; k < 4; ++k) {
+            const Vector2 at{fx + 0.1f + 0.8f * hash01(h >> (k * 3 + 1)), fy + 0.1f + 0.8f * hash01(h >> (k * 3 + 14))};
+            if (!shows(at, terrain)) continue;
+            const Vector2 p = screen(at);
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 1.8f, 1.1f, lit(shade({34, 32, 32, 255}, light)));
+        }
+        if ((h >> 9) % 5 == 0) {
+            const Vector2 base = screen({fx + 0.3f + 0.4f * hash01(h >> 6), fy + 0.3f + 0.4f * hash01(h >> 22)});
+            for (int side = -1; side <= 1; ++side) {
+                DrawLineV(base, {base.x + static_cast<float>(side) * 1.6f, base.y - 3.5f}, lit(shade({140, 128, 78, 255}, light)));
+            }
+        }
+        if ((h >> 13) % 7 == 0) {
+            const Vector2 at{fx + 0.3f + 0.4f * hash01(h >> 3), fy + 0.3f + 0.4f * hash01(h >> 19)};
+            if (shows(at, terrain)) {
+                const Vector2 b = screen(at);
+                DrawLineEx(b, {b.x, b.y - 7.0f}, 1.3f, lit({222, 220, 208, 255}));
+                DrawCircleV({b.x + 0.5f, b.y - 8.5f}, 3.2f, lit(shade({94, 132, 58, 255}, light)));
+                DrawCircleV({b.x - 0.6f, b.y - 9.5f}, 1.6f, lit(shade({128, 164, 78, 255}, light)));
             }
         }
         return;

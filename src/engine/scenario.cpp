@@ -33,6 +33,29 @@ constexpr Hill kHills[] = {
 };
 constexpr int32_t kTilesPerLevel = 3;  // slope length per elevation level
 
+// Spoil tips (terrikons) of the coal mines: steep black cones, the highest
+// ground about. One by the industrial zone, one out in the fields.
+struct Cone {
+    int32_t x_pct;
+    int32_t y_pct;
+    int32_t height;  // elevation levels at the top
+    int32_t radius;  // tiles
+};
+constexpr Cone kSpoilTips[] = {{7, 53, 5, 5}, {40, 80, 5, 5}};
+// A chalk ridge along the river: white slopes, steppe grass along the crest.
+struct Ridge {
+    int32_t x0_pct;
+    int32_t y0_pct;
+    int32_t x1_pct;
+    int32_t y1_pct;
+};
+constexpr Ridge kChalkRidges[] = {{8, 17, 19, 28}};
+constexpr int32_t kChalkHeight = 2;     // levels along the crest
+constexpr int32_t kChalkHalfWidth = 4;  // tiles from the crest to the foot
+// Tree lines along the concrete highway, both sides, a verge's width off it,
+// with gaps to cross (as along nearly every such road there).
+constexpr int32_t kHighwayVerge = 1;  // tiles
+
 struct Blob {
     int32_t x_pct;
     int32_t y_pct;
@@ -240,6 +263,69 @@ void raise_hill(TileMap& map, Painter& p, const Hill& hill) {
     raise(size - p.at(hill.x_pct), size - p.at(hill.y_pct));
 }
 
+// Only open ground turns into a spoil tip or a chalk slope: not roads,
+// water, railways or anything built.
+bool open_ground(Terrain t) {
+    return t == Terrain::Grass || t == Terrain::Plowed || t == Terrain::Crops || t == Terrain::Forest ||
+           t == Terrain::Swamp || t == Terrain::Crater || t == Terrain::Trail;
+}
+
+// A spoil tip: a cone of black rock, a level lower every tile and a quarter out.
+void raise_spoil_tip(TileMap& map, Painter& p, const Cone& cone) {
+    const int32_t size = map.width();
+    auto raise = [&](int32_t cx, int32_t cy) {
+        p.disc(cx, cy, cone.radius, [&](int32_t x, int32_t y, int32_t dist) {
+            const int32_t level = cone.height - dist * cone.height / cone.radius;
+            if (level <= 0 || !open_ground(map.terrain(x, y))) return;
+            map.set_terrain(x, y, Terrain::Slag);
+            if (level > map.elevation(x, y)) map.set_elevation(x, y, static_cast<uint8_t>(level));
+        });
+    };
+    raise(p.at(cone.x_pct), p.at(cone.y_pct));
+    raise(size - p.at(cone.x_pct), size - p.at(cone.y_pct));
+}
+
+// A chalk ridge: towards the river a steep white face, a level lower every
+// tile; away from it a long grassy back, a level every two tiles, with the
+// chalk showing through here and there.
+void raise_chalk_ridge(TileMap& map, Painter& p, const Ridge& ridge) {
+    const int32_t size = map.width();
+    auto raise = [&](int32_t ax, int32_t ay, int32_t bx, int32_t by, bool mirrored) {
+        // Distances in half tiles from tile centers to the crest line.
+        const int64_t abx = 2 * static_cast<int64_t>(bx - ax);
+        const int64_t aby = 2 * static_cast<int64_t>(by - ay);
+        const int64_t len_sq = abx * abx + aby * aby;
+        for (int32_t y = std::min(ay, by) - kChalkHalfWidth - 1; y <= std::max(ay, by) + kChalkHalfWidth; ++y) {
+            for (int32_t x = std::min(ax, bx) - kChalkHalfWidth - 1; x <= std::max(ax, bx) + kChalkHalfWidth; ++x) {
+                if (!map.contains_tile(x, y) || !open_ground(map.terrain(x, y))) continue;
+                const int64_t px = 2 * static_cast<int64_t>(x) + 1 - 2 * static_cast<int64_t>(ax);
+                const int64_t py = 2 * static_cast<int64_t>(y) + 1 - 2 * static_cast<int64_t>(ay);
+                const int64_t along = px * abx + py * aby;
+                int64_t d_sq = px * px + py * py;
+                if (along >= len_sq) {
+                    d_sq = (px - abx) * (px - abx) + (py - aby) * (py - aby);
+                } else if (along > 0) {
+                    d_sq -= along * along / len_sq;
+                }
+                const auto dist = static_cast<int32_t>(isqrt(static_cast<uint64_t>(std::max<int64_t>(0, d_sq))) / 2);
+                if (dist > kChalkHalfWidth) continue;
+                // The river runs along the diagonal: the face is the side nearer to it.
+                const bool face = std::abs(x - y) < std::abs(ax - ay) && dist > 0;
+                const int32_t level = kChalkHeight - (face ? dist : dist / 2);
+                if (level <= 0) continue;
+                if (level > map.elevation(x, y)) map.set_elevation(x, y, static_cast<uint8_t>(level));
+                // The chalk showing on the back, the same on both sides of the map.
+                const uint32_t noise = mirrored ? tile_noise(size - 1 - x, size - 1 - y) : tile_noise(x, y);
+                const bool bare = face || (dist == 0 && noise % 3 == 0) || (dist <= 2 && noise % 5 == 0);
+                if (bare) map.set_terrain(x, y, Terrain::Chalk);
+            }
+        }
+    };
+    raise(p.at(ridge.x0_pct), p.at(ridge.y0_pct), p.at(ridge.x1_pct), p.at(ridge.y1_pct), false);
+    raise(size - p.at(ridge.x0_pct), size - p.at(ridge.y0_pct), size - p.at(ridge.x1_pct), size - p.at(ridge.y1_pct),
+          true);
+}
+
 void spawn_squad(World& world, PlayerId owner, int32_t cx, int32_t cy, UnitTypeId type, int count) {
     for (int i = 0; i < count; ++i) {
         // Scatter within +-3 tiles, in hundredths of a tile.
@@ -375,6 +461,16 @@ TileMap make_demo_map(int32_t size) {
         road(x, y, Terrain::Road);
         road(x + 1, y, Terrain::Road);  // two lanes
     });
+    p.line(kHighway, [&](int32_t x, int32_t y, int32_t i) {
+        if (i % kTreeLineGapEvery < kTreeLineGapWidth) return;
+        for (const int32_t tx : {x - 1 - kHighwayVerge, x + 2 + kHighwayVerge}) {
+            if (!map.contains_tile(tx, y)) continue;
+            const Terrain under = map.terrain(tx, y);
+            if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops) {
+                p.paint(tx, y, Terrain::Forest);
+            }
+        }
+    });
     // Craters of the old shelling in the middle: on open ground and roads.
     for (int32_t dy = 0; dy < p.at(kShelledBelt.h_pct); ++dy) {
         for (int32_t dx = 0; dx < p.at(kShelledBelt.w_pct); ++dx) {
@@ -435,6 +531,8 @@ TileMap make_demo_map(int32_t size) {
     }
 
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
+    for (const Cone& cone : kSpoilTips) raise_spoil_tip(map, p, cone);
+    for (const Ridge& ridge : kChalkRidges) raise_chalk_ridge(map, p, ridge);
 
     // The plain a level above the rivers, the ponds and the gullies.
     for (int32_t y = 0; y < size; ++y) {
