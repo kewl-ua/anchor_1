@@ -253,9 +253,22 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const engine::EntityId howitzer = w.spawn_unit(me, engine::UnitTypeId::Howitzer, ahead(6.0f, 1.0f));
         const engine::EntityId mortar = w.spawn_unit(me, engine::UnitTypeId::Mortar, ahead(9.0f, -1.0f));
         const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, ahead(13.0f, 0.0f));
+        const engine::EntityId ags = w.spawn_unit(me, engine::UnitTypeId::Ags, ahead(11.0f, 2.0f));
+        const engine::EntityId mlrs = w.spawn_unit(me, engine::UnitTypeId::Mlrs, ahead(4.0f, -2.0f));
+        engine::EntityId tank = 0;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner == me && u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;
+        }
         game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(25.0f, 0.0f)});
         game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(24.0f, 2.0f)});
         game.submit({.type = engine::CommandType::AttackGround, .units = {mortar}, .target = ahead(19.0f, -2.0f)});
+        auto skill = [&](engine::EntityId id, engine::AbilityId ability, engine::FixedVec2 at) {
+            game.submit({.type = engine::CommandType::Ability, .units = {id}, .target = at,
+                         .ability = static_cast<uint8_t>(ability)});
+        };
+        skill(ags, engine::AbilityId::RapidFire, ahead(17.0f, 2.0f));
+        skill(mlrs, engine::AbilityId::Salvo, ahead(28.0f, -3.0f));
+        if (tank) skill(tank, engine::AbilityId::IndirectFire, ahead(21.0f, 0.0f));
         game.select_units({howitzer});
         return render::to_vector2(ahead(15.0f, 0.0f));
     }

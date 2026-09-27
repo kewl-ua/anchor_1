@@ -547,7 +547,7 @@ const Unit* World::find_enemy_in_sight(Unit& u) {
 
 void World::engage(Unit& u, const Unit& target) {
     u.engaged = target.id;
-    if (weapon_of(u).indirect) return engage_indirect(u, target.pos, u.chase_path, tile_of(target.pos));
+    if (weapon_of(u).indirect) return engage_indirect(u, target.pos, u.chase_path, tile_of(target.pos), weapon_of(u));
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius + def_of(target).radius;
     const FixedVec2 to_target = target.pos - u.pos;
@@ -566,7 +566,7 @@ void World::engage(Unit& u, const Unit& target) {
 }
 
 void World::engage_ground(Unit& u) {
-    if (weapon_of(u).indirect) return engage_indirect(u, u.order_point, u.order_path, u.order_goal);
+    if (weapon_of(u).indirect) return engage_indirect(u, u.order_point, u.order_path, u.order_goal, weapon_of(u));
     const UnitTypeDef& def = def_of(u);
     const Fixed reach = weapon_of(u).range + def.radius;
     const FixedVec2 to_point = u.order_point - u.pos;
@@ -658,7 +658,8 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     if (!move_to(u, next)) return Step::Blocked;
     u.moving = true;
     if (thirsty) u.fuel = max(Fixed{}, u.fuel - (u.pos - before).length());
-    u.deploy_work = 0;  // setting up starts over wherever it stops
+    u.deploy_work = 0;     // setting up starts over wherever it stops
+    u.camouflaged = false;  // and the nets stay behind
     return u.pos == point ? Step::Arrived : Step::Moved;
 }
 
@@ -782,6 +783,13 @@ bool World::out_of_rounds(const Unit& u) const { return def_of(u).rounds_capacit
 bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon, bool spends) {
     // Nothing left in the racks: the crew holds its ground and waits for a truck.
     if (spends && out_of_rounds(shooter)) return true;
+    // A grenade launcher lobs over whatever is in between.
+    if (weapon.lobbed) {
+        if (weapon.reload > 0) shooter.cooldown = weapon.reload;
+        if (spends && def_of(shooter).rounds_capacity > 0) shooter.rounds = std::max(0, shooter.rounds - 1);
+        lob(shooter, aim, weapon, false);
+        return true;
+    }
     // Someone in a house is shot at through the house: aim at the windows.
     Fixed aim_height = map_.surface_height(aim) + kGroundAim;
     if (target) aim_height = map_.surface_height(aim) + (target->inside ? kWindowHeight : center_height(*target));
@@ -975,6 +983,7 @@ int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
     }
     int32_t cover = 0;
     if (works->type == StructureType::Foxhole) cover = kFoxholeCover;
+    if (works->type == StructureType::GunPit) cover = kGunPitCover;
     if (works->type == StructureType::Trench) cover = victim.still >= kSettleTicks ? kTrenchCover : kTrenchWalkingCover;
     if (works->parapet) {
         const FixedVec2 to_shot = shot.from - victim.pos;
@@ -1139,6 +1148,8 @@ uint64_t World::checksum() const {
         mix(u.deploy_work);
         mix_vec(u.ranging_point);
         mix(u.ranging_shots);
+        mix(u.camouflaged ? 1 : 0);
+        mix(u.perfect_burst ? 1 : 0);
     }
     for (const Structure& s : structures_) {
         mix(s.id);

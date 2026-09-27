@@ -29,7 +29,8 @@ enum class StructureType : uint8_t {
     Foxhole,
     Parapet,           // on open ground; on a trench or foxhole it is part of that
     Dugout,            // a foxhole upgraded into a shelter
-    ArtilleryBarracks, // hires mortars and howitzers
+    ArtilleryBarracks, // hires mortars, grenade launchers, howitzers, rocket launchers
+    GunPit,            // a gun's dug-in position
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -114,7 +115,8 @@ inline std::optional<StructureType> depot_for(Resource r) {
 // Squared distance from a point to the nearest tile of a structure (0 inside it).
 // Field works: passable ground that gives cover.
 inline bool is_fieldwork(StructureType t) {
-    return t == StructureType::Trench || t == StructureType::Foxhole || t == StructureType::Parapet;
+    return t == StructureType::Trench || t == StructureType::Foxhole || t == StructureType::Parapet ||
+           t == StructureType::GunPit;
 }
 // Infantry can go inside: a house, a dugout. Whoever is inside holds it.
 inline bool is_shelter(StructureType t) { return t == StructureType::House || t == StructureType::Dugout; }

@@ -28,8 +28,8 @@ bool World::pack_step(Unit& u) {
 
 // A fire mission at a point: get within range (packing up to move), set up,
 // and fire whenever loaded. Nothing closer than the minimum range.
-void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal) {
-    const WeaponDef& weapon = weapon_of(u);
+void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal,
+                            const WeaponDef& weapon) {
     const FixedVec2 to_aim = aim - u.pos;
     const uint64_t dist_sq = to_aim.length_sq_raw();
     if (dist_sq > square_raw(weapon.range + unit_type(u.type).radius)) {
@@ -39,16 +39,16 @@ void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowFi
     if (dist_sq < square_raw(weapon.min_range)) return;  // too close to lob at
     if (to_aim.x.raw != 0 || to_aim.y.raw != 0) u.facing = to_aim;
     if (!deploy_step(u) || u.cooldown > 0 || out_of_rounds(u)) return;
-    fire_indirect(u, aim);
+    fire_indirect(u, aim, weapon);
 }
 
 // Bracketing: each shot at the same target lands closer to it. Scouts
 // looking at the target correct the fire, a step ahead.
-void World::fire_indirect(Unit& u, FixedVec2 aim) {
-    const WeaponDef& weapon = weapon_of(u);
+void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32_t wear) {
     const UnitTypeDef& def = unit_type(u.type);
     if (weapon.reload > 0) u.cooldown = weapon.reload;
     if (def.rounds_capacity > 0) u.rounds = std::max(0, u.rounds - 1);
+    if (wear > 0) u.hp = std::max(1, u.hp - wear);  // the barrel, not the crew
 
     const bool same = u.ranging_shots > 0 && (aim - u.ranging_point).length_sq_raw() <= square_raw(kSameTarget);
     u.ranging_shots = same ? static_cast<uint8_t>(std::min<int>(3, u.ranging_shots + 1)) : 1;

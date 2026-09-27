@@ -518,6 +518,12 @@ void draw_works(const engine::TileMap& map, int tx, int ty, engine::Terrain terr
             fill_ground_ellipse(on_terrain(map, c), 0.34f, {138, 116, 84, 255});
             fill_ground_ellipse(on_terrain(map, c), 0.22f, {52, 44, 34, 255});
             break;
+        case engine::Terrain::GunPit: {
+            // A wide pit with a horseshoe of spoil around it.
+            fill_ground_ellipse(on_terrain(map, c), 0.46f, {138, 116, 84, 255});
+            fill_ground_ellipse(on_terrain(map, c), 0.34f, {70, 60, 46, 255});
+            break;
+        }
         case engine::Terrain::Dugout: {
             const Vector2 top = on_terrain(map, c, 4.0f);
             fill_ground_ellipse(on_terrain(map, c), 0.46f, {118, 100, 74, 255});
@@ -927,7 +933,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         g_light = state == kInView ? 1.0f : kFogLight;
         fill_quad(top, right, bottom, left, shade(theme::terrain_color(terrain), light));
         if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
-            terrain == engine::Terrain::Dugout) {
+            terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit) {
             draw_works(map, tx, ty, terrain, [&](int x, int y) {
                 if (!map.contains_tile(x, y)) return false;
                 const engine::Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
@@ -1073,6 +1079,11 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
             thickness = u.deployed ? 1.2f : 3.0f;
             weapon = {60, 66, 56, 255};
             break;
+        case engine::UnitTypeId::Ags:
+            length = 0.3f;
+            thickness = 4.0f;
+            weapon = {58, 62, 54, 255};
+            break;
         default:
             break;
     }
@@ -1111,6 +1122,20 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         return;
     }
 
+    if (u.type == engine::UnitTypeId::Mlrs) {
+        // A truck with a pack of launch tubes: raised when set up.
+        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
+        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 4.0f, shade(color, 0.7f));
+        const float raise = u.deployed ? 8.0f : 4.0f;
+        const auto top = draw_box(map, at(-0.14f), facing, 0.46f, 0.38f, u.deployed ? 7.0f : 4.0f, {74, 82, 60, 255}, raise);
+        for (int i = 0; i < 3; ++i) {  // the tube ends
+            const float k = static_cast<float>(i + 1) / 4.0f;
+            DrawLineV(lerp(top[0], top[1], k), lerp(top[3], top[2], k), {40, 44, 34, 255});
+        }
+        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
+        return;
+    }
+
     if (u.type == engine::UnitTypeId::Howitzer) {
         // A carriage on two wheels and a long barrel: set up, the trails
         // spread behind and the barrel points up; packed, it trails behind
@@ -1126,6 +1151,10 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             }
             const Vector2 tip = on_terrain(map, {ground.x + facing.x * 0.45f, ground.y + facing.y * 0.45f}, 20.0f);
             DrawLineEx(hub, tip, 3.0f, steel);
+            if (u.camouflaged) {  // nets and branches over it
+                fill_ground_ellipse(on_terrain(map, ground, 8.0f), 0.55f, {64, 88, 52, 170});
+                draw_ground_ellipse(on_terrain(map, ground, 8.0f), 0.55f, {46, 66, 38, 200});
+            }
         } else {
             const Vector2 tip = on_terrain(map, {ground.x - facing.x * 0.6f, ground.y - facing.y * 0.6f}, 7.0f);
             DrawLineEx(hub, tip, 3.0f, steel);

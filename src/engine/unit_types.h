@@ -36,6 +36,8 @@ struct WeaponDef {
     // (see kRangingChance) instead of accuracy; nothing closer than min_range.
     bool indirect = false;
     Fixed min_range{};
+    // Lobbed at what the unit sees (a grenade launcher): over cover, into trenches.
+    bool lobbed = false;
 };
 
 // Skills, used with a command-grid button. Each unit type lists its own.
@@ -50,6 +52,11 @@ enum class AbilityId : uint8_t {
     ThrowGrenade,  // assault trooper: a hand grenade, into a trench, a dugout, a house
     Refill,        // fuel tanker, ammo truck: load up at the fuel or ammunition depot
     Deploy,        // guns: set up to fire, or pack up to move
+    DigGunPit,     // howitzer: a capunier; mortar: a closed position
+    Camouflage,    // howitzer: nets and branches over it
+    RapidFire,     // AGS: five grenades in a row along the front
+    Salvo,         // MLRS: everything in the launcher at a point
+    IndirectFire,  // tank: fire from a covered position, like artillery, wearing out the barrel
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -124,6 +131,8 @@ enum class UnitTypeId : uint8_t {
     AmmoTruck,   // brings rounds to vehicles; its load goes off when hit
     Mortar,      // 82mm mortar crew: plunging fire into trenches
     Howitzer,    // 122mm towed howitzer: long range, needs spotters
+    Ags,         // AGS-17 automatic grenade launcher crew
+    Mlrs,        // BM-21 multiple rocket launcher
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

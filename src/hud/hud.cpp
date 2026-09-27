@@ -500,6 +500,12 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                 draw_text("Parapet: +25% cover from the front.", area.x, line3, kCardFontSize, theme::kTextDim);
             }
             return;
+        case engine::StructureType::GunPit:
+            draw_text(TextFormat("A gun's dug-in position: %d%% of hits taken by the walls,", engine::kGunPitCover),
+                      area.x, line2, kCardFontSize, theme::kTextDim);
+            draw_text("and the gun in it is hidden until it fires or is spotted up close.", area.x, line3,
+                      kCardFontSize, theme::kTextDim);
+            return;
         case engine::StructureType::Parapet:
             draw_text(TextFormat("+%d%% cover against fire from the front.", engine::kParapetCover), area.x, line2,
                       kCardFontSize, theme::kTextDim);
@@ -664,7 +670,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
             ranging = TextFormat("ranging shot %d (%d%% on target)", u.ranging_shots,
                                  engine::kRangingChance[static_cast<size_t>(u.ranging_shots) - 1]);
         }
-        supply = TextFormat("%s    Rounds %d / %d    %s", stance, u.rounds, def.rounds_capacity, ranging);
+        supply = TextFormat("%s%s    Rounds %d / %d    %s", stance, u.camouflaged ? ", camouflaged" : "", u.rounds,
+                            def.rounds_capacity, ranging);
         if (u.rounds <= 0) supply_color = theme::kDanger;
     } else if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
         const int fuel = static_cast<int>(to_float(u.fuel));

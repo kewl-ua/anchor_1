@@ -66,11 +66,14 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
     constexpr int kMelee = 2400;  // by now the armies have met
     // Each side's guns shell the middle of the map all along.
     std::array<std::vector<EntityId>, 2> guns;
+    std::array<EntityId, 2> rockets{};
     for (PlayerId p = 0; p < 2; ++p) {
         const FixedVec2 base = demo_base_position(sim.world().map().width(), p);
         const Fixed step = Fixed::from_int(p == 0 ? 8 : -8);
         guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Howitzer, {base.x + step, base.y - step}));
         guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Mortar, {base.x + step, base.y}));
+        guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Ags, {base.x, base.y - step}));
+        rockets[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Mlrs, {base.x + step, base.y + step});
     }
 
     std::vector<uint64_t> checksums;
@@ -82,6 +85,9 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
         if (t == 5) {
             for (PlayerId p = 0; p < 2; ++p) {
                 issue(sim, make_order(CommandType::AttackGround, p, guns[p], center + (p == 0 ? -10 : 10), center));
+                Command salvo = make_order(CommandType::Ability, p, {rockets[p]}, center, center + (p == 0 ? 5 : -5));
+                salvo.ability = static_cast<uint8_t>(AbilityId::Salvo);
+                issue(sim, salvo);
             }
         }
         if (t == 1) {
@@ -366,7 +372,7 @@ void test_demo_map_is_fair() {
             // Every kind of natural terrain is there; ruins, buildings and field works come later.
             const auto terrain = static_cast<Terrain>(t);
             const bool made = terrain == Terrain::Ruins || terrain == Terrain::Building || terrain == Terrain::Trench ||
-                              terrain == Terrain::Foxhole || terrain == Terrain::Dugout;
+                              terrain == Terrain::Foxhole || terrain == Terrain::Dugout || terrain == Terrain::GunPit;
             if (!made) CHECK(counts[t] > 0);
         }
         CHECK(counts[static_cast<size_t>(Terrain::Ruins)] == 0);  // nothing destroyed yet
@@ -876,11 +882,11 @@ void test_riflemen_dig_a_trench() {
 // Damage a rifleman on post() takes in 5 s from a machine gun firing at the
 // spot from 5 tiles east or west, summed over 20 duels. `prepare` digs him in.
 template <typename Prepare>
-int32_t damage_taken(bool from_east, Prepare prepare) {
+int32_t damage_taken(bool from_east, Prepare prepare, UnitTypeId who = UnitTypeId::Rifleman) {
     int32_t total = 0;
     for (uint64_t seed = 1; seed <= 20; ++seed) {
         Simulation sim(seed, TileMap(30, 20));
-        const EntityId man = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, post());
+        const EntityId man = sim.world_for_setup().spawn_unit(0, who, post());
         prepare(sim, man);
         const Fixed dx = Fixed::from_int(from_east ? 5 : -5);
         const EntityId gun = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, {post().x + dx, post().y});
@@ -888,7 +894,7 @@ int32_t damage_taken(bool from_east, Prepare prepare) {
         fire.target = post();
         sim.schedule(sim.world().tick(), fire);
         for (int i = 0; i < 100; ++i) sim.step();
-        total += unit_type(UnitTypeId::Rifleman).max_hp - hp_of(sim, man);
+        total += unit_type(who).max_hp - hp_of(sim, man);
     }
     return total;
 }
@@ -1874,6 +1880,138 @@ void test_firing_guns_give_themselves_away() {
     CHECK(!seen_after_firing(false, true, kGunRevealTicks + 2 * kVisionInterval));
 }
 
+// A mortar crew digs a closed position: cover from fire, and out of sight
+// of an enemy a few tiles off.
+void test_gun_pits() {
+    Simulation sim(1, TileMap(30, 20));
+    const EntityId mortar = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, post());
+    sim.schedule(0, use_ability(0, {mortar}, AbilityId::DigGunPit, 0, 0));
+    for (Tick i = 0; i < kGunPitWork + 5; ++i) sim.step();
+    const Structure* pit = sim.world().structure_at({10, 10});
+    CHECK(pit && pit->type == StructureType::GunPit);
+    CHECK(sim.world().map().terrain(10, 10) == Terrain::GunPit);
+    CHECK(sim.world().map().passable({10, 10}, MoveClass::Wheeled));  // a towed gun can stand in one
+
+    const EntityId watcher = sim.world_for_setup().spawn_unit(1, UnitTypeId::Truck, at(14, 10));
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!seen(sim, 1, mortar));
+    CHECK(sim.world().find_unit(watcher));
+
+    const int32_t open = damage_taken(false, in_the_open, UnitTypeId::Mortar);
+    const int32_t dug_in = damage_taken(false, [](Simulation& s, EntityId) {
+        s.world_for_setup().place_structure(StructureType::GunPit, 0, {10, 10}, 1, 1);
+    }, UnitTypeId::Mortar);
+    CHECK(open > 0);
+    CHECK(dug_in * 100 < open * 70);
+}
+
+// Camouflage hides a howitzer in the open until it moves.
+void test_camouflaged_guns() {
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, post());
+    sim.world_for_setup().spawn_unit(1, UnitTypeId::Truck, {post().x + Fixed::from_int(5), post().y});
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(seen(sim, 1, gun));
+    issue(sim, use_ability(0, {gun}, AbilityId::Camouflage, 0, 0));
+    for (Tick i = 0; i < kCamouflageWork + 2 * kVisionInterval; ++i) sim.step();
+    CHECK(sim.world().find_unit(gun)->camouflaged);
+    CHECK(!seen(sim, 1, gun));
+    issue(sim, make_move(0, {gun}, 10, 15));
+    for (Tick i = 0; i < 30; ++i) sim.step();
+    CHECK(!sim.world().find_unit(gun)->camouflaged);
+    CHECK(seen(sim, 1, gun));
+}
+
+// Rapid fire: five grenades in a row across the line of fire, the middle one
+// on the point; about one burst in twenty lands them dead in line.
+void test_ags_rapid_fire() {
+    int perfect = 0;
+    for (uint64_t seed = 1; seed <= 100; ++seed) {
+        Simulation sim(seed, TileMap(30, 20));
+        const EntityId ags = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ags, at(5, 10));
+        sim.schedule(0, use_ability(0, {ags}, AbilityId::RapidFire, 12, 10));
+        const std::vector<FixedVec2> grenades = shell_landings(sim, 40);
+        CHECK(grenades.size() == static_cast<size_t>(kBurstGrenades));
+        if (grenades.size() != static_cast<size_t>(kBurstGrenades)) continue;
+        bool in_line = true;
+        for (int k = 0; k < kBurstGrenades; ++k) {
+            const Fixed ideal_y = Fixed::from_int(10) + kBurstSpacing * (k - kBurstGrenades / 2);
+            const FixedVec2 g = grenades[static_cast<size_t>(k)];
+            CHECK(abs_fixed(g.x - Fixed::from_int(12)) <= kBurstJitter + Fixed::from_ratio(1, 20));
+            CHECK(abs_fixed(g.y - ideal_y) <= kBurstJitter + Fixed::from_ratio(1, 20));
+            in_line = in_line && abs_fixed(g.x - Fixed::from_int(12)) <= Fixed::from_ratio(1, 50) &&
+                      abs_fixed(g.y - ideal_y) <= Fixed::from_ratio(1, 50);
+        }
+        perfect += in_line ? 1 : 0;
+        CHECK(sim.world().find_unit(ags)->rounds == unit_type(UnitTypeId::Ags).rounds_capacity - kBurstGrenades);
+    }
+    CHECK(perfect >= 1 && perfect <= 12);
+}
+
+// The AGS lobs its grenades over a ridge and the parapet, from where it
+// stands: a man at a position in a trench behind the ridge gets hurt all the same.
+void test_ags_reaches_into_trenches() {
+    int hurt = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        TileMap map(30, 20);
+        for (int y = 0; y < 20; ++y) map.set_elevation(13, y, 3);
+        Simulation sim(seed, map);
+        World& w = sim.world_for_setup();
+        w.place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+        const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, post());
+        settle(sim);
+        const EntityId ags = w.spawn_unit(1, UnitTypeId::Ags, {post().x + Fixed::from_int(6), post().y});
+        Command fire = make_order(CommandType::AttackGround, 1, {ags}, 0, 0);
+        fire.target = post();
+        sim.schedule(sim.world().tick(), fire);
+        const FixedVec2 stands = sim.world().find_unit(ags)->pos;
+        for (int i = 0; i < 100; ++i) sim.step();
+        hurt += hp_of(sim, man) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+        CHECK(sim.world().find_unit(ags)->pos == stands);  // no need to climb the ridge
+    }
+    CHECK(hurt >= 8);
+}
+
+// A salvo: everything in the launcher over an area, then empty.
+void test_mlrs_salvo() {
+    Simulation sim(1, TileMap(40, 30));
+    const EntityId mlrs = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mlrs, at(5, 15));
+    sim.schedule(0, use_ability(0, {mlrs}, AbilityId::Salvo, 25, 15));
+    const std::vector<FixedVec2> rockets =
+        shell_landings(sim, static_cast<int>(unit_type(UnitTypeId::Mlrs).deploy_time + 100));
+    CHECK(rockets.size() == static_cast<size_t>(unit_type(UnitTypeId::Mlrs).rounds_capacity));
+    Fixed widest{};
+    for (const FixedVec2& r : rockets) {
+        widest = max(widest, max(abs_fixed(r.x - Fixed::from_int(25)), abs_fixed(r.y - Fixed::from_int(15))));
+    }
+    CHECK(widest <= kSalvoSpread && widest > Fixed::from_int(1));
+    const Unit* u = sim.world().find_unit(mlrs);
+    CHECK(u->rounds == 0 && u->order == Order::Idle);
+
+    Simulation near(1, TileMap(40, 30));
+    const EntityId close = near.world_for_setup().spawn_unit(0, UnitTypeId::Mlrs, at(5, 15));
+    near.schedule(0, use_ability(0, {close}, AbilityId::Salvo, 10, 15));  // inside the minimum range
+    CHECK(shell_landings(near, 200).empty());
+}
+
+// A tank fires from behind a ridge like artillery, out to twice its direct
+// range; each shot wears the barrel by 1% of its HP.
+void test_tank_indirect_fire() {
+    TileMap map(40, 20);
+    for (int y = 0; y < 20; ++y) map.set_elevation(9, y, 3);
+    Simulation sim(1, map);
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+    sim.schedule(0, use_ability(0, {tank}, AbilityId::IndirectFire, 17, 10));  // 12 tiles: past direct range
+    const std::vector<FixedVec2> shells = shell_landings(sim, 300);
+    const Unit* t = sim.world().find_unit(tank);
+    CHECK(shells.size() >= 3);
+    const int32_t wear = unit_type(UnitTypeId::Tank).max_hp * kBarrelWearPercent / 100;
+    CHECK(t->hp == unit_type(UnitTypeId::Tank).max_hp - wear * static_cast<int32_t>(shells.size()));
+    CHECK(t->ranging_shots == 3);
+    CHECK(t->pos == at(5, 10));  // stays behind its ridge
+    CHECK(t->rounds == unit_type(UnitTypeId::Tank).rounds_capacity - static_cast<int32_t>(shells.size()));
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -2014,6 +2152,12 @@ int main() {
     test_guns_deploy_and_pack_up();
     test_guns_hold_fire_unless_ordered();
     test_firing_guns_give_themselves_away();
+    test_gun_pits();
+    test_camouflaged_guns();
+    test_ags_rapid_fire();
+    test_ags_reaches_into_trenches();
+    test_mlrs_salvo();
+    test_tank_indirect_fire();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

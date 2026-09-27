@@ -185,6 +185,8 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::AmmoTruck: return "Ammo truck";
         case engine::UnitTypeId::Mortar: return "Mortar";
         case engine::UnitTypeId::Howitzer: return "Howitzer";
+        case engine::UnitTypeId::Ags: return "AGS";
+        case engine::UnitTypeId::Mlrs: return "MLRS";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -294,6 +296,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         const char* label = ability.label;
         if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
         if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
+        if (id == engine::AbilityId::DigGunPit) label = *lead == engine::UnitTypeId::Mortar ? "Position" : "Capunier";
         hud::CommandButton& b = put(i, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);

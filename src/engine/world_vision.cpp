@@ -38,9 +38,10 @@ int32_t structure_sight(const Structure& s) {
 // Cover: forests, the trails under their canopy, trenches and foxholes, and
 // the inside of a house or dugout.
 bool in_cover(const TileMap& map, const Unit& u) {
-    if (u.inside) return true;
+    if (u.inside || u.camouflaged) return true;
     const Terrain t = map.terrain_at(u.pos);
-    return t == Terrain::Forest || t == Terrain::Trail || t == Terrain::Trench || t == Terrain::Foxhole;
+    return t == Terrain::Forest || t == Terrain::Trail || t == Terrain::Trench || t == Terrain::Foxhole ||
+           t == Terrain::GunPit;
 }
 
 }  // namespace

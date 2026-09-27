@@ -98,6 +98,21 @@ inline constexpr Fixed kSameTarget = Fixed::from_ratio(3, 2);
 inline constexpr Tick kGunRevealTicks = 6 * kTicksPerSecond;
 inline constexpr int32_t kFlashSectorPercent = 200;
 inline constexpr Tick kReportedTicks = 15 * kTicksPerSecond;
+// Gun pits (a capunier, a mortar's closed position) and camouflage.
+inline constexpr int32_t kGunPitCover = 50;
+inline constexpr Tick kGunPitWork = 10 * kTicksPerSecond;
+inline constexpr Tick kCamouflageWork = 10 * kTicksPerSecond;
+// AGS rapid fire: five grenades this far apart along the front, each off by
+// up to kBurstJitter; one burst in twenty lays them in a perfect row.
+inline constexpr int32_t kBurstGrenades = 5;
+inline constexpr Fixed kBurstSpacing = Fixed::from_ratio(4, 5);
+inline constexpr Fixed kBurstJitter = Fixed::from_ratio(3, 5);
+inline constexpr int32_t kPerfectBurstPercent = 5;
+// MLRS salvo: a rocket every so often, anywhere within this of the point.
+inline constexpr Fixed kSalvoSpread = Fixed::from_int(3);
+inline constexpr Tick kSalvoInterval = 2;
+// A tank firing from a covered position wears its barrel: HP per shot.
+inline constexpr int32_t kBarrelWearPercent = 1;
 
 // The tiles of a trench dug from a to b: a 4-connected line, so men can walk
 // along it, at most kMaxTrenchLength long.
@@ -162,6 +177,8 @@ struct Unit {
     Tick deploy_work = 0;
     FixedVec2 ranging_point{};
     uint8_t ranging_shots = 0;
+    bool camouflaged = false;  // under nets: hidden like in a forest until it moves
+    bool perfect_burst = false;  // this AGS burst lands in a perfect row
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -395,8 +412,10 @@ private:
     // true once done.
     bool deploy_step(Unit& u);
     bool pack_step(Unit& u);
-    void engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal);
-    void fire_indirect(Unit& u, FixedVec2 aim);
+    void engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal,
+                         const WeaponDef& weapon);
+    // `wear`: HP the shot costs the gun (a tank's barrel, fired as artillery).
+    void fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32_t wear = 0);
 
     // Movement. `formation` limits the speed to the group's slowest unit.
     std::shared_ptr<const FlowField> field_to(TilePos goal, MoveClass cls);

@@ -121,7 +121,8 @@ void World::apply_ability(const Command& cmd) {
         u->order = Order::Ability;
         u->order_ability = id;
         // A foxhole is dug where the man stands; a refill or a deploy needs no point at all.
-        const bool here = id == AbilityId::DigFoxhole || id == AbilityId::Refill || id == AbilityId::Deploy;
+        const bool here = id == AbilityId::DigFoxhole || id == AbilityId::Refill || id == AbilityId::Deploy ||
+                          id == AbilityId::DigGunPit || id == AbilityId::Camouflage;
         u->order_point = here ? u->pos : clamp_to_map(cmd.target, Fixed{});
         u->order_point2 = clamp_to_map(cmd.target_end, Fixed{});
         u->order_goal = map_.clamp_tile(tile_of(u->order_point));
@@ -132,6 +133,10 @@ void World::apply_ability(const Command& cmd) {
         u->engaged = 0;
         u->shots_left = id == AbilityId::MgSweep ? kSweepShots : 0;
         if (id == AbilityId::Deploy) u->shots_left = u->deployed ? 0 : 1;  // which way: set up or pack up
+        if (id == AbilityId::RapidFire) {
+            u->shots_left = kBurstGrenades;
+            u->perfect_burst = static_cast<int32_t>(rng_.next_below(100)) < kPerfectBurstPercent;
+        }
         u->work = 0;
     }
 }
@@ -258,6 +263,86 @@ void World::update_ability(Unit& u) {
         case AbilityId::Deploy:
             if (u.shots_left == 1 ? deploy_step(u) : pack_step(u)) finish_ability(u);
             return;
+
+        case AbilityId::DigGunPit: {
+            const TilePos t = map_.clamp_tile(tile_of(u.order_point));
+            if (!diggable(t)) return finish_ability(u);
+            if ((tile_center(t) - u.pos).length_sq_raw() > square_raw(kDigReach)) {
+                navigate(u, tile_center(t), u.order_path, t, false);
+                return;
+            }
+            if (++u.work < kGunPitWork) return;
+            place_fieldwork(StructureType::GunPit, u.owner, t, {});
+            return finish_ability(u);
+        }
+
+        case AbilityId::Camouflage:
+            if (++u.work < kCamouflageWork) return;
+            u.camouflaged = true;
+            return finish_ability(u);
+
+        case AbilityId::RapidFire: {
+            // Five grenades in a row across the line of fire, the middle
+            // one on the point; one burst in twenty lands them dead in line.
+            const WeaponDef& weapon = ability.weapon;
+            if (to_point.length_sq_raw() > square_raw(weapon.range + def.radius)) {
+                navigate(u, u.order_point, u.order_path, u.order_goal, false);
+                return;
+            }
+            if (at_point || out_of_rounds(u)) return finish_ability(u);
+            u.facing = to_point;
+            if (u.work++ % kSweepInterval != 0) return;
+            const FixedVec2 dir = to_point * (Fixed::from_int(1) / to_point.length());
+            const FixedVec2 across{-dir.y, dir.x};
+            const int32_t k = kBurstGrenades - u.shots_left - kBurstGrenades / 2;  // -2 .. 2
+            FixedVec2 aim = u.order_point + across * (kBurstSpacing * k);
+            if (!u.perfect_burst) {
+                aim.x += Fixed::from_raw(rng_.next_range(-kBurstJitter.raw, kBurstJitter.raw));
+                aim.y += Fixed::from_raw(rng_.next_range(-kBurstJitter.raw, kBurstJitter.raw));
+            }
+            if (def.rounds_capacity > 0) u.rounds = std::max(0, u.rounds - 1);
+            lob(u, aim, weapon, false);
+            if (--u.shots_left <= 0) finish_ability(u);
+            return;
+        }
+
+        case AbilityId::Salvo: {
+            // Everything in the launcher, one rocket after another, over an area.
+            const WeaponDef& weapon = weapon_of(u);
+            const uint64_t dist_sq = to_point.length_sq_raw();
+            if (dist_sq > square_raw(weapon.range + def.radius)) {
+                navigate(u, u.order_point, u.order_path, u.order_goal, false);
+                return;
+            }
+            if (dist_sq < square_raw(weapon.min_range) || out_of_rounds(u)) return finish_ability(u);
+            if (!at_point) u.facing = to_point;
+            if (!deploy_step(u)) return;
+            if (u.work++ % kSalvoInterval != 0) return;
+            FixedVec2 aim = u.order_point;
+            aim.x += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
+            aim.y += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
+            WeaponDef rocket = weapon;
+            rocket.accuracy = 100;
+            u.rounds = std::max(0, u.rounds - 1);
+            lob(u, aim, rocket, false);
+            if (out_of_rounds(u)) finish_ability(u);
+            return;
+        }
+
+        case AbilityId::IndirectFire: {
+            // A fire mission from cover, like artillery, until told otherwise.
+            const int32_t wear = std::max(1, def.max_hp * kBarrelWearPercent / 100);
+            const WeaponDef& weapon = ability.weapon;
+            if (to_point.length_sq_raw() > square_raw(weapon.range + def.radius)) {
+                navigate(u, u.order_point, u.order_path, u.order_goal, false);
+                return;
+            }
+            if (to_point.length_sq_raw() < square_raw(weapon.min_range)) return;
+            if (!at_point) u.facing = to_point;
+            if (u.cooldown > 0 || out_of_rounds(u)) return;
+            fire_indirect(u, u.order_point, weapon, wear);
+            return;
+        }
 
         case AbilityId::SwitchAmmo:
         case AbilityId::Count:

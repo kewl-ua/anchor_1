@@ -58,6 +58,7 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
                 case StructureType::Trench: map_.set_terrain(t.x, t.y, Terrain::Trench); break;
                 case StructureType::Foxhole: map_.set_terrain(t.x, t.y, Terrain::Foxhole); break;
                 case StructureType::Dugout: map_.set_terrain(t.x, t.y, Terrain::Dugout); break;
+                case StructureType::GunPit: map_.set_terrain(t.x, t.y, Terrain::GunPit); break;
                 case StructureType::Parapet: break;  // a mound on the ground it stands on
                 default: map_.set_terrain(t.x, t.y, Terrain::Building); break;
             }
