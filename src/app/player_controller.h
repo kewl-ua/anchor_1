@@ -119,6 +119,10 @@ private:
                                bool additive, float alpha);
     bool has_engineers(const engine::World& world) const;
     bool has_service_vehicles(const engine::World& world) const;
+    // Foot soldiers among the selection, who can mount up in an IFV.
+    bool has_riders(const engine::World& world) const;
+    void order_board(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                     const engine::Unit& carrier);
     bool has_ammo_trucks(const engine::World& world) const;
     // Tankers and ammunition trucks in the selection are attached to `unit`;
     // the rest go where it is.
@@ -134,7 +138,7 @@ private:
     // The command grid. Each cell holds an action; its hotkey is the cell's.
     enum class Action : uint8_t {
         None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload,
-        Research, ConvertMenu, Convert, Gather
+        Research, ConvertMenu, Convert, Gather, Dismount
     };
     struct Cell {
         Action action = Action::None;

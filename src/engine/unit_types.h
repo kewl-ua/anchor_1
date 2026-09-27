@@ -132,6 +132,8 @@ struct UnitTypeDef {
     // Service vehicles: what they bring to the others (Count: nothing), and how much fits.
     Resource supplies = Resource::Count;
     int32_t cargo_capacity = 0;
+    // Carries this many foot soldiers (an IFV's squad); 0: nobody.
+    int32_t troop_capacity = 0;
     // How close an enemy hiding in cover must be for this unit to make him out.
     Fixed detection = Fixed::from_int(2);
     bool stealthy = false;  // hard to spot in cover (scouts)
@@ -193,6 +195,8 @@ inline MoveClass move_class(const UnitTypeDef& def) {
 }
 // Trucks carry no weapon: they never pick fights.
 inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
+// Foot soldiers ride in an IFV; gun crews walk with their guns.
+inline bool can_ride(const UnitTypeDef& def) { return !def.vehicle && !def.aircraft && def.deploy_time == 0; }
 
 // Where a skill sits in the unit's list (its button), or -1 if it hasn't got it.
 inline int ability_slot(const UnitTypeDef& def, AbilityId id) {

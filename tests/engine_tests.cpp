@@ -1455,6 +1455,100 @@ void test_rally_points() {
     CHECK(gathering == 1 && collecting == 1 && rifle_there);
 }
 
+// Infantry mounts up in our IFV: seven men at most, gun crews walk, the
+// enemy's can't get in. Aboard, they ride along unseen and unhurt; told to
+// dismount, the IFV stops and they get out at the back.
+void test_ifv_carries_squad() {
+    TileMap map(50, 30);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId ifv = w.spawn_unit(0, UnitTypeId::Ifv, at(20, 15));
+    std::vector<EntityId> squad;
+    for (int i = 0; i < 8; ++i) squad.push_back(w.spawn_unit(0, UnitTypeId::Rifleman, at(12 + (i % 2), 11 + i)));
+    const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, at(14, 20));
+    const EntityId stranger = w.spawn_unit(1, UnitTypeId::Rifleman, at(2, 28));
+    std::vector<EntityId> all = squad;
+    all.push_back(mortar);
+    issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = all, .target_unit = ifv});
+    issue(sim, Command{.type = CommandType::Garrison, .player = 1, .units = {stranger}, .target_unit = ifv});
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(sim.world().find_unit(ifv)->passengers.empty());  // they walk up to it first
+    for (int i = 0; i < 590; ++i) sim.step();
+    const Unit* v = sim.world().find_unit(ifv);
+    CHECK(v->passengers.size() == 7);
+    int aboard = 0;
+    for (EntityId id : squad) aboard += sim.world().find_unit(id)->inside == ifv ? 1 : 0;
+    CHECK(aboard == 7);  // the eighth: no room, he waits beside it
+    CHECK(sim.world().find_unit(mortar)->inside == 0);
+    CHECK(sim.world().find_unit(stranger)->inside == 0);
+    const std::vector<EntityId> riders = v->passengers;
+
+    // Riding along, past an enemy machine gunner shooting at it: the squad unhurt.
+    const EntityId gunner = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, at(30, 19));
+    issue(sim, make_move(0, {ifv}, 38, 15));
+    for (int i = 0; i < 700; ++i) sim.step();
+    v = sim.world().find_unit(ifv);
+    CHECK((v->pos - at(38, 15)).length() < Fixed::from_int(2));
+    CHECK(v->hp < unit_type(UnitTypeId::Ifv).max_hp);  // it was under fire
+    for (EntityId id : riders) {
+        const Unit* p = sim.world().find_unit(id);
+        CHECK(p && p->pos == v->pos && p->hp == unit_type(UnitTypeId::Rifleman).max_hp);
+        CHECK(p && p->last_shot_tick == kNeverFired);  // they don't fire from inside
+    }
+    if (Unit* g = sim.world_for_setup().unit_for_setup(gunner)) g->hp = 0;
+
+    // Dismount on the move: it stops, they get out behind it.
+    issue(sim, make_move(0, {ifv}, 45, 15));
+    for (int i = 0; i < 20; ++i) sim.step();
+    issue(sim, Command{.type = CommandType::Unload, .player = 1, .units = {ifv}});
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(ifv)->passengers.size() == 7);  // not the enemy's to order
+    issue(sim, Command{.type = CommandType::Unload, .player = 0, .units = {ifv}});
+    for (int i = 0; i < 3; ++i) sim.step();
+    v = sim.world().find_unit(ifv);
+    CHECK(v->passengers.empty() && v->order == Order::Idle);
+    const FixedVec2 stop = v->pos;
+    for (EntityId id : riders) {
+        const Unit* p = sim.world().find_unit(id);
+        CHECK(p && p->inside == 0 && p->order == Order::Idle);
+        if (!p) continue;
+        const FixedVec2 off = p->pos - v->pos;
+        CHECK((off.x * v->facing.x + off.y * v->facing.y).raw < 0);  // behind it
+    }
+    for (int i = 0; i < 60; ++i) sim.step();
+    CHECK((sim.world().find_unit(ifv)->pos - stop).length() < Fixed::from_ratio(1, 2));
+
+    // Seats free now, but the mortar crew walks with its mortar.
+    issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = {mortar}, .target_unit = ifv});
+    for (int i = 0; i < 1500; ++i) sim.step();
+    CHECK(sim.world().find_unit(mortar)->inside == 0 && sim.world().find_unit(ifv)->passengers.empty());
+}
+
+// Mounting up with an IFV that drives off: they follow and get in. Knocked
+// out with them aboard, the squad bails out, each losing half his health;
+// a wounded man doesn't make it.
+void test_ifv_bail_out() {
+    TileMap map(50, 30);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId ifv = w.spawn_unit(0, UnitTypeId::Ifv, at(20, 15));
+    const EntityId fit = w.spawn_unit(0, UnitTypeId::Rifleman, at(10, 14));
+    const EntityId hurt = w.spawn_unit(0, UnitTypeId::Rifleman, at(10, 16));
+    w.unit_for_setup(hurt)->hp = 15;
+    issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = {fit, hurt}, .target_unit = ifv});
+    issue(sim, make_move(0, {ifv}, 30, 20));
+    for (int i = 0; i < 1200; ++i) sim.step();
+    CHECK(sim.world().find_unit(ifv)->passengers.size() == 2);
+    CHECK((sim.world().find_unit(ifv)->pos - at(30, 20)).length() < Fixed::from_int(2));
+
+    sim.world_for_setup().unit_for_setup(ifv)->hp = 0;
+    sim.step();
+    CHECK(sim.world().find_unit(ifv) == nullptr);
+    const Unit* survivor = sim.world().find_unit(fit);
+    CHECK(survivor && survivor->inside == 0 && survivor->hp == unit_type(UnitTypeId::Rifleman).max_hp / 2);
+    CHECK(sim.world().find_unit(hurt) == nullptr);
+}
+
 void test_rear_troops_quarry_stone() {
     Simulation sim = economy_sim({}, false);
     issue(sim, gather_at(spawn_workers(sim, 2, 9, 13), 5, 15));
@@ -4103,6 +4197,8 @@ int main() {
     test_rear_troops_quarry_stone();
     test_trucks_collect_timber();
     test_rally_points();
+    test_ifv_carries_squad();
+    test_ifv_bail_out();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

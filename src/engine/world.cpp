@@ -180,6 +180,7 @@ void World::build_structures() {
 }
 
 void World::apply_garrison(const Command& cmd) {
+    if (const Unit* carrier = find_unit(cmd.target_unit)) return apply_board(cmd, *carrier);
     const Structure* s = find_structure(cmd.target_unit);
     if (!s || !is_shelter(role_of(*s))) return;
     const TilePos goal = map_.clamp_tile(tile_of(s->center));
@@ -196,7 +197,56 @@ void World::apply_garrison(const Command& cmd) {
     }
 }
 
+// Foot soldiers mount up: they walk to our IFV, following it if it drives
+// off, and get in while there's room.
+void World::apply_board(const Command& cmd, const Unit& carrier) {
+    if (carrier.owner != cmd.player || def_of(carrier).troop_capacity == 0) return;
+    const TilePos goal = map_.clamp_tile(tile_of(carrier.pos));
+    for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
+        if (!can_ride(def_of(*u)) || u->inside == carrier.id) continue;
+        leave_structure(*u);
+        u->order = Order::Garrison;
+        u->order_target = carrier.id;
+        u->order_goal = goal;
+        u->order_path = field_to(goal, MoveClass::Foot);
+        u->chase_path.reset();
+        u->speed_cap = Fixed{};
+        u->engaged = 0;
+    }
+}
+
+void World::seek_carrier(Unit& u, Unit& carrier) {
+    auto done = [&u] {
+        u.order = Order::Idle;
+        u.order_path.reset();
+    };
+    if ((carrier.pos - u.pos).length_sq_raw() <= square_raw(kBoardDistance + def_of(carrier).radius)) {
+        board(u, carrier);  // full: he waits beside it
+        return done();
+    }
+    const TilePos goal = map_.clamp_tile(tile_of(carrier.pos));
+    if (goal != u.order_goal) {  // it drove on: after it
+        u.order_goal = goal;
+        u.order_path = field_to(goal, MoveClass::Foot);
+    }
+    if (navigate(u, carrier.pos, u.order_path, u.order_goal, false) == Step::Blocked) done();
+}
+
+bool World::board(Unit& u, Unit& carrier) {
+    if (static_cast<int32_t>(carrier.passengers.size()) >= def_of(carrier).troop_capacity) return false;
+    carrier.passengers.push_back(u.id);
+    u.inside = carrier.id;
+    u.pos = carrier.pos;
+    u.prev_pos = carrier.prev_pos;
+    u.moving = false;
+    u.engaged = 0;
+    u.order_path.reset();
+    u.chase_path.reset();
+    return true;
+}
+
 void World::seek_garrison(Unit& u) {
+    if (Unit* carrier = find_unit_mut(u.order_target)) return seek_carrier(u, *carrier);
     Structure* s = find_structure_mut(u.order_target);
     auto done = [&u] {
         u.order = Order::Idle;
@@ -238,6 +288,28 @@ void World::leave_structure(Unit& u) {
         std::erase(s->garrison, u.id);
         if (s->garrison.empty() && is_shelter(role_of(*s))) s->owner = kNoOwner;
         from = s->center;
+    } else if (Unit* carrier = find_unit_mut(u.inside)) {
+        // Out at the back doors, three abreast.
+        std::erase(carrier->passengers, u.id);
+        const auto n = static_cast<int32_t>(carrier->passengers.size());
+        const Fixed length = carrier->facing.length();
+        if (length.raw > 0) {
+            const FixedVec2 ahead = carrier->facing * (Fixed::from_int(1) / length);
+            const FixedVec2 side{-ahead.y, ahead.x};
+            const Fixed back = def_of(*carrier).radius + Fixed::from_ratio(1, 2) + Fixed::from_ratio(1, 2) * (n / 3);
+            from = carrier->pos - ahead * back + side * (Fixed::from_ratio(2, 5) * (n % 3 - 1));
+        } else {
+            from = carrier->pos;
+        }
+        u.inside = 0;
+        const TilePos t = map_.clamp_tile(tile_of(from));
+        if (map_.passable(t, class_of(u))) {
+            u.pos = clamp_to_map(from, def_of(u).radius);
+        } else if (auto door = nearest_passable(map_, t, class_of(u))) {
+            u.pos = tile_center(*door);
+        }
+        u.prev_pos = u.pos;
+        return;
     }
     u.inside = 0;
     if (auto door = nearest_passable(map_, tile_of(from), class_of(u))) u.pos = tile_center(*door);
@@ -247,6 +319,7 @@ void World::leave_structure(Unit& u) {
 // Garrisoned soldiers can't move; they fire from the windows at whatever
 // comes into sight and range.
 void World::update_garrisoned(Unit& u) {
+    if (find_unit(u.inside)) return;  // riding in an IFV
     if (u.order == Order::Retrain) return update_retrain(u);  // at drill in the headquarters
     const Structure* home = find_structure(u.inside);
     if (home && home->type == StructureType::Dugout) return;  // sheltering
@@ -497,6 +570,15 @@ void World::step() {
 
     separate_units();
     for (Unit& u : units_) u.pos = clamp_to_map(u.pos, def_of(u).radius);
+    // The men aboard ride along.
+    for (const Unit& v : units_) {
+        for (EntityId id : v.passengers) {
+            if (Unit* p = find_unit_mut(id)) {
+                p->pos = v.pos;
+                p->prev_pos = v.prev_pos;
+            }
+        }
+    }
     update_mines();
     update_charges();
     if (tick_ % kRearmInterval == 0) draw_from_caches();
@@ -1202,6 +1284,20 @@ void World::apply_damage_and_remove_dead() {
         on_map_changed();
     }
 
+    // An IFV knocked out: the squad bails out, knocked about; the worse off
+    // don't make it.
+    for (const Unit& v : units_) {
+        if (v.hp > 0 || v.passengers.empty()) continue;
+        const std::vector<EntityId> aboard = v.passengers;
+        for (EntityId id : aboard) {
+            Unit* p = find_unit_mut(id);
+            if (!p) continue;
+            leave_structure(*p);
+            p->order = Order::Idle;
+            p->hp -= unit_type(p->type).max_hp * kBailOutHurtPercent / 100;
+        }
+    }
+
     // A tanker or an ammunition truck hit with its load aboard goes up.
     for (const Unit& u : units_) {
         if (u.hp > 0 || u.carrying <= 0 || def_of(u).supplies == Resource::Count) continue;
@@ -1299,6 +1395,8 @@ uint64_t World::checksum() const {
         mix(u.last_shot_tick);
         mix_vec(u.last_shot_at);
         mix(u.inside);
+        mix(static_cast<uint32_t>(u.passengers.size()));
+        for (EntityId id : u.passengers) mix(id);
         mix(static_cast<uint32_t>(u.gather_tile.x));
         mix(static_cast<uint32_t>(u.gather_tile.y));
         mix(static_cast<uint32_t>(u.carrying));

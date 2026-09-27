@@ -128,6 +128,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .fuel_capacity = tiles(180),
         .rounds_capacity = 150,
         .rounds_per_supply = 5,
+        .troop_capacity = 7,
         .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade, AbilityId::RadioSilence, AbilityId::CallSupply},
         .ability_count = 4,
         .emitter = true,

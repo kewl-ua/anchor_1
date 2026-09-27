@@ -108,6 +108,20 @@ void World::apply_upgrade(const Command& cmd) {
 }
 
 void World::apply_unload(const Command& cmd) {
+    // IFVs told to dismount: they stop, and the squad gets out at the back.
+    for (EntityId carrier : cmd.units) {
+        Unit* v = find_unit_mut(carrier);
+        if (!v || v->owner != cmd.player || v->passengers.empty()) continue;
+        v->order = Order::Idle;
+        v->order_path.reset();
+        const std::vector<EntityId> aboard = v->passengers;
+        for (EntityId id : aboard) {
+            if (Unit* u = find_unit_mut(id)) {
+                leave_structure(*u);
+                u->order = Order::Idle;
+            }
+        }
+    }
     const Structure* s = find_structure(cmd.target_unit);
     if (!s || s->owner != cmd.player || !is_shelter(role_of(*s))) return;
     const std::vector<EntityId> inside = s->garrison;

@@ -266,6 +266,23 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return center;
     }
 
+    if (options.scene == "ifv") {
+        // The riflemen mount up in the first IFV, which then drives ahead;
+        // the IFV stays selected.
+        std::vector<engine::EntityId> riflemen;
+        std::vector<engine::EntityId> ifvs;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner != me) continue;
+            if (u.type == engine::UnitTypeId::Rifleman) riflemen.push_back(u.id);
+            if (u.type == engine::UnitTypeId::Ifv) ifvs.push_back(u.id);
+        }
+        if (riflemen.empty() || ifvs.empty()) return std::nullopt;
+        const engine::Unit* ifv = world.find_unit(ifvs.front());
+        game.submit({.type = engine::CommandType::Garrison, .units = riflemen, .target_unit = ifv->id});
+        game.select_units({ifv->id});
+        return render::to_vector2(ifv->pos);
+    }
+
     if (options.scene == "works") {
         // Four riflemen dig a trench across the front, two dig foxholes where
         // they stand; the riflemen stay selected.

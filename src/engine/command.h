@@ -19,7 +19,7 @@ enum class CommandType : uint8_t {
     Attack,        // attack one specific unit
     AttackMove,    // go there, fighting every enemy met on the way
     AttackGround,  // keep firing at a point, seen or not (suppress a tree line)
-    Garrison,      // infantry: go into a house (target_unit = the structure)
+    Garrison,      // infantry: go into a house (target_unit = the structure) or mount up in an IFV (target_unit)
     Gather,        // rear troops: cut timber / quarry stone at `target`
     Train,         // a building (target_unit) hires a unit (unit_type)
     Retrain,       // rear troops: go to the headquarters and come out as riflemen
@@ -30,7 +30,7 @@ enum class CommandType : uint8_t {
     Observe,       // scouts: hold an observation post watching the sector towards `target`
     Ability,       // use a skill (`ability`) at `target` (a line: to `target_end`)
     Upgrade,       // a foxhole (target_unit) is dug out into a dugout
-    Unload,        // everyone inside a house or dugout (target_unit) comes out
+    Unload,        // everyone inside a house or dugout (target_unit) comes out; IFVs (units) dismount the squad
     Research,      // a building (target_unit) researches an upgrade (`upgrade`)
     Supply,        // tankers, ammunition trucks: look after one unit (target_unit) for good
     Collect,       // supply trucks: park by the wood or the stone at `target` and take the rear troops' loads in

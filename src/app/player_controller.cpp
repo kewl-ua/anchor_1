@@ -141,6 +141,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             if (minimap_ground) order_move(lockstep, renderer, *minimap_ground);
         } else if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
             order_attack(lockstep, enemy->id);
+        } else if (const engine::Unit* carrier = has_riders(world) ? unit_at(world, camera, mouse, alpha, true) : nullptr;
+                   carrier && engine::unit_type(carrier->type).troop_capacity > 0) {
+            // Foot soldiers right-clicked onto our IFV: they mount up.
+            order_board(lockstep, world, renderer, *carrier);
         } else if (const engine::Unit* own = has_service_vehicles(world) ? unit_at(world, camera, mouse, alpha, true) : nullptr;
                    own && !own->inside && !std::binary_search(selection_.begin(), selection_.end(), own->id)) {
             // A tanker or an ammunition truck right-clicked onto one of ours: attached to it.
@@ -238,6 +242,11 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
         return;
     }
     const engine::Unit* own = unit_at(world, camera, mouse, alpha, true);
+    if (own && engine::unit_type(own->type).troop_capacity > 0 && has_riders(world)) {
+        hint_ = TextFormat("RMB: mount up (%d / %d aboard)", static_cast<int>(own->passengers.size()),
+                           engine::unit_type(own->type).troop_capacity);
+        return;
+    }
     if (own && !own->inside && has_service_vehicles(world) &&
         !std::binary_search(selection_.begin(), selection_.end(), own->id)) {
         hint_ = TextFormat("RMB: attach to this %s: follow it, keep it supplied", engine::unit_type(own->type).name);
@@ -540,6 +549,15 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             targeting_ == Targeting::AttackMove;
     }
     put(6, Action::Stop, 0, "Stop", "Stop");
+    if (def.troop_capacity > 0) {
+        int aboard = 0;
+        for (engine::EntityId id : selection_) {
+            if (const engine::Unit* u = world.find_unit(id)) aboard += static_cast<int>(u->passengers.size());
+        }
+        put(7, Action::Dismount, 0, "Dismount",
+            "Dismount the squad: the IFV stops, the men get out at the back (RMB with infantry on an IFV: mount up)")
+            .enabled = aboard > 0;
+    }
     if (armed) {
         put(9, Action::FireAt, 0, "Fire at", "Fire at a spot, seen or not (a tree line, a house)").active =
             targeting_ == Targeting::AttackGround;
@@ -587,6 +605,15 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                                                                       : engine::CommandType::Unload,
                                 .target_unit = selected_structure_};
             lockstep.submit(std::move(cmd));
+            break;
+        }
+        case Action::Dismount: {
+            engine::Command out{.type = engine::CommandType::Unload};
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (u && !u->passengers.empty()) out.units.push_back(id);
+            }
+            if (!out.units.empty()) lockstep.submit(std::move(out));
             break;
         }
         case Action::Haul: {
@@ -782,6 +809,24 @@ void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& 
     renderer.add_order_ping(ground, false);
 }
 
+bool PlayerController::has_riders(const engine::World& world) const {
+    return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return u && engine::can_ride(engine::unit_type(u->type));
+    });
+}
+
+void PlayerController::order_board(net::Lockstep& lockstep, const engine::World& world,
+                                   render::WorldRenderer& renderer, const engine::Unit& carrier) {
+    engine::Command board{.type = engine::CommandType::Garrison, .target_unit = carrier.id};
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (u && engine::can_ride(engine::unit_type(u->type))) board.units.push_back(id);
+    }
+    lockstep.submit(std::move(board));
+    renderer.add_order_ping(render::to_vector2(carrier.pos), false);
+}
+
 bool PlayerController::has_workers(const engine::World& world) const {
     return std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
@@ -922,7 +967,10 @@ bool PlayerController::dragging() const {
 Rectangle PlayerController::drag_rect() const { return rect_from_points(press_pos_, GetMousePosition()); }
 
 void PlayerController::prune_selection(const engine::World& world) {
-    std::erase_if(selection_, [&](engine::EntityId id) { return world.find_unit(id) == nullptr; });
+    std::erase_if(selection_, [&](engine::EntityId id) {
+        const engine::Unit* u = world.find_unit(id);
+        return !u || world.find_unit(u->inside) != nullptr;  // the men aboard an IFV go with it
+    });
     if (!world.find_structure(selected_structure_)) selected_structure_ = 0;
 }
 

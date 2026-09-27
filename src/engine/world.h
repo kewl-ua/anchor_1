@@ -78,6 +78,12 @@ inline constexpr Tick kDugoutWork = 20 * kTicksPerSecond;
 inline constexpr int32_t kDugoutDiggers = 4;
 inline constexpr int32_t kGrenadeVictims = 3;  // a grenade into a room hurts this many inside
 
+// An IFV carries its squad: foot soldiers get in this close to it, ride
+// unseen and unhurt, and get out at the back. Knocked out with them aboard,
+// they bail out, each losing this share of his health.
+inline constexpr Fixed kBoardDistance = Fixed::from_ratio(3, 2);
+inline constexpr int32_t kBailOutHurtPercent = 50;
+
 // Vehicle supply. A unit of fuel from the stock drives a vehicle this many tiles.
 inline constexpr int32_t kTilesPerFuel = 2;
 // Service vehicles look after their own vehicles this close, handing over a
@@ -282,10 +288,12 @@ struct Unit {
     Tick last_shot_tick = kNeverFired;  // for muzzle flashes and tracers
     FixedVec2 last_shot_at{};
 
-    // The structure this unit is garrisoned in, 0 if outside. Inside, the
-    // unit stands at the structure's center, can't be hit and fires from the
-    // windows.
+    // The structure this unit is garrisoned in, or the IFV it rides in; 0 if
+    // outside. In a structure the unit stands at its center, can't be hit and
+    // fires from the windows; in an IFV it rides along and doesn't fire.
     EntityId inside = 0;
+    // An IFV: the men aboard, in the order they got in.
+    std::vector<EntityId> passengers;
 
     // Rear troops and trucks at work.
     TilePos gather_tile{};  // the forest or rock being worked
@@ -569,6 +577,9 @@ private:
     void seek_garrison(Unit& u);
     bool enter(Unit& u, Structure& s);
     void leave_structure(Unit& u);
+    void apply_board(const Command& cmd, const Unit& carrier);
+    void seek_carrier(Unit& u, Unit& carrier);
+    bool board(Unit& u, Unit& carrier);
     void hurt_structure(const Structure& s, const WeaponDef& weapon);
     void collapse(const Structure& s);
     void on_map_changed();

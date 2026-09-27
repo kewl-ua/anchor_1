@@ -937,6 +937,10 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     const char* state = kOrderNames[static_cast<int>(u.order)];
     if (u.order == engine::Order::Ability) state = engine::ability_def(u.order_ability).label;
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
+    if (u.order == engine::Order::Garrison && world.find_unit(u.order_target)) state = "Mounting up";
+    if (def.troop_capacity > 0) {
+        state = TextFormat("%s, squad aboard %d/%d", state, static_cast<int>(u.passengers.size()), def.troop_capacity);
+    }
     if (const engine::Structure* s = world.find_structure(u.inside)) {
         if (s->type == engine::StructureType::House) {
             state = TextFormat("In a house (%d/%d)", static_cast<int>(s->garrison.size()),

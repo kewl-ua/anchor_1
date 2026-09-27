@@ -1953,6 +1953,17 @@ void WorldRenderer::draw_supply_warning(const engine::TileMap& map, const engine
 
 // Our rear troops at the wood and trucks collecting there: how full they are.
 void WorldRenderer::draw_load_bar(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
+    if (const int32_t seats = engine::unit_type(u.type).troop_capacity; seats > 0 && !u.passengers.empty()) {
+        // The squad aboard: a pip a man, over the seats.
+        const Vector2 feet = on_terrain(map, unit_ground_pos(u, alpha));
+        const float x = feet.x - static_cast<float>(seats) * 2.0f;
+        const float y = feet.y - 32.0f;
+        DrawRectangleRec({x - 1, y - 1, static_cast<float>(seats) * 4.0f + 1, 5}, {0, 0, 0, 170});
+        for (int32_t i = 0; i < static_cast<int32_t>(u.passengers.size()); ++i) {
+            DrawRectangleRec({x + static_cast<float>(i) * 4.0f, y, 3, 3}, {225, 215, 160, 255});
+        }
+        return;
+    }
     float full = -1.0f;
     if (u.order == engine::Order::Gather && u.carrying > 0) {
         full = static_cast<float>(u.carrying) / static_cast<float>(engine::kCarryCapacity);
