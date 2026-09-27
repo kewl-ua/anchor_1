@@ -1617,6 +1617,126 @@ void test_quarters_house_the_men() {
     CHECK(sim.world().bunks(0) == kMaxPopulation);
 }
 
+// A tank at (5, 10) fires armor-piercing rounds at an enemy tank `distance`
+// tiles east that can't answer, spotted by a scout of ours: its hits out
+// of `shots`, and whether it fired from where it stands.
+std::pair<int, bool> tank_hits(int32_t distance, int shots) {
+    TileMap map(70, 20);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+    w.unit_for_setup(tank)->round_type = 1;  // armor-piercing: no burst to count
+    const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(5 + distance, 10));
+    w.unit_for_setup(target)->rounds = 0;
+    w.unit_for_setup(target)->hp = 1000000;
+    // Spotting, not shooting, and off to the side, clear of the misses.
+    const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(5 + distance - 6, 15));
+    w.unit_for_setup(scout)->rounds = 0;
+    issue(sim, attack_order(0, {tank}, target));
+    int hits = 0;
+    int32_t hp = 1000000;
+    auto step = [&] {
+        sim.step();
+        const int32_t now = hp_of(sim, target);
+        if (hp - now >= 100) ++hits;
+        hp = now;
+    };
+    const int32_t rounds = unit_type(UnitTypeId::Tank).rounds_capacity;
+    for (int i = 0; i < 5000 && rounds - sim.world().find_unit(tank)->rounds < shots; ++i) step();
+    for (int i = 0; i < 100; ++i) step();  // the last one lands
+    return {hits, (sim.world().find_unit(tank)->pos - at(5, 10)).length() < Fixed::from_int(1)};
+}
+
+// A tank reaches ten times as far as a rifleman: with someone spotting, it
+// fires 45 tiles out from where it stands. Past 15 tiles its aim falls off:
+// far fewer hits than close in. It sees 12 tiles itself.
+void test_tank_reaches_far() {
+    CHECK(unit_type(UnitTypeId::Tank).weapon.range == unit_type(UnitTypeId::Rifleman).weapon.range * 10);
+    CHECK(unit_type(UnitTypeId::Tank).alt_weapon.range == unit_type(UnitTypeId::Tank).weapon.range);
+    const auto [near, stood_near] = tank_hits(10, 16);
+    const auto [far, stood_far] = tank_hits(45, 16);
+    CHECK(stood_near && stood_far);
+    CHECK(far > 0);
+    CHECK(far * 3 < near * 2);
+
+    // An enemy in the open 11 tiles off: the tank sees him and opens up.
+    TileMap map(40, 20);
+    Simulation sim(1, map);
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+    sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(16, 10));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->last_shot_tick != kNeverFired);
+
+    // New ones stand facing the middle of the map; the hull turns the way it drives.
+    const EntityId east = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(35, 3));
+    CHECK(sim.world().find_unit(east)->hull.x.raw < 0);
+    issue(sim, make_move(1, {east}, 35, 18));
+    for (int i = 0; i < 60; ++i) sim.step();
+    const Unit* driven = sim.world().find_unit(east);
+    CHECK(driven->hull.y.raw > 2 * std::abs(driven->hull.x.raw));  // south
+}
+
+// A grenadier with a spotter by him, 9 tiles from an enemy tank that can't
+// answer, its hull pointing `hull`; hidden in the trees if `in_trees`. The
+// tank's health after each hit (0: knocked out), and whether he fired from
+// where he stands.
+std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, int32_t distance) {
+    TileMap map(40, 20);
+    if (in_trees) {
+        for (int y = 8; y <= 12; ++y) {
+            for (int x = 8; x <= 11; ++x) map.set_terrain(x, y, Terrain::Forest);
+        }
+    }
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId rpg = w.spawn_unit(0, UnitTypeId::Grenadier, at(10, 10));
+    const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(13, 12));  // out of the trees, to see
+    w.unit_for_setup(scout)->rounds = 0;
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(10 + distance, 10));
+    w.unit_for_setup(tank)->rounds = 0;
+    w.unit_for_setup(tank)->hull = hull;
+    issue(sim, attack_order(0, {rpg}, tank));
+    std::vector<int32_t> after;
+    int32_t hp = unit_type(UnitTypeId::Tank).max_hp;
+    for (int i = 0; i < 2000 && hp > 0; ++i) {
+        sim.step();
+        const int32_t now = sim.world().find_unit(tank) ? hp_of(sim, tank) : 0;
+        if (now < hp) after.push_back(std::max(0, now));
+        hp = now;
+    }
+    return {after, (sim.world().find_unit(rpg)->pos - at(10, 10)).length() < Fixed::from_int(1)};
+}
+
+// A grenadier reaches twice as far as a rifleman: he has to catch a tank.
+// Two hits in the front knock it out; from the trees by its road, one into
+// its side does. Against a house a shaped charge punches a hole, no more.
+void test_rpg_catches_tanks() {
+    CHECK(unit_type(UnitTypeId::Grenadier).weapon.range == unit_type(UnitTypeId::Rifleman).weapon.range * 2);
+    const auto [front, stood] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9);  // facing him
+    CHECK(stood);
+    CHECK(front.size() == 2 && front[0] == unit_type(UnitTypeId::Tank).max_hp / 2 && front[1] == 0);
+    const auto [side, stood_side] = rpg_hits({Fixed{}, Fixed::from_int(-1)}, true, 5);  // driving past
+    CHECK(side.size() == 1 && side[0] == 0);
+    const auto [rear, stood_rear] = rpg_hits({Fixed::from_int(1), Fixed{}}, true, 5);  // driving away
+    CHECK(rear.size() == 1 && rear[0] == 0);
+
+    TileMap map(40, 20);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId rpg = w.spawn_unit(0, UnitTypeId::Grenadier, at(10, 5));
+    const EntityId store = w.place_structure(StructureType::Warehouse, 1, {15, 4}, 2, 2);
+    issue(sim, fire_at(0, {rpg}, 16, 5));
+    const int32_t full = sim.world().find_structure(store)->hp;
+    int32_t first = 0;
+    for (int i = 0; i < 1000 && first == 0; ++i) {
+        sim.step();
+        first = full - sim.world().find_structure(store)->hp;
+    }
+    const WeaponDef& rocket = unit_type(UnitTypeId::Grenadier).weapon;
+    CHECK(first == rocket.structure_damage -
+                       structure_type(StructureType::Warehouse).armor[static_cast<size_t>(DamageType::AntiTank)]);
+}
+
 void test_rear_troops_quarry_stone() {
     Simulation sim = economy_sim({}, false);
     issue(sim, gather_at(spawn_workers(sim, 2, 9, 13), 5, 15));
@@ -3212,6 +3332,7 @@ void test_upgrade_effects() {
         const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
         const EntityId target = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(11, 10));
         sim.world_for_setup().unit_for_setup(gun)->round_type = 1;
+        sim.world_for_setup().unit_for_setup(target)->hull = {Fixed::from_int(-1), Fixed{}};  // front on
         sim.schedule(0, make_move(1, {target}, 11, 10));
         for (int i = 0; i < 300; ++i) {
             sim.step();
@@ -3734,13 +3855,14 @@ void test_only_air_defence_reaches_aircraft() {
     // hold fire; a machine gun firing along the path doesn't touch it.
     AirSetup c = air_setup(3);
     World& cw = c.sim.world_for_setup();
-    const EntityId lone_tank = cw.spawn_unit(1, UnitTypeId::Tank, at(20, 22));
+    // Under the path, out of sight of the airfield and of the tank being struck.
+    const EntityId lone_tank = cw.spawn_unit(1, UnitTypeId::Tank, at(48, 22));
     const EntityId gunner = cw.spawn_unit(1, UnitTypeId::MachineGunner, at_half(72, 37));
     const EntityId target = cw.spawn_unit(0, UnitTypeId::Tank, at_half(62, 37));
     cw.unit_for_setup(target)->rounds = 0;  // takes it, can't answer
     issue(c.sim, fire_at(0, {c.plane}, 60, 18));
     bool overhead = false;
-    for (int i = 0; i < 200 && !overhead; ++i) {
+    for (int i = 0; i < 400 && !overhead; ++i) {
         c.sim.step();
         const Unit* p = c.sim.world().find_unit(c.plane);
         overhead = p && (p->pos - c.sim.world().find_unit(lone_tank)->pos).length() < Fixed::from_int(5);
@@ -4269,6 +4391,8 @@ int main() {
     test_ifv_carries_squad();
     test_ifv_bail_out();
     test_quarters_house_the_men();
+    test_tank_reaches_far();
+    test_rpg_catches_tanks();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

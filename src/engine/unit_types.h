@@ -41,6 +41,11 @@ struct WeaponDef {
     // Air defence: can fire at aircraft in the air; `air_only` never at anything else.
     bool anti_air = false;
     bool air_only = false;
+    // Direct fire: beyond this (0: nowhere) the aim gets worse with the
+    // distance, down to kFarAccuracyPercent at the full range.
+    Fixed effective_range{};
+    // Against buildings, if not `damage`: a shaped charge punches a hole, no more.
+    int32_t structure_damage = 0;
 };
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.

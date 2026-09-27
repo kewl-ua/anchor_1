@@ -78,6 +78,13 @@ inline constexpr Tick kDugoutWork = 20 * kTicksPerSecond;
 inline constexpr int32_t kDugoutDiggers = 4;
 inline constexpr int32_t kGrenadeVictims = 3;  // a grenade into a room hurts this many inside
 
+// Direct fire far out: beyond a gun's effective range its accuracy falls,
+// down to this share at the full range (a tank firing 50 tiles out).
+inline constexpr int32_t kFarAccuracyPercent = 35;
+// An anti-tank round into a vehicle's side or rear (more than 60 degrees off
+// the way it faces) does this much of its damage: an ambush from the flank.
+inline constexpr int32_t kFlankHitPercent = 200;
+
 // An IFV carries its squad: foot soldiers get in this close to it, ride
 // unseen and unhurt, and get out at the back. Knocked out with them aboard,
 // they bail out, each losing this share of his health.
@@ -270,6 +277,9 @@ struct Unit {
     FixedVec2 pos{};
     FixedVec2 prev_pos{};                            // before the last tick, for render interpolation
     FixedVec2 facing{Fixed::from_int(1), Fixed{}};  // direction, not normalized
+    // The way the hull points: where it last drove. A turret (`facing`) turns
+    // to its target, the hull doesn't; the flanks are the hull's.
+    FixedVec2 hull{Fixed::from_int(1), Fixed{}};
     bool moving = false;                             // moved during the last tick
 
     Order order = Order::Idle;

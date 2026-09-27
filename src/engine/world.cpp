@@ -43,6 +43,14 @@ Fixed top_height(const Unit& u) { return def_of(u).vehicle ? kVehicleTop : kInfa
 Fixed muzzle_height(const Unit& u) { return def_of(u).vehicle ? kVehicleMuzzle : kInfantryMuzzle; }
 Fixed center_height(const Unit& u) { return def_of(u).vehicle ? kVehicleCenter : kInfantryCenter; }
 
+// A shot from `from` into a vehicle's side or rear: more than 60 degrees off
+// the way its hull points.
+bool from_flank(const Unit& victim, FixedVec2 from) {
+    const FixedVec2 to_shot = from - victim.pos;
+    const Fixed dot = victim.hull.x * to_shot.x + victim.hull.y * to_shot.y;
+    return dot * 2 < victim.hull.length() * to_shot.length();
+}
+
 // Units of `owner` referenced by the command, deduplicated, in id order.
 // Commands arrive from the network, so never trust ids or ownership.
 template <typename FindFn>
@@ -83,6 +91,9 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
         if (auto free = nearest_passable(map_, tile_of(u.pos), class_of(u))) u.pos = tile_center(*free);
     }
     u.prev_pos = u.pos;
+    // It stands facing the middle of the map, where the fighting is.
+    const FixedVec2 middle{Fixed::from_int(map_.width()) / 2, Fixed::from_int(map_.height()) / 2};
+    if (middle != u.pos) u.hull = middle - u.pos;
     // Fresh from the barracks: tanks full, racks full, cargo aboard.
     const UnitTypeDef& def = unit_type(type);
     u.fuel = def.fuel_capacity;
@@ -336,7 +347,8 @@ void World::update_garrisoned(Unit& u) {
 
 void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
     if (weapon.damage_type == DamageType::Bullet) return;  // rifles don't knock down walls
-    const int32_t amount = weapon.damage - structure_type(s.type).armor[static_cast<size_t>(weapon.damage_type)];
+    const int32_t damage = weapon.structure_damage > 0 ? weapon.structure_damage : weapon.damage;
+    const int32_t amount = damage - structure_type(s.type).armor[static_cast<size_t>(weapon.damage_type)];
     if (amount > 0) pending_damage_.push_back({s.id, amount});
 }
 
@@ -841,6 +853,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     const FixedVec2 before = u.pos;
     if (!move_to(u, next)) return Step::Blocked;
     u.moving = true;
+    u.hull = to_point;
     if (thirsty) u.fuel = max(Fixed{}, u.fuel - (u.pos - before).length());
     // Tracks roll barbed wire flat.
     if (move_class(def) == MoveClass::Vehicle) {
@@ -1032,6 +1045,17 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     const Structure* works = structure_at(map_.clamp_tile(tile_of(shooter.pos)));
     int32_t accuracy = weapon.accuracy;
     if (hungry(shooter.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
+    // Far out, past the gun's effective range, the aim falls off and a miss
+    // goes wider, as far off as the distance is.
+    Fixed spread = weapon.miss_spread;
+    if (const Fixed near = weapon.effective_range; near.raw > 0 && weapon.range > near) {
+        const Fixed distance = (aim - shooter.pos).length();
+        const Fixed over = min(distance - near, weapon.range - near);
+        if (over.raw > 0) {
+            accuracy = accuracy * (100 - ((over * (100 - kFarAccuracyPercent)) / (weapon.range - near)).to_int()) / 100;
+            spread = spread * (distance / near);
+        }
+    }
     Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
     // From the upper floors or up a mast: as from higher ground.
     if (const Structure* home = find_structure(shooter.inside);
@@ -1052,8 +1076,8 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
 
     // A miss lands somewhere near the aim point, on the ground.
     if (static_cast<int32_t>(rng_.next_below(100)) >= accuracy) {
-        aim.x += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
-        aim.y += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
+        aim.x += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
+        aim.y += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
         aim = clamp_to_map(aim, Fixed{});
         aim_height = map_.surface_height(aim) + kGroundAim;
     }
@@ -1254,6 +1278,10 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
     const auto type = static_cast<size_t>(weapon.damage_type);
     int32_t amount = std::max(1, weapon.damage - def_of(victim).armor[type]);
     amount = amount * shot.damage_percent / 100;
+    if (weapon.damage_type == DamageType::AntiTank && def_of(victim).vehicle && !shot.blast &&
+        from_flank(victim, shot.from)) {
+        amount = amount * kFlankHitPercent / 100;  // into the side or the rear
+    }
 
     const uint8_t victim_elevation = map_.elevation_at(victim.pos);
     if (!victim.airborne && shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
@@ -1383,6 +1411,7 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.hp));
         mix_vec(u.pos);
         mix_vec(u.facing);
+        mix_vec(u.hull);
         mix(u.moving ? 1 : 0);
         mix(static_cast<uint8_t>(u.order));
         mix_vec(u.order_point);
