@@ -399,6 +399,20 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
+    if (options.scene == "bridge" && options.mode == Options::Mode::Offline) {
+        // Offline: a squad and a tank on the central bridge, on the deck
+        // over the river.
+        const float size = static_cast<float>(world.map().width());
+        const Vector2 c{size * 0.5f, size * 0.5f};
+        engine::World& w = game.world_for_setup();
+        for (int i = 0; i < 4; ++i) {
+            w.spawn_unit(me, engine::UnitTypeId::Rifleman,
+                         render::to_fixed_vec2({c.x - 1.0f + 0.5f * static_cast<float>(i), c.y + 1.0f - 0.5f * static_cast<float>(i)}));
+        }
+        w.spawn_unit(me, engine::UnitTypeId::Tank, render::to_fixed_vec2({c.x + 1.0f, c.y - 1.0f}));
+        return c;
+    }
+
     if (options.scene == "craters" && options.mode == Options::Mode::Offline) {
         // Offline: every gun fires high explosive at the ground ahead, a
         // scout spotting for them: craters of every calibre, fresh.

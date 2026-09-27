@@ -11,6 +11,7 @@
 
 #include "engine/world.h"
 #include "render/camera.h"
+#include "render/iso.h"
 
 namespace render {
 
@@ -142,6 +143,9 @@ private:
     std::vector<uint8_t> crater_seen_;
     uint32_t crater_revision_ = 0;
     void draw_crater(const engine::World& world, int tx, int ty) const;
+    // Each bridge's deck, from its tiles (see iso::Deck).
+    std::vector<std::pair<engine::EntityId, iso::Deck>> bridge_decks_;
+    void draw_bridges(const engine::World& world) const;
     int cache_width_ = 0;
     int cache_height_ = 0;
 

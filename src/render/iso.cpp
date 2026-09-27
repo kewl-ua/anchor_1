@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace render::iso {
 
@@ -18,7 +19,18 @@ float corner_height(const engine::TileMap& map, int cx, int cy) {
     return count ? sum / static_cast<float>(count) : 0.0f;
 }
 
+namespace {
+std::vector<Deck> g_decks;
+}
+
+void set_decks(std::vector<Deck> decks) { g_decks = std::move(decks); }
+
 float surface_height(const engine::TileMap& map, Vector2 ground) {
+    const float u = ground.x + ground.y;
+    const float v = ground.y - ground.x;
+    for (const Deck& d : g_decks) {
+        if (u >= d.u0 && u <= d.u1 && v >= d.v0 && v <= d.v1) return d.height;
+    }
     const float x = std::clamp(ground.x, 0.0f, static_cast<float>(map.width()) - 0.001f);
     const float y = std::clamp(ground.y, 0.0f, static_cast<float>(map.height()) - 0.001f);
     const int tx = static_cast<int>(x);

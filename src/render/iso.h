@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <raylib.h>
 
 #include "engine/terrain.h"
@@ -37,5 +39,17 @@ float surface_height(const engine::TileMap& map, Vector2 ground);
 Vector2 pick_ground(const engine::TileMap& map, Vector2 iso_px);
 // Iso-space rectangle that contains the whole map.
 Rectangle map_bounds(const engine::TileMap& map);
+
+// A bridge's deck: flat at its banks' level over the river, between u0..u1
+// across the bridge and v0..v1 along it (u = x + y, v = y - x: on screen
+// rows and columns). A point on it stands on the deck, not in the water.
+struct Deck {
+    float u0;
+    float u1;
+    float v0;
+    float v1;
+    float height;  // elevation levels
+};
+void set_decks(std::vector<Deck> decks);
 
 }  // namespace render::iso
