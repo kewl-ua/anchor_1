@@ -167,6 +167,13 @@ inline constexpr Tick kSmokeTicks = 20 * kTicksPerSecond;
 // or a signaller on the air.
 inline constexpr Tick kCourierTicks = 3 * kTicksPerSecond;
 inline constexpr Fixed kHeadquartersRelay = Fixed::from_int(12);
+// A cell tower held by our men relays radio this far.
+inline constexpr Fixed kTowerRelay = Fixed::from_int(15);
+// Upper floors and masts: the garrison sees this much farther (tiles), and
+// fires down as from this much higher ground (elevation levels).
+inline constexpr int32_t kApartmentSightBonus = 3;
+inline constexpr int32_t kTowerSightBonus = 8;
+inline constexpr uint8_t kUpperFloorLevels = 2;
 // Two bearings on a radio fix it only if they cross at 20 degrees or more
 // (sin^2 20 = 0.117): from nearly the same spot they only give a direction.
 inline constexpr int64_t kFixSinSqPermille = 117;
@@ -585,6 +592,8 @@ private:
     // Line of fire. try_fire() returns false if a hill or house blocks the
     // line (the caller should move); it holds fire if own troops are in the way.
     FireLine fire_line(const Unit& shooter, FixedVec2 aim, Fixed aim_height) const;
+    // How high above the ground a garrison looks and fires from.
+    Fixed window_height(EntityId structure) const;
     // `own_structure` (the house a garrisoned shooter fires from) doesn't block.
     Obstruction trace_terrain(const FireLine& line, Fixed start, bool roll_foliage, int32_t foliage_percent,
                               EntityId own_structure, Fixed& stop);

@@ -100,6 +100,20 @@ constexpr Segment kDirtRoads[] = {
 // level above the rivers and the gullies, so a gully is a hidden way in.
 constexpr Segment kGullies[] = {{55, 62, 62, 74}, {24, 30, 12, 38}};
 constexpr int32_t kGullyHalfWidth = 1;  // three tiles across
+// A small town by the highway: two five-storey blocks; an industrial zone
+// by the western village: big sheds (spacious: they can be turned into
+// depots); cell towers on the town's edge and on the bridgehead hill.
+constexpr Barn kApartments[] = {{27, 64}, {27, 68}};
+constexpr int32_t kApartmentWidth = 4;
+constexpr int32_t kApartmentDepth = 2;
+struct Shed {
+    int32_t x_pct;
+    int32_t y_pct;
+    int32_t w;
+    int32_t h;
+};
+constexpr Shed kSheds[] = {{11, 56, 5, 2}, {15, 55, 3, 3}};
+constexpr Barn kTowers[] = {{24, 62}, {44, 54}};
 // The old front line: craters in the middle of the map.
 constexpr Rect kShelledBelt = {35, 48, 15, 17};
 
@@ -387,6 +401,24 @@ TileMap make_demo_map(int32_t size) {
             }
         });
     }
+
+    // Buildings standing in a yard; cell towers on a patch of bare ground.
+    auto building = [&](int32_t x0, int32_t y0, int32_t w, int32_t h, Terrain t) {
+        for (int32_t dy = -1; dy <= h; ++dy) {
+            for (int32_t dx = -1; dx <= w; ++dx) {
+                const int32_t x = x0 + dx;
+                const int32_t y = y0 + dy;
+                if (!map.contains_tile(x, y)) continue;
+                const Terrain under = map.terrain(x, y);
+                if (under == Terrain::Water || under == Terrain::Bridge || under == Terrain::Rail) continue;
+                const bool inside = dx >= 0 && dx < w && dy >= 0 && dy < h;
+                p.paint(x, y, inside ? t : Terrain::Urban);
+            }
+        }
+    };
+    for (const Barn& a : kApartments) building(p.at(a.x_pct), p.at(a.y_pct), kApartmentWidth, kApartmentDepth, Terrain::Apartment);
+    for (const Shed& s : kSheds) building(p.at(s.x_pct), p.at(s.y_pct), s.w, s.h, Terrain::House);
+    for (const Barn& t : kTowers) building(p.at(t.x_pct), p.at(t.y_pct), 1, 1, Terrain::Tower);
 
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
 

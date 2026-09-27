@@ -14,6 +14,11 @@ bool World::in_touch(const Unit& u) const {
         if (s.owner != u.owner || s.type != StructureType::Headquarters || !s.built) continue;
         if ((s.center - u.pos).length_sq_raw() <= square_raw(kHeadquartersRelay)) return true;
     }
+    for (const Structure& s : structures_) {
+        // Held: someone of ours up it (an empty tower belongs to nobody).
+        if (s.type != StructureType::CellTower || s.owner != u.owner) continue;
+        if ((s.center - u.pos).length_sq_raw() <= square_raw(kTowerRelay)) return true;
+    }
     for (const Unit& r : units_) {
         const Fixed reach = unit_type(r.type).relay_range;
         if (r.owner != u.owner || r.id == u.id || r.silent || reach.raw == 0) continue;

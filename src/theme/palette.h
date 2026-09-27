@@ -51,6 +51,8 @@ inline Color terrain_color(engine::Terrain t) {
         case engine::Terrain::Swamp: return {64, 86, 68, 255};
         case engine::Terrain::Crater: return {92, 82, 68, 255};
         case engine::Terrain::Riverbed: return {150, 136, 106, 255};
+        case engine::Terrain::Apartment: return {118, 114, 106, 255};
+        case engine::Terrain::Tower: return {104, 106, 102, 255};
         case engine::Terrain::Count: break;
     }
     return MAGENTA;

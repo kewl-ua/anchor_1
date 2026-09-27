@@ -742,6 +742,21 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("A grenade through the entrance hurts those inside.", area.x, line4, kCardFontSize,
                       theme::kWarning);
             return;
+        case engine::StructureType::Apartment:
+            draw_text(TextFormat("Garrison %d / %d, on the upper floors.", static_cast<int>(s.garrison.size()),
+                                 def.capacity),
+                      area.x, line2, kCardFontSize, theme::kText);
+            draw_text(TextFormat("They see %d tiles farther and fire down as from high ground.", engine::kApartmentSightBonus),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("Nothing behind it is seen past it.", area.x, line4, kCardFontSize, theme::kTextDim);
+            return;
+        case engine::StructureType::CellTower:
+            draw_text(TextFormat("A spotter up the mast sees %d tiles farther.", engine::kTowerSightBonus), area.x, line2,
+                      kCardFontSize, theme::kText);
+            draw_text(TextFormat("Held by our men, it relays our radio within %d tiles.", engine::kTowerRelay.to_int()),
+                      area.x, line3, kCardFontSize, theme::kTextDim);
+            draw_text("A few shells bring it down, and him with it.", area.x, line4, kCardFontSize, theme::kWarning);
+            return;
         case engine::StructureType::FuelDepot:
             draw_text("Takes fuel from supply trucks.", area.x, line2, kCardFontSize, theme::kTextDim);
             draw_text(TextFormat("Burns if destroyed: %d%% of the fuel is lost.", engine::kFuelDepotLossPercent),

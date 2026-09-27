@@ -21,5 +21,10 @@ inline constexpr Fixed kRockHeight = Fixed::from_ratio(4, 5);
 inline constexpr Fixed kBuildingHeight = Fixed::from_ratio(3, 2);
 // Garrisoned infantry looks and fires from the windows, a floor up.
 inline constexpr Fixed kWindowHeight = Fixed::from_int(1);
+// A five-storey block: hides whatever is behind it, and its garrison looks
+// and fires from the upper floors. A spotter up a cell tower sees from higher.
+inline constexpr Fixed kApartmentHeight = Fixed::from_int(3);
+inline constexpr Fixed kApartmentWindow = Fixed::from_ratio(5, 2);
+inline constexpr Fixed kTowerEye = Fixed::from_ratio(7, 2);
 
 }  // namespace engine

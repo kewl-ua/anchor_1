@@ -593,6 +593,8 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
 float drawn_height(const engine::Structure& s) {
     switch (s.type) {
         case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 23.0f;
+        case engine::StructureType::Apartment: return 74.0f;
+        case engine::StructureType::CellTower: return 92.0f;
         case engine::StructureType::Pillbox: return 10.0f;
         case engine::StructureType::Bridge:
         case engine::StructureType::Airfield:
@@ -601,6 +603,62 @@ float drawn_height(const engine::Structure& s) {
             if (engine::is_fieldwork(s.type) || engine::is_obstacle(s.type)) return 4.0f;
             return style_of(s.type).wall + 12.0f;  // the roof edge and the flag above it
     }
+}
+
+// A five-storey panel block: rows of windows, a flat roof.
+void draw_apartment(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    constexpr float kWall = 62.0f;
+    constexpr int kFloors = 5;
+    const Rectangle r = footprint(s, 0.06f);
+    const Vector2 ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
+    Vector2 base[4];
+    Vector2 top[4];
+    for (int i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, ground[i]);
+        top[i] = {base[i].x, base[i].y - kWall};
+    }
+    const float soot = 1.0f - 0.45f * damage;
+    const Color wall = shade({186, 180, 166, 255}, soot);
+    fill_quad(base[1], base[2], top[2], top[1], wall);
+    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));
+    fill_quad(top[0], top[1], top[2], top[3], shade({120, 116, 110, 255}, soot));
+    for (int i = 0; i < 4; ++i) DrawLineV(top[i], top[(i + 1) % 4], lit(shade(wall, 0.5f)));
+    for (int side = 1; side <= 2; ++side) {
+        const Vector2 a = base[side];
+        const Vector2 b = base[(side + 1) % 4];
+        const int columns = static_cast<int>(std::hypot(b.x - a.x, b.y - a.y) / 10.0f);
+        for (int floor = 0; floor < kFloors; ++floor) {
+            const float lift = kWall * (0.12f + 0.17f * static_cast<float>(floor));
+            for (int i = 1; i < columns; ++i) {
+                const float t = static_cast<float>(i) / static_cast<float>(columns);
+                const Vector2 p{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+                DrawRectangleRec({p.x - 2.0f, p.y - lift - 6.0f, 4.0f, 5.0f}, lit({58, 66, 74, 255}));
+            }
+        }
+    }
+}
+
+// A lattice mast with antenna panels near the top and a red light.
+void draw_cell_tower(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    constexpr float kHeight = 90.0f;
+    const Vector2 c = to_vector2(s.center);
+    const Vector2 left = on_terrain(map, {c.x - 0.3f, c.y + 0.3f});
+    const Vector2 right = on_terrain(map, {c.x + 0.3f, c.y - 0.3f});
+    const Vector2 foot = on_terrain(map, c);
+    const Vector2 tip{foot.x, foot.y - kHeight};
+    const Color steel = lit(shade({150, 152, 150, 255}, 1.0f - 0.4f * damage));
+    DrawLineEx(left, tip, 1.5f, steel);
+    DrawLineEx(right, tip, 1.5f, steel);
+    for (int i = 0; i < 6; ++i) {  // cross bracing up the mast
+        const float t0 = static_cast<float>(i) / 6.0f;
+        const float t1 = static_cast<float>(i + 1) / 6.0f;
+        DrawLineV(lerp(left, tip, t0), lerp(right, tip, t1), steel);
+        DrawLineV(lerp(right, tip, t0), lerp(left, tip, t1), steel);
+    }
+    for (const float dx : {-4.0f, 0.0f, 4.0f}) {
+        DrawRectangleRec({tip.x + dx - 1.5f, tip.y + 10.0f, 3.0f, 8.0f}, lit({210, 210, 204, 255}));
+    }
+    DrawCircleV(tip, 2.0f, {230, 60, 50, 255});
 }
 
 void draw_building(const engine::TileMap& map, const engine::Structure& s) {
@@ -1135,6 +1193,20 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                                      .damage = damage, .light = light});
                 break;
             }
+            case engine::Terrain::Apartment:
+            case engine::Terrain::Tower: {
+                // One building, drawn once whichever of its tiles is in view.
+                const engine::Structure* s = world.structure_at({tx, ty});
+                if (!s || std::find(barns.begin(), barns.end(), s) != barns.end()) break;
+                barns.push_back(s);
+                float damage = 0.0f;
+                if (state == kInView) {
+                    damage = 1.0f - static_cast<float>(s->hp) / static_cast<float>(engine::structure_type(s->type).max_hp);
+                }
+                const Vector2 c = to_vector2(s->center);
+                drawables.push_back({.depth = c.x + c.y + 1.0f, .barn = s, .damage = damage, .light = light});
+                break;
+            }
             case engine::Terrain::Ruins:
                 drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
                                      .ruins = true, .light = light});
@@ -1159,7 +1231,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     auto is_building = [](const engine::Structure& s) {
         return s.type != engine::StructureType::House && s.type != engine::StructureType::Bridge &&
                !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout &&
-               s.type != engine::StructureType::Airfield;
+               s.type != engine::StructureType::Airfield && s.type != engine::StructureType::Apartment &&
+               s.type != engine::StructureType::CellTower;  // drawn with the ground's tiles, like houses
     };
     for (const engine::Structure& s : world.structures()) {
         if (is_building(s) && s.owner == viewer_) add_building(s, 1.0f);
@@ -1187,7 +1260,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
         } else if (d.barn) {
-            draw_barn(map, *d.barn, d.damage);
+            if (d.barn->type == engine::StructureType::Apartment) {
+                draw_apartment(map, *d.barn, d.damage);
+            } else if (d.barn->type == engine::StructureType::CellTower) {
+                draw_cell_tower(map, *d.barn, d.damage);
+            } else {
+                draw_barn(map, *d.barn, d.damage);
+            }
         } else if (d.house_x >= 0) {
             draw_house(map, d.house_x, d.house_y, d.damage);
         } else {

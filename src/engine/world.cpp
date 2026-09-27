@@ -137,11 +137,16 @@ void World::build_structures() {
     for (int32_t y = 0; y < h; ++y) {
         for (int32_t x = 0; x < w; ++x) {
             const Terrain terrain = map_.terrain(x, y);
-            if ((terrain != Terrain::House && terrain != Terrain::Bridge) || structure_id_at({x, y}) != 0) continue;
+            const bool made = terrain == Terrain::House || terrain == Terrain::Bridge || terrain == Terrain::Apartment ||
+                              terrain == Terrain::Tower;
+            if (!made || structure_id_at({x, y}) != 0) continue;
 
             Structure s;
             s.id = next_id_++;
-            s.type = terrain == Terrain::House ? StructureType::House : StructureType::Bridge;
+            s.type = terrain == Terrain::House       ? StructureType::House
+                     : terrain == Terrain::Bridge    ? StructureType::Bridge
+                     : terrain == Terrain::Apartment ? StructureType::Apartment
+                                                     : StructureType::CellTower;
             s.hp = structure_type(s.type).max_hp;
 
             // Flood fill the patch (4-connected, fixed neighbour order).
@@ -777,8 +782,16 @@ bool World::move_to(Unit& u, FixedVec2 next) {
 
 // --- Line of fire -------------------------------------------------------------
 
+Fixed World::window_height(EntityId structure) const {
+    const Structure* s = find_structure(structure);
+    if (!s) return kWindowHeight;
+    if (s->type == StructureType::Apartment) return kApartmentWindow;
+    if (s->type == StructureType::CellTower) return kTowerEye;
+    return kWindowHeight;
+}
+
 World::FireLine World::fire_line(const Unit& shooter, FixedVec2 aim, Fixed aim_height) const {
-    const Fixed muzzle = shooter.inside ? kWindowHeight : muzzle_height(shooter);
+    const Fixed muzzle = shooter.inside ? window_height(shooter.inside) : muzzle_height(shooter);
     return {shooter.pos, map_.surface_height(shooter.pos) + muzzle, aim, aim_height};
 }
 
@@ -802,6 +815,9 @@ World::Obstruction World::trace_terrain(const FireLine& line, Fixed start, bool 
         stop = t;
         if (h < ground) return Obstruction::Terrain;
         if (terrain == Terrain::House && h < ground + kHouseHeight && structure_id_at(tile) != own_structure) {
+            return Obstruction::Terrain;
+        }
+        if (terrain == Terrain::Apartment && h < ground + kApartmentHeight && structure_id_at(tile) != own_structure) {
             return Obstruction::Terrain;
         }
         if (terrain == Terrain::Building && h < ground + kBuildingHeight && structure_id_at(tile) != own_structure) {
@@ -887,7 +903,7 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const Wea
     }
     // Someone in a house is shot at through the house: aim at the windows.
     Fixed aim_height = map_.surface_height(aim) + kGroundAim;
-    if (target) aim_height = map_.surface_height(aim) + (target->inside ? kWindowHeight : center_height(*target));
+    if (target) aim_height = map_.surface_height(aim) + (target->inside ? window_height(target->inside) : center_height(*target));
     const FireLine line = fire_line(shooter, aim, aim_height);
     const Fixed length = (line.to - line.from).length();
     const Fixed start = length.raw > 0 ? min(Fixed::from_int(1), kMuzzleClearance / length) : Fixed{};
@@ -917,6 +933,11 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     int32_t accuracy = weapon.accuracy;
     if (hungry(shooter.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
     Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
+    // From the upper floors or up a mast: as from higher ground.
+    if (const Structure* home = find_structure(shooter.inside);
+        home && (home->type == StructureType::Apartment || home->type == StructureType::CellTower)) {
+        shot.elevation = static_cast<uint8_t>(shot.elevation + kUpperFloorLevels);
+    }
     if (works && !shooter.inside) {
         if (works->type == StructureType::Foxhole) accuracy = accuracy * kFoxholeAccuracyPercent / 100;
         if (works->type == StructureType::Trench && shooter.still < kSettleTicks &&

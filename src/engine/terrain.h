@@ -37,6 +37,8 @@ enum class Terrain : uint8_t {
     Swamp,     // reeds and bog: men wade, tracks sink, wheels don't get in
     Crater,    // a shell crater: cover for a man lying in it, a hole for a vehicle
     Riverbed,  // the sand and pebbles of a dry riverbed, down in its gully
+    Apartment, // part of a five-storey apartment block (an Apartment structure)
+    Tower,     // the foot of a cell tower (a CellTower structure)
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -83,6 +85,8 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Swamp", {40, 15, 0}},
     {"Crater", {80, 60, 30}},
     {"Dry riverbed", {90, 80, 70}},
+    {"Apartment block", {0, 0, 0}},
+    {"Cell tower", {0, 0, 0}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

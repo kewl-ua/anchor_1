@@ -2028,7 +2028,9 @@ void test_demo_map_relief() {
     CHECK(seen_from(18));
 }
 
-// The demo map has barns near the middle, two a side, well away from both bases.
+// The demo map has spacious buildings well away from both bases: barns near
+// the middle and sheds in the industrial zone, two of each a side; a town
+// with two apartment blocks and two cell towers a side.
 void test_demo_map_has_barns() {
     for (const MapSizePreset& preset : kMapSizes) {
         const World world(1, make_demo_map(preset.tiles));
@@ -2040,7 +2042,14 @@ void test_demo_map_has_barns() {
                 CHECK((s.center - demo_base_position(preset.tiles, p)).length() > Fixed::from_int(preset.tiles / 5));
             }
         }
-        CHECK(barns == 4);
+        CHECK(barns == 8);
+        int blocks = 0;
+        int towers = 0;
+        for (const Structure& s : world.structures()) {
+            blocks += s.type == StructureType::Apartment ? 1 : 0;
+            towers += s.type == StructureType::CellTower ? 1 : 0;
+        }
+        CHECK(blocks == 4 && towers == 4);
     }
 }
 
@@ -2154,6 +2163,84 @@ void test_service_vehicles_on_the_rail_run() {
     CHECK(stock_of(sim, Resource::Ammo) == 0 && sim.world().station_of(0)->cargo[kAmmo] > 0);  // no ammo depot: none moved
     CHECK(sim.world().find_unit(ammo)->carrying == 0 && sim.world().find_unit(ammo)->order == Order::Haul);
     CHECK(stock_of(sim, Resource::Food) == 0);  // nobody hauls food here
+}
+
+// A five-storey block and a cell tower on a plain: the block (8 tiles) at
+// (20..23, 10..11), the tower at (30, 10).
+Simulation town_sim() {
+    TileMap map(48, 24);
+    for (int y = 10; y <= 11; ++y) {
+        for (int x = 20; x <= 23; ++x) map.set_terrain(x, y, Terrain::Apartment);
+    }
+    map.set_terrain(30, 10, Terrain::Tower);
+    return Simulation(1, map);
+}
+
+// The block holds twelve men, hides what's behind it, and its garrison sees
+// farther and fires down as from higher ground.
+void test_apartment_blocks() {
+    Simulation sim = town_sim();
+    const Structure* block = sim.world().structure_at({20, 10});
+    CHECK(block && block->type == StructureType::Apartment && block->tiles.size() == 8);
+    CHECK(structure_type(StructureType::Apartment).capacity == 12);
+
+    // Behind the block, unseen from the other side.
+    const EntityId hider = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(22, 14));
+    sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(22, 7));
+    sim.step();
+    CHECK(!seen(sim, 0, hider));
+
+    // Up the stairs: 7 tiles of sight become 10.
+    auto sees_from = [](bool apartment) {
+        Simulation s = town_sim();
+        const EntityId in = s.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(21, 13));
+        const EntityId far = s.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(22, 20));
+        if (apartment) {
+            issue(s, garrison(0, {in}, s.world().structure_at({20, 10})->id));
+            for (int i = 0; i < 60; ++i) s.step();
+            CHECK(s.world().find_unit(in)->inside != 0);
+        }
+        for (int i = 0; i < 6; ++i) s.step();
+        return seen(s, 0, far);
+    };
+    CHECK(!sees_from(false));
+    CHECK(sees_from(true));
+
+    // Fire from the upper floors hits as from high ground: a rifle's 6 becomes 7.
+    Simulation fire = town_sim();
+    const EntityId shooter = fire.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(21, 13));
+    const EntityId target = fire.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(22, 16));
+    fire.world_for_setup().unit_for_setup(target)->hp = 100000;
+    fire.world_for_setup().unit_for_setup(target)->rounds = 0;
+    issue(fire, garrison(0, {shooter}, fire.world().structure_at({20, 10})->id));
+    for (int i = 0; i < 300; ++i) fire.step();
+    const int32_t lost = 100000 - hp_of(fire, target);
+    CHECK(lost > 0 && lost % 7 == 0);
+}
+
+// A spotter up a cell tower sees far; held by our men it relays our radio.
+void test_cell_towers() {
+    Simulation sim = town_sim();
+    const Structure* tower = sim.world().structure_at({30, 10});
+    CHECK(tower && tower->type == StructureType::CellTower);
+    const EntityId scout = sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at(30, 12));
+    const EntityId far = sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(30, 23));
+    const EntityId other = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(31, 12));
+    issue(sim, garrison(0, {scout, other}, tower->id));  // room for one
+    for (int i = 0; i < 80; ++i) sim.step();
+    CHECK(sim.world().find_unit(scout)->inside == tower->id);
+    CHECK(sim.world().find_unit(other)->inside == 0);
+    CHECK(seen(sim, 0, far));  // 11 tiles off, beyond a scout's 9 on the ground
+
+    Unit* tank = sim.world_for_setup().unit_for_setup(sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(40, 18)));
+    tank->silent = true;
+    CHECK(sim.world().in_touch(*tank));  // 12.8 tiles from the tower: relayed
+    tank->pos = at(46, 22);
+    CHECK(!sim.world().in_touch(*tank));  // 20 tiles: out of reach
+    issue(sim, make_order(CommandType::Move, 0, {scout}, 30, 16));  // down from the mast
+    for (int i = 0; i < 5; ++i) sim.step();
+    tank->pos = at(40, 18);
+    CHECK(!sim.world().in_touch(*tank));  // nobody up there: no relay
 }
 
 // Rear troops and trucks with nothing to do are idle; on the supply run or at work they aren't.
@@ -3825,6 +3912,8 @@ int main() {
     test_trucks_assigned_to_a_depot();
     test_idle_hands();
     test_service_vehicles_on_the_rail_run();
+    test_apartment_blocks();
+    test_cell_towers();
     test_demo_map_has_barns();
     test_demo_map_relief();
     test_take_over_a_village_building();

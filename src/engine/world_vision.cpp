@@ -30,7 +30,10 @@ Fixed eye_height(const UnitTypeDef& def) { return def.vehicle ? kVehicleTop : kI
 
 int32_t structure_sight(const Structure& s) {
     const StructureType role = role_of(s);
-    if (role == StructureType::House || role == StructureType::Bridge) return 0;  // the garrison looks instead
+    if (role == StructureType::House || role == StructureType::Bridge || role == StructureType::Apartment ||
+        role == StructureType::CellTower) {
+        return 0;  // the garrison looks instead
+    }
     if (is_fieldwork(s.type) || s.type == StructureType::Dugout) return 0;           // just holes in the ground
     if (!s.built) return kSiteSight;
     return s.type == StructureType::Headquarters ? kHeadquartersSight : kBuildingSight;
@@ -118,6 +121,9 @@ bool World::line_of_sight(FixedVec2 from, Fixed eye, TilePos target, EntityId ow
                 break;
             case Terrain::House:
                 if (h < ground + kHouseHeight && structure_id_at(tile) != own_structure) return false;
+                break;
+            case Terrain::Apartment:
+                if (h < ground + kApartmentHeight && structure_id_at(tile) != own_structure) return false;
                 break;
             case Terrain::Building:
                 if (h < ground + kBuildingHeight && structure_id_at(tile) != own_structure) return false;
@@ -228,7 +234,10 @@ void World::update_vision() {
         const UnitTypeDef& def = unit_type(u.type);
         if (const Structure* s = find_structure(u.inside)) {
             if (s->type == StructureType::Dugout) continue;  // underground: sees nothing
-            look(u.owner, s->center, def.sight, kWindowHeight, s->id);
+            Fixed sight = def.sight;
+            if (s->type == StructureType::Apartment) sight += Fixed::from_int(kApartmentSightBonus);
+            if (s->type == StructureType::CellTower) sight += Fixed::from_int(kTowerSightBonus);
+            look(u.owner, s->center, sight, window_height(s->id), s->id);
         } else {
             look(u.owner, u.pos, def.sight, u.airborne ? kFlightHeight : eye_height(def), 0);
         }

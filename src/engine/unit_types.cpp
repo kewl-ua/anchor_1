@@ -704,6 +704,10 @@ constexpr StructureDef kStructureTypes[] = {
     {.name = "Airfield", .max_hp = 2500, .armor = {0, 10, 60},
      .buildable = true, .width = 6, .height = 3, .cost = {0, 0, 300, 0, 100}, .build_time = seconds(60),
      .roster = {UnitTypeId::Su25}, .roster_size = 1},
+    // Concrete panels: it takes a lot to bring down, and holds a company.
+    {.name = "Apartment block", .max_hp = 4000, .armor = {0, 40, 90}, .capacity = 12},
+    // A lattice mast: a few shells bring it down, and the spotter with it.
+    {.name = "Cell tower", .max_hp = 300, .armor = {0, 5, 20}, .capacity = 1},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 
