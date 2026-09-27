@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -2485,6 +2486,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         return std::binary_search(selection.begin(), selection.end(), id);
     };
 
+    bake_sprites(world);  // outside the 2D mode: it draws into a texture
     BeginMode2D(camera.camera2d());
     if (grain_.id == 0) {
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
@@ -3991,11 +3993,14 @@ struct Frame {
     Vector2 S;  // a tile to its left, on screen
     Vector2 f;  // ahead, on the ground
     Vector2 s;  // to its left, on the ground
-    Vector2 at(float a, float c, float z = 0.0f) const { return {o.x + F.x * a + S.x * c, o.y + F.y * a + S.y * c - z}; }
+    float k = 1.0f;  // drawn this much bigger than life
+    Vector2 at(float a, float c, float z = 0.0f) const { return {o.x + F.x * a + S.x * c, o.y + F.y * a + S.y * c - z * k}; }
     // Turned to `dir` about the point (a, c) of this frame: a turret on its hull.
     Frame turned(Vector2 dir, float a, float c) const {
         const Vector2 left{-dir.y, dir.x};
-        return {at(a, c), iso_offset(dir), iso_offset(left), dir, left};
+        const Vector2 F2 = iso_offset(dir);
+        const Vector2 S2 = iso_offset(left);
+        return {at(a, c), {F2.x * k, F2.y * k}, {S2.x * k, S2.y * k}, dir, left, k};
     }
     // Whether a side facing `n` (along, across) is turned towards the viewer, and how it's lit.
     Vector2 ground_of(float na, float nc) const { return {f.x * na + s.x * nc, f.y * na + s.y * nc}; }
@@ -4023,7 +4028,7 @@ void solid(const Frame& fr, const Vector2* base, const Vector2* top, int n, floa
         if (len <= 0.0f) continue;
         const Vector2 gn{g.x / len, g.y / len};
         if (gn.x + gn.y <= 0.02f) continue;  // turned away
-        const float k = 0.7f + 0.2f * gn.x - 0.08f * gn.y;
+        const float k = 0.62f + 0.24f * gn.x - 0.1f * gn.y;
         fill_quad(fr.at(base[i].x, base[i].y, z0), fr.at(base[j].x, base[j].y, z0), fr.at(top[j].x, top[j].y, z1),
                   fr.at(top[i].x, top[i].y, z1), shade(color, k));
     }
@@ -4120,6 +4125,10 @@ void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, f
     disc(p1, width * 0.45f, {20, 20, 20, 255});
 }
 
+constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over life size against the tiles
+constexpr float kTankTurretAt = -0.04f;  // a tank's turret ring, along the hull
+constexpr float kTankDeck = 7.5f;        // a tank hull's roof, pixels up
+
 // A vehicle, drawn by hand in its own frame (see Frame): tracks with their
 // road wheels or tyred wheels, the hull with its sloped plates, a turret
 // turned where it aims, the gun; painted olive with the side's colour in it
@@ -4150,6 +4159,16 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     };
 
+    if (type == UnitTypeId::Tank) {
+        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, u.owner);
+        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, u.owner);
+        if (hull_sheet && turret_sheet) {
+            const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
+            draw_sprite(*hull_sheet, fr.o, fr.f, frame);
+            draw_sprite(*turret_sheet, fr.at(kTankTurretAt * kVehicleScale, 0.0f), facing, 0);
+            return;
+        }
+    }
     if (tracked) {
         const bool tank = type == UnitTypeId::Tank;
         const bool ifv = type == UnitTypeId::Ifv;
@@ -4395,6 +4414,289 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     }
     for (const float a : axles) wheel(fr, a, near * 0.17f, 3.4f, tyre, hub);
+}
+
+// --- Tanks in pixel art ------------------------------------------------------------
+
+// A T-72B3, drawn a pixel to a world pixel into a texture, then made pixel
+// art (see pixelate): the hull and the turret apart, so the turret turns on
+// its own.
+// The hull: tracks with six big road wheels, the drive sprocket at the back
+// and the idler at the front, rubber side skirts with explosive reactive
+// armour boxes forward, the sloped glacis with its rows of ERA bricks and
+// the splash guard, the engine deck's grilles, two fuel drums across the
+// back, headlights. `frame` moves the track links on.
+void draw_tank_hull(const Frame& fr, Color paint, int frame) {
+    const Color rubber{40, 40, 36, 255};
+    const Color steel{70, 72, 64, 255};
+    const Color wheel_hub{120, 122, 108, 255};
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    auto side_block = [&](float sgn, float a0, float a1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f) {
+        block(fr, a0, a1, sgn > 0 ? c0 : -c1, sgn > 0 ? c1 : -c0, z0, z1, color, front);
+    };
+    // The far track, the hull, then the near track over it.
+    side_block(-near, -0.5f, 0.48f, 0.18f, 0.29f, 0.0f, 5.5f, rubber, 0.03f);
+    block(fr, -0.48f, 0.36f, -0.2f, 0.2f, 2.0f, kTankDeck, paint);                       // the hull
+    block(fr, 0.36f, 0.53f, -0.2f, 0.2f, 2.0f, kTankDeck, shade(paint, 1.08f), 0.17f);    // the glacis
+    // ERA bricks on the glacis in two rows, the splash guard across it.
+    for (int row = 0; row < 2; ++row) {
+        const float a = 0.39f + 0.07f * static_cast<float>(row);
+        const float z = kTankDeck - 1.4f - 2.2f * static_cast<float>(row);
+        for (int k = 0; k < 5; ++k) {
+            const float c = -0.16f + 0.08f * static_cast<float>(k);
+            fill_quad(fr.at(a, c, z), fr.at(a, c + 0.065f, z), fr.at(a + 0.05f, c + 0.065f, z - 1.6f), fr.at(a + 0.05f, c, z - 1.6f),
+                      shade(paint, 0.9f + 0.08f * static_cast<float>((k + row) % 2)));
+        }
+    }
+    DrawLineV(fr.at(0.36f, -0.2f, kTankDeck), fr.at(0.44f, 0.0f, kTankDeck - 1.5f), lit(shade(paint, 0.7f)));
+    DrawLineV(fr.at(0.44f, 0.0f, kTankDeck - 1.5f), fr.at(0.36f, 0.2f, kTankDeck), lit(shade(paint, 0.7f)));
+    // The engine deck: grilles, the exhaust; the fuel drums lying across the back.
+    for (int k = 0; k < 4; ++k) {
+        const float a = -0.42f + 0.05f * static_cast<float>(k);
+        DrawLineV(fr.at(a, -0.15f, kTankDeck), fr.at(a, 0.15f, kTankDeck), lit(shade(paint, 0.62f)));
+    }
+    for (const float c : {-0.1f, 0.1f}) {
+        block(fr, -0.52f, -0.44f, c - 0.075f, c + 0.075f, kTankDeck - 1.0f, kTankDeck + 3.0f, {88, 88, 70, 255}, 0.015f, 0.015f);
+        DrawLineV(fr.at(-0.48f, c - 0.07f, kTankDeck + 3.0f), fr.at(-0.48f, c + 0.07f, kTankDeck + 3.0f), lit({60, 60, 50, 255}));
+    }
+    for (const float c : {-0.17f, 0.17f}) disc(fr.at(0.46f, c, kTankDeck - 0.5f), 1.0f, {210, 206, 170, 255});  // headlights
+    disc(fr.at(0.3f, 0.0f, kTankDeck), 1.6f, shade(paint, 0.62f));  // the driver's hatch
+    // The unditching log across the back.
+    block(fr, -0.5f, -0.45f, -0.19f, 0.19f, kTankDeck + 3.0f, kTankDeck + 5.0f, {112, 84, 54, 255}, 0.01f, 0.01f);
+    // Stowage boxes on the fenders.
+    for (const float sgn : {-1.0f, 1.0f}) {
+        block(fr, -0.36f, -0.08f, sgn > 0 ? 0.2f : -0.29f, sgn > 0 ? 0.29f : -0.2f, 5.5f, 8.5f, shade(paint, 0.92f));
+    }
+    // The near track: the sprocket, the idler, six road wheels, the links along the top.
+    const float c = near * 0.29f;
+    side_block(near, -0.5f, 0.48f, 0.18f, 0.29f, 0.0f, 5.5f, rubber, 0.03f);
+    wheel(fr, -0.45f, c, 2.3f, steel, {48, 48, 44, 255});
+    wheel(fr, 0.43f, c, 2.1f, steel, {48, 48, 44, 255});
+    for (int i = 0; i < 6; ++i) wheel(fr, -0.35f + 0.135f * static_cast<float>(i), c, 2.7f, {58, 60, 52, 255}, wheel_hub);
+    for (float a = -0.46f + 0.04f * static_cast<float>(frame); a < 0.46f; a += 0.08f) {
+        DrawLineV(fr.at(a, near * 0.19f, 5.5f), fr.at(a, near * 0.29f, 5.5f), lit({26, 26, 24, 255}));
+    }
+    // The side skirt over the upper run, its panels, the ERA boxes forward of it.
+    side_block(near, -0.44f, 0.2f, 0.2f, 0.3f, 4.0f, 6.5f, shade(paint, 0.85f));
+    for (int k = 1; k < 6; ++k) {
+        const float a = -0.44f + 0.64f * static_cast<float>(k) / 6.0f;
+        DrawLineV(fr.at(a, c + near * 0.01f, 4.0f), fr.at(a, c + near * 0.01f, 6.5f), lit(shade(paint, 0.6f)));
+    }
+    for (int k = 0; k < 3; ++k) {
+        const float a = 0.2f + 0.085f * static_cast<float>(k);
+        side_block(near, a, a + 0.08f, 0.2f, 0.31f, 3.5f, 7.0f, shade(paint, 0.95f + 0.07f * static_cast<float>(k % 2)));
+    }
+}
+
+// The side's identification stripe along the near skirt.
+void draw_tank_marking(const Frame& fr, Color team) {
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    const float c = near * 0.305f;
+    fill_quad(fr.at(-0.3f, c, 4.6f), fr.at(0.0f, c, 4.6f), fr.at(0.0f, c, 6.0f), fr.at(-0.3f, c, 6.0f), team);
+}
+
+// The turret: a round cast turret with Kontakt-5 wedges in a chevron on its
+// front, the side's band round it, smoke grenade launchers either side, the
+// commander's cupola with its machine gun, the gunner's sight, a stowage
+// basket at the back, a whip aerial; the 125 mm gun with its thermal
+// sleeve, fume extractor and muzzle.
+void draw_tank_turret(const Frame& tf, Color paint, Color team) {
+    const float z0 = kTankDeck;
+    const bool gun_front = tf.f.x + tf.f.y > 0.0f;
+    auto gun = [&] {
+        const Color tube = shade(paint, 0.6f);
+        barrel(tf, 0.16f, 0.86f, 0.0f, z0 + 3.6f, 0.0f, 1.8f, tube);
+        for (const float a : {0.34f, 0.64f}) {
+            DrawLineEx(tf.at(a - 0.025f, 0.0f, z0 + 3.6f), tf.at(a + 0.025f, 0.0f, z0 + 3.6f), 2.6f, lit(shade(paint, 0.5f)));
+        }
+        DrawLineEx(tf.at(0.47f, 0.0f, z0 + 3.6f), tf.at(0.54f, 0.0f, z0 + 3.6f), 3.2f, lit(shade(paint, 0.72f)));  // the fume extractor
+    };
+    if (!gun_front) gun();
+    block(tf, -0.25f, -0.17f, -0.13f, 0.13f, z0 + 1.5f, z0 + 4.0f, shade(paint, 0.78f));  // the stowage basket
+    round_solid(tf, 0.0f, 0.0f, 0.2f, 0.175f, z0, z0 + 1.6f, shade(paint, 0.95f), 0.0f, 14);
+    round_solid(tf, 0.0f, 0.0f, 0.2f, 0.175f, z0 + 1.6f, z0 + 3.2f, team, 0.01f, 14);
+    round_solid(tf, 0.0f, 0.0f, 0.197f, 0.172f, z0 + 3.2f, z0 + 4.8f, shade(paint, 1.06f), 0.3f, 14);
+    // Kontakt-5 wedges on the front, either side of the gun.
+    for (const float sgn : {-1.0f, 1.0f}) {
+        const Vector2 base[4] = {{0.2f, sgn * 0.035f}, {0.13f, sgn * 0.17f}, {0.02f, sgn * 0.19f}, {0.06f, sgn * 0.035f}};
+        const Vector2 top[4] = {{0.17f, sgn * 0.035f}, {0.1f, sgn * 0.15f}, {0.03f, sgn * 0.16f}, {0.06f, sgn * 0.035f}};
+        if (sgn > 0.0f) {
+            solid(tf, base, top, 4, z0 + 1.2f, z0 + 4.6f, shade(paint, 1.04f));
+        } else {
+            const Vector2 base_r[4] = {base[3], base[2], base[1], base[0]};
+            const Vector2 top_r[4] = {top[3], top[2], top[1], top[0]};
+            solid(tf, base_r, top_r, 4, z0 + 1.2f, z0 + 4.6f, shade(paint, 1.04f));
+        }
+        DrawLineV(tf.at(0.16f, sgn * 0.08f, z0 + 4.6f), tf.at(0.07f, sgn * 0.12f, z0 + 4.6f), lit(shade(paint, 0.7f)));
+        for (int k = 0; k < 3; ++k) {  // smoke grenade launchers
+            disc(tf.at(0.02f - 0.03f * static_cast<float>(k), sgn * 0.19f, z0 + 3.2f), 0.9f, {50, 52, 44, 255});
+        }
+    }
+    round_solid(tf, -0.06f, 0.07f, 0.05f, 0.05f, z0 + 4.8f, z0 + 6.3f, shade(paint, 0.94f), 0.2f, 10);  // the cupola
+    DrawLineEx(tf.at(-0.06f, 0.07f, z0 + 7.0f), tf.at(0.07f, 0.07f, z0 + 7.3f), 1.0f, lit({34, 34, 32, 255}));  // its NSVT
+    block(tf, 0.0f, 0.07f, -0.11f, -0.05f, z0 + 4.8f, z0 + 6.8f, shade(paint, 0.88f));  // the gunner's sight
+    fill_quad(tf.at(0.07f, -0.105f, z0 + 5.3f), tf.at(0.07f, -0.055f, z0 + 5.3f), tf.at(0.07f, -0.055f, z0 + 6.4f),
+              tf.at(0.07f, -0.105f, z0 + 6.4f), {70, 96, 110, 255});
+    const Vector2 aerial = tf.at(-0.13f, -0.09f, z0 + 4.8f);
+    DrawLineV(aerial, {aerial.x - 1.0f, aerial.y - 22.0f}, lit({30, 30, 28, 255}));
+    if (gun_front) gun();
+}
+
+// Makes a drawn frame pixel art: every colour to the nearest of the
+// palette (ramps of the paint, the side's colour, steel, rubber, glass),
+// a line a pixel darker where one part meets another below or to the right,
+// and a dark outline round the whole.
+void pixelate(Image& img, const std::vector<Color>& palette) {
+    auto* px = static_cast<Color*>(img.data);
+    const int w = img.width;
+    const int h = img.height;
+    auto lum = [](Color c) { return 0.3f * c.r + 0.59f * c.g + 0.11f * c.b; };
+    for (int i = 0; i < w * h; ++i) {
+        if (px[i].a < 100) {
+            px[i] = {0, 0, 0, 0};
+            continue;
+        }
+        int best = 0;
+        float best_d = 1e9f;
+        for (size_t k = 0; k < palette.size(); ++k) {
+            const float dr = static_cast<float>(px[i].r - palette[k].r);
+            const float dg = static_cast<float>(px[i].g - palette[k].g);
+            const float db = static_cast<float>(px[i].b - palette[k].b);
+            const float d = dr * dr * 0.3f + dg * dg * 0.59f + db * db * 0.11f;
+            if (d < best_d) {
+                best_d = d;
+                best = static_cast<int>(k);
+            }
+        }
+        px[i] = palette[static_cast<size_t>(best)];
+    }
+    std::vector<Color> out(px, px + w * h);
+    constexpr Color kOutline{20, 20, 14, 255};
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const Color c = px[y * w + x];
+            auto at = [&](int xx, int yy) { return xx < 0 || yy < 0 || xx >= w || yy >= h ? Color{0, 0, 0, 0} : px[yy * w + xx]; };
+            if (c.a == 0) {
+                if (at(x - 1, y).a || at(x + 1, y).a || at(x, y - 1).a || at(x, y + 1).a) out[y * w + x] = kOutline;
+                continue;
+            }
+            if (at(x, y - 1).a == 0) {  // the light catching a top edge
+                out[y * w + x] = shade(c, 1.22f);
+                continue;
+            }
+            const Color r = at(x + 1, y);
+            const Color d = at(x, y + 1);
+            const bool edge = (r.a && lum(c) - lum(r) > 34.0f) || (d.a && lum(c) - lum(d) > 34.0f);
+            if (edge) out[y * w + x] = shade(c, 0.7f);
+        }
+    }
+    std::copy(out.begin(), out.end(), px);
+}
+
+// Where to write the baked sprite sheets to look at them (ANCHOR_DUMP_SPRITES), or null.
+const char* dump_dir() {
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)  // read once, never written
+#endif
+    return std::getenv("ANCHOR_DUMP_SPRITES");
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+}
+
+void WorldRenderer::bake_sprites(const engine::World& world) const {
+    std::vector<engine::PlayerId> owners;
+    for (const engine::Unit& u : world.units()) {
+        if (u.type != engine::UnitTypeId::Tank) continue;
+        if (std::find(owners.begin(), owners.end(), u.owner) == owners.end()) owners.push_back(u.owner);
+    }
+    for (const engine::PlayerId owner : owners) {
+        if (sheets_.count({static_cast<int>(SpritePart::TankHull), owner})) continue;
+        constexpr int kW = 112;
+        constexpr int kH = 84;
+        constexpr int kDirs = 32;
+        const Vector2 origin{56.0f, 56.0f};
+        if (bake_target_.id == 0) {
+            bake_target_ = LoadRenderTexture(kW, kH);
+            SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
+        }
+        const Color team = theme::player_color(owner);
+        const Color paint{100, 104, 58, 255};
+        std::vector<Color> palette;
+        for (const float k : {0.36f, 0.52f, 0.68f, 0.84f, 1.0f, 1.18f, 1.4f}) palette.push_back(shade(paint, k));
+        palette.push_back({112, 84, 54, 255});  // wood
+        palette.push_back({150, 116, 76, 255});
+        for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
+        for (const Color c : {Color{28, 28, 26, 255}, Color{44, 44, 40, 255}, Color{62, 64, 58, 255}, Color{92, 94, 84, 255},
+                              Color{124, 126, 112, 255}, Color{70, 96, 110, 255}, Color{210, 206, 170, 255}}) {
+            palette.push_back(c);
+        }
+        const float light = g_light;
+        g_light = 1.0f;
+        for (const SpritePart part : {SpritePart::TankHull, SpritePart::TankTurret}) {
+            const int frames = part == SpritePart::TankHull ? 2 : 1;
+            Image atlas = GenImageColor(kW * kDirs, kH * frames, {0, 0, 0, 0});
+            for (int frame = 0; frame < frames; ++frame) {
+                for (int d = 0; d < kDirs; ++d) {
+                    const float a = static_cast<float>(d) * 6.2831853f / kDirs;
+                    const Vector2 f{std::cos(a), std::sin(a)};
+                    constexpr float kScale = kVehicleScale;
+                    const Vector2 F = iso_offset(f);
+                    const Vector2 S = iso_offset({-f.y, f.x});
+                    const Frame fr{origin, {F.x * kScale, F.y * kScale}, {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
+                    BeginTextureMode(bake_target_);
+                    ClearBackground({0, 0, 0, 0});
+                    if (part == SpritePart::TankHull) {
+                        draw_tank_hull(fr, paint, frame);
+                        draw_tank_marking(fr, team);
+                    } else {
+                        draw_tank_turret(fr, paint, team);
+                    }
+                    EndTextureMode();
+                    Image img = LoadImageFromTexture(bake_target_.texture);
+                    ImageFlipVertical(&img);
+                    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                    pixelate(img, palette);
+                    ImageDraw(&atlas, img, {0, 0, static_cast<float>(kW), static_cast<float>(kH)},
+                              {static_cast<float>(d * kW), static_cast<float>(frame * kH), static_cast<float>(kW), static_cast<float>(kH)}, WHITE);
+                    UnloadImage(img);
+                }
+            }
+            if (const char* dump = dump_dir()) {  // to look at them, for development
+                ExportImage(atlas, TextFormat("%s/sheet_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(owner)));
+            }
+            SpriteSheet sheet;
+            sheet.atlas = LoadTextureFromImage(atlas);
+            SetTextureFilter(sheet.atlas, TEXTURE_FILTER_POINT);
+            UnloadImage(atlas);
+            sheet.w = kW;
+            sheet.h = kH;
+            sheet.dirs = kDirs;
+            sheet.frames = frames;
+            sheet.origin = origin;
+            sheets_[{static_cast<int>(part), owner}] = sheet;
+        }
+        g_light = light;
+    }
+}
+
+const WorldRenderer::SpriteSheet* WorldRenderer::sheet(SpritePart part, engine::PlayerId owner) const {
+    const auto it = sheets_.find({static_cast<int>(part), owner});
+    return it == sheets_.end() ? nullptr : &it->second;
+}
+
+// A frame of a sprite sheet with its ground point at `at`: the direction
+// nearest to `dir` (on the ground).
+void WorldRenderer::draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame) const {
+    float a = std::atan2(dir.y, dir.x);
+    if (a < 0.0f) a += 6.2831853f;
+    const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(sheet.dirs))) % sheet.dirs;
+    const Rectangle src{static_cast<float>(d * sheet.w), static_cast<float>((frame % sheet.frames) * sheet.h), static_cast<float>(sheet.w),
+                        static_cast<float>(sheet.h)};
+    const Rectangle dst{std::round(at.x - sheet.origin.x), std::round(at.y - sheet.origin.y), static_cast<float>(sheet.w),
+                        static_cast<float>(sheet.h)};
+    DrawTexturePro(sheet.atlas, src, dst, {0.0f, 0.0f}, 0.0f, lit(WHITE));
 }
 
 void WorldRenderer::draw_projectile(const engine::Projectile& p, float alpha) const {

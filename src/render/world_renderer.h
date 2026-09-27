@@ -80,6 +80,22 @@ private:
     // (loaded on the first frame: it needs the window).
     mutable Shader grain_{};
     mutable int grain_zoom_loc_ = -1;
+    // Pixel-art sprites baked from the vehicles' drawing: every direction
+    // (and frame) of a part of a kind of vehicle, for each side's colours.
+    struct SpriteSheet {
+        Texture2D atlas{};
+        int w = 0;
+        int h = 0;
+        int dirs = 0;
+        int frames = 0;
+        Vector2 origin{};  // where the ground point under the part is, in a frame
+    };
+    enum class SpritePart : int { TankHull, TankTurret };
+    mutable std::map<std::pair<int, int>, SpriteSheet> sheets_;  // (part, owner)
+    mutable RenderTexture2D bake_target_{};
+    void bake_sprites(const engine::World& world) const;
+    const SpriteSheet* sheet(SpritePart part, engine::PlayerId owner) const;
+    void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame) const;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;
     static constexpr int kRemembered = 1;  // explored, not in view now
