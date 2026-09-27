@@ -2019,6 +2019,30 @@ void test_tank_indirect_fire() {
     CHECK(t->rounds == unit_type(UnitTypeId::Tank).rounds_capacity - static_cast<int32_t>(shells.size()));
 }
 
+// A self-propelled howitzer: sets up in two seconds, fires like artillery,
+// burns fuel driving and crosses trenches on its tracks.
+void test_self_propelled_howitzer() {
+    const UnitTypeDef& def = unit_type(UnitTypeId::Spg);
+    CHECK(def.deploy_time < unit_type(UnitTypeId::Howitzer).deploy_time);
+    CHECK(move_class(def) == MoveClass::Vehicle);
+    CHECK(can_train(StructureType::ArtilleryBarracks, UnitTypeId::Spg));
+
+    TileMap map(40, 20);
+    for (int y = 0; y < 20; ++y) map.set_terrain(8, y, Terrain::Trench);
+    Simulation sim(1, map);
+    const EntityId spg = sim.world_for_setup().spawn_unit(0, UnitTypeId::Spg, at(5, 10));
+    issue(sim, make_move(0, {spg}, 12, 10));  // over the trench
+    for (int i = 0; i < 300; ++i) sim.step();
+    const Unit* u = sim.world().find_unit(spg);
+    CHECK(u->pos.x > Fixed::from_int(10));
+    CHECK(u->fuel < def.fuel_capacity);
+
+    issue(sim, fire_at(0, {spg}, 30, 10));
+    const std::vector<FixedVec2> shells = shell_landings(sim, static_cast<int>(def.deploy_time + 10));
+    CHECK(shells.size() == 1);  // set up and firing within moments
+    CHECK(sim.world().find_unit(spg)->deployed);
+}
+
 // --- Engineering ---------------------------------------------------------------
 
 // A sapper of `player` lays a mine on (x, y), with the ammunition for it.
@@ -2338,6 +2362,7 @@ int main() {
     test_ags_reaches_into_trenches();
     test_mlrs_salvo();
     test_tank_indirect_fire();
+    test_self_propelled_howitzer();
     test_mines();
     test_sappers_find_and_clear_mines();
     test_wire_and_hedgehogs();

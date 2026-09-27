@@ -189,6 +189,7 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Ags: return "AGS";
         case engine::UnitTypeId::Mlrs: return "MLRS";
         case engine::UnitTypeId::Sapper: return "Sapper";
+        case engine::UnitTypeId::Spg: return "SPG";
         case engine::UnitTypeId::Count: break;
     }
     return "?";

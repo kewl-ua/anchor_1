@@ -256,6 +256,8 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, ahead(13.0f, 0.0f));
         const engine::EntityId ags = w.spawn_unit(me, engine::UnitTypeId::Ags, ahead(11.0f, 2.0f));
         const engine::EntityId mlrs = w.spawn_unit(me, engine::UnitTypeId::Mlrs, ahead(4.0f, -2.0f));
+        const engine::EntityId spg = w.spawn_unit(me, engine::UnitTypeId::Spg, ahead(7.0f, -3.0f));
+        game.submit({.type = engine::CommandType::AttackGround, .units = {spg}, .target = ahead(22.0f, -4.0f)});
         engine::EntityId tank = 0;
         for (const engine::Unit& u : world.units()) {
             if (u.owner == me && u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;

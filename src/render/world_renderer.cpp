@@ -1223,6 +1223,21 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         return;
     }
 
+    if (u.type == engine::UnitTypeId::Spg) {
+        draw_box(map, ground, facing, 0.9f, 0.56f, 6.0f, color);
+        const Vector2 turret{ground.x - facing.x * 0.1f, ground.y - facing.y * 0.1f};
+        draw_box(map, turret, facing, 0.42f, 0.42f, 5.0f, shade(color, 1.1f), 6.0f);
+        const Vector2 hub = on_terrain(map, turret, 9.0f);
+        const float reach = u.deployed ? 0.4f : 0.75f;
+        const Vector2 tip = on_terrain(map, {turret.x + facing.x * reach, turret.y + facing.y * reach},
+                                       u.deployed ? 22.0f : 10.0f);
+        DrawLineEx(hub, tip, 3.0f, shade(color, 0.4f));
+        if (u.camouflaged) {
+            fill_ground_ellipse(on_terrain(map, ground, 10.0f), 0.6f, {64, 88, 52, 170});
+        }
+        return;
+    }
+
     const bool tank = u.type == engine::UnitTypeId::Tank;
     const float length = tank ? 0.95f : 0.85f;
     const float width = tank ? 0.58f : 0.5f;

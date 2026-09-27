@@ -142,6 +142,7 @@ enum class UnitTypeId : uint8_t {
     Ags,         // AGS-17 automatic grenade launcher crew
     Mlrs,        // BM-21 multiple rocket launcher
     Sapper,      // mines, wire, obstacles, pillboxes, demolition
+    Spg,         // 2S1 self-propelled howitzer: artillery on tracks
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
