@@ -35,6 +35,7 @@ enum class StructureType : uint8_t {
     Wire,              // obstacles, one per tile, put up by sappers
     Hedgehogs,
     Pillbox,           // a firing point with a slit facing `facing`
+    SignalsBarracks,   // hires signallers, command vehicles, DF stations
     Count,
 };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
@@ -79,6 +80,7 @@ inline constexpr StructureType kBuildable[] = {
     StructureType::ReconBarracks,
     StructureType::ArtilleryBarracks,
     StructureType::EngineerBarracks,
+    StructureType::SignalsBarracks,
     StructureType::Warehouse,
     StructureType::AmmoDepot,
     StructureType::FuelDepot,

@@ -100,8 +100,10 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
                        .range = tiles(7), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
                        .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1)},
-        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke},
-        .ability_count = 4,
+        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
+                      AbilityId::RadioSilence},
+        .ability_count = 5,
+        .emitter = true,
     },
     {
         .name = "IFV",
@@ -121,8 +123,9 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .fuel_capacity = tiles(180),
         .rounds_capacity = 150,
         .rounds_per_supply = 5,
-        .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade},
-        .ability_count = 2,
+        .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade, AbilityId::RadioSilence},
+        .ability_count = 3,
+        .emitter = true,
     },
     {
         .name = "Rear trooper",
@@ -259,9 +262,10 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .cost = {2, 50, 0, 40, 0},
         .train_time = seconds(20),
         .rounds_capacity = 40,
-        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit},
-        .ability_count = 2,
+        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::RadioSilence},
+        .ability_count = 3,
         .deploy_time = seconds(3),
+        .emitter = true,
     },
     {
         // Far-reaching and blind: it hits what someone else sees for it.
@@ -282,9 +286,10 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .cost = {4, 0, 150, 60, 30},
         .train_time = seconds(40),
         .rounds_capacity = 30,
-        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage},
-        .ability_count = 3,
+        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence},
+        .ability_count = 4,
         .deploy_time = seconds(8),
+        .emitter = true,
     },
     {
         // Grenades lobbed by the belt: over parapets, into trenches.
@@ -325,9 +330,10 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .cost = {3, 0, 180, 80, 40},
         .train_time = seconds(45),
         .rounds_capacity = 40,
-        .abilities = {AbilityId::Deploy, AbilityId::Salvo},
-        .ability_count = 2,
+        .abilities = {AbilityId::Deploy, AbilityId::Salvo, AbilityId::RadioSilence},
+        .ability_count = 3,
         .deploy_time = seconds(5),
+        .emitter = true,
     },
     {
         // Mines, wire, hedgehogs, pillboxes and charges; finds the enemy's mines.
@@ -369,9 +375,78 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .train_time = seconds(40),
         .fuel_capacity = tiles(160),
         .rounds_capacity = 40,
-        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage},
-        .ability_count = 3,
+        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence},
+        .ability_count = 4,
         .deploy_time = seconds(2),
+        .emitter = true,
+    },
+    {
+        // A radio on his back: silent units near him still get their orders at once.
+        .name = "Signaller",
+        .short_name = "SIG",
+        .max_hp = 35,
+        .armor = {0, 0, 45},
+        .speed = tiles_per_second(1),
+        .radius = tiles(1, 5),
+        .sight = tiles(7),
+        .mass = 1,
+        .vehicle = false,
+        .weapon = {.name = "Carbine", .damage = 5, .damage_type = DamageType::Bullet, .range = tiles(4),
+                   .reload = seconds(5, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 60, .miss_spread = tiles(1)},
+        .cost = {1, 25, 10, 10, 0},
+        .train_time = seconds(15),
+        .abilities = {AbilityId::RadioSilence},
+        .ability_count = 1,
+        .emitter = true,
+        .relay_range = tiles(6),
+    },
+    {
+        // A command vehicle bristling with antennas: a relay on wheels, and a
+        // loud one on the air.
+        .name = "Command vehicle",
+        .short_name = "CMD",
+        .max_hp = 180,
+        .armor = {8, 5, 5},
+        .speed = tiles_per_second(7, 5),
+        .radius = tiles(2, 5),
+        .sight = tiles(7),
+        .mass = 14,
+        .vehicle = true,
+        .wheeled = true,
+        .weapon = {.name = "Unarmed", .damage = 0, .damage_type = DamageType::Bullet, .range = tiles(0),
+                   .reload = seconds(1), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 0, .miss_spread = tiles(0)},
+        .cost = {2, 0, 120, 0, 40},
+        .train_time = seconds(30),
+        .fuel_capacity = tiles(200),
+        .abilities = {AbilityId::RadioSilence},
+        .ability_count = 1,
+        .emitter = true,
+        .relay_range = tiles(12),
+    },
+    {
+        // Listens and never talks: a bearing on every radio in reach. Two
+        // stations far enough apart cross their bearings into a fix.
+        .name = "DF station",
+        .short_name = "DF",
+        .max_hp = 100,
+        .armor = {3, 0, 0},
+        .speed = tiles_per_second(8, 5),
+        .radius = tiles(7, 20),
+        .sight = tiles(6),
+        .mass = 10,
+        .vehicle = true,
+        .wheeled = true,
+        .weapon = {.name = "Unarmed", .damage = 0, .damage_type = DamageType::Bullet, .range = tiles(0),
+                   .reload = seconds(1), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 0, .miss_spread = tiles(0)},
+        .cost = {2, 0, 120, 20, 30},
+        .train_time = seconds(30),
+        .abilities = {AbilityId::Deploy},
+        .ability_count = 1,
+        .deploy_time = seconds(5),
+        .df_range = tiles(35),
     },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
@@ -451,6 +526,8 @@ constexpr AbilityDef kAbilities[] = {
      .range = tiles(0), .cooldown = 0},
     {.name = "Smoke screen ahead: nothing is seen through it (needs smoke grenades)", .label = "Smoke",
      .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = seconds(30), .needs = UpgradeId::SmokeGrenades},
+    {.name = "Radio silence: enemy direction finders lose it, but orders come by courier (3 s) away from a relay",
+     .label = "Radio off", .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -511,6 +588,9 @@ constexpr StructureDef kStructureTypes[] = {
     // Logs and earth with a slit facing the enemy: bullets don't get in.
     {.name = "Pillbox", .max_hp = 1500, .armor = {0, 40, 60}, .capacity = 3, .width = 1, .height = 1,
      .cost = {0, 0, 80, 0, 0}, .build_time = seconds(30)},
+    {.name = "Signals barracks", .max_hp = 1000, .armor = {0, 10, 60},
+     .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 120, 0, 0}, .build_time = seconds(25),
+     .roster = {UnitTypeId::Signaler, UnitTypeId::FieldHq, UnitTypeId::DfStation}, .roster_size = 3},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

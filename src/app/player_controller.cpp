@@ -190,6 +190,9 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Mlrs: return "MLRS";
         case engine::UnitTypeId::Sapper: return "Sapper";
         case engine::UnitTypeId::Spg: return "SPG";
+        case engine::UnitTypeId::Signaler: return "Signaller";
+        case engine::UnitTypeId::FieldHq: return "Cmd vehicle";
+        case engine::UnitTypeId::DfStation: return "DF station";
         case engine::UnitTypeId::Count: break;
     }
     return "?";
@@ -202,6 +205,7 @@ const char* building_label(engine::StructureType type) {
         case engine::StructureType::ReconBarracks: return "Recon";
         case engine::StructureType::ArtilleryBarracks: return "Artillery";
         case engine::StructureType::EngineerBarracks: return "Engineers";
+        case engine::StructureType::SignalsBarracks: return "Signals";
         case engine::StructureType::Warehouse: return "Warehouse";
         case engine::StructureType::AmmoDepot: return "Ammo";
         case engine::StructureType::FuelDepot: return "Fuel";
@@ -302,8 +306,10 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         float cooldown = 1.0f;
         bool alt_loaded = false;
         bool deployed = false;
+        bool on_air = false;  // any radio of the selection
         for (engine::EntityId unit_id : selection_) {
             const engine::Unit* u = world.find_unit(unit_id);
+            if (u && engine::unit_type(u->type).emitter && !u->silent) on_air = true;
             if (!u || u->type != *lead) continue;
             alt_loaded = u->round_type == 1;
             deployed = u->deployed;
@@ -318,12 +324,14 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
         if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
         if (id == engine::AbilityId::DigGunPit) label = *lead == engine::UnitTypeId::Mortar ? "Position" : "Capunier";
+        if (id == engine::AbilityId::RadioSilence) label = on_air ? "Radio off" : "Radio on";
         // Skills fill the top row, then the bottom one; the middle row is for orders.
         const size_t slot = i < hud::kGridColumns ? i : 2 * hud::kGridColumns + (i - hud::kGridColumns);
         hud::CommandButton& b = put(slot, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
         b.enabled = !locked;
-        b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded);
+        b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded) ||
+                   (id == engine::AbilityId::RadioSilence && !on_air);
     }
 
     const bool armed = std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
@@ -387,9 +395,19 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             const auto id = static_cast<engine::AbilityId>(cell.param);
             if (engine::ability_def(id).target == engine::AbilityTarget::Instant) {
                 engine::Command cmd{.type = engine::CommandType::Ability, .ability = cell.param};
+                // The radio switch is a toggle: with any radio of the
+                // selection on the air, the ones on it go quiet; otherwise
+                // they all come back on.
+                bool on_air = false;
                 for (engine::EntityId unit_id : selection_) {
                     const engine::Unit* u = world.find_unit(unit_id);
-                    if (u && engine::ability_slot(engine::unit_type(u->type), id) >= 0) cmd.units.push_back(unit_id);
+                    if (u && engine::unit_type(u->type).emitter && !u->silent) on_air = true;
+                }
+                for (engine::EntityId unit_id : selection_) {
+                    const engine::Unit* u = world.find_unit(unit_id);
+                    if (!u || engine::ability_slot(engine::unit_type(u->type), id) < 0) continue;
+                    if (id == engine::AbilityId::RadioSilence && on_air && u->silent) continue;
+                    cmd.units.push_back(unit_id);
                 }
                 if (!cmd.units.empty()) lockstep.submit(std::move(cmd));
             } else {

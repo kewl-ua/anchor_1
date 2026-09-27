@@ -292,7 +292,28 @@ void World::on_map_changed() { field_cache_.clear(); }
 
 // --- Commands ----------------------------------------------------------------
 
+// Units keeping radio silence out of a relay's reach get their part of the
+// order by courier, a while later; the rest at once.
 void World::apply(const Command& cmd) {
+    if (!cmd.units.empty()) {
+        Command now = cmd;
+        Command late = cmd;
+        now.units.clear();
+        late.units.clear();
+        for (EntityId id : cmd.units) {
+            const Unit* u = find_unit(id);
+            (u && u->owner == cmd.player && !in_touch(*u) ? late : now).units.push_back(id);
+        }
+        if (!late.units.empty()) {
+            couriers_.push_back({tick_ + kCourierTicks, std::move(late)});
+            if (!now.units.empty()) deliver(now);
+            return;
+        }
+    }
+    deliver(cmd);
+}
+
+void World::deliver(const Command& cmd) {
     switch (cmd.type) {
         case CommandType::Move: apply_group_move(cmd, Order::Move); break;
         case CommandType::AttackMove: apply_group_move(cmd, Order::AttackMove); break;
@@ -422,6 +443,7 @@ void World::apply_stop(const Command& cmd) {
 // --- Tick --------------------------------------------------------------------
 
 void World::step() {
+    update_couriers();
     update_trains();
     update_production();
     update_upgrades();
@@ -1177,6 +1199,20 @@ uint64_t World::checksum() const {
         mix(u.ranging_shots);
         mix(u.camouflaged ? 1 : 0);
         mix(u.perfect_burst ? 1 : 0);
+        mix(u.silent ? 1 : 0);
+    }
+    for (const Courier& c : couriers_) {
+        mix(c.arrives);
+        mix(static_cast<uint8_t>(c.cmd.type));
+        mix(c.cmd.player);
+        for (EntityId id : c.cmd.units) mix(id);
+        mix_vec(c.cmd.target);
+        mix(c.cmd.target_unit);
+        mix(c.cmd.unit_type);
+        mix(c.cmd.structure_type);
+        mix(c.cmd.ability);
+        mix_vec(c.cmd.target_end);
+        mix(c.cmd.upgrade);
     }
     for (const Mine& m : mines_) {
         mix(m.id);

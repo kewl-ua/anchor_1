@@ -78,6 +78,7 @@ enum class AbilityId : uint8_t {
     BuildPillbox,  // sapper: a firing point facing a direction
     Demolish,      // sapper: a charge against a building or a bridge
     Smoke,         // tank: a smoke screen ahead (needs smoke grenades)
+    RadioSilence,  // radios: go quiet (direction finders lose it, orders come by courier) or back on air
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -138,6 +139,13 @@ struct UnitTypeDef {
     uint8_t ability_count = 0;
     // Guns: set up before firing, packed up before moving, like a trebuchet.
     Tick deploy_time = 0;
+    // Electronic warfare. A radio on the air gives the unit away to enemy
+    // direction finders; keeping silence, it gets its orders by courier
+    // unless a relay (a command vehicle, a signaller) is this close; a DF
+    // station, set up, takes bearings on radios this far off.
+    bool emitter = false;
+    Fixed relay_range{};
+    Fixed df_range{};
 };
 
 enum class UnitTypeId : uint8_t {
@@ -158,6 +166,9 @@ enum class UnitTypeId : uint8_t {
     Mlrs,        // BM-21 multiple rocket launcher
     Sapper,      // mines, wire, obstacles, pillboxes, demolition
     Spg,         // 2S1 self-propelled howitzer: artillery on tracks
+    Signaler,    // a radio on his back: relays orders to silent units nearby
+    FieldHq,     // command vehicle: a relay on wheels
+    DfStation,   // direction finder: bearings on enemy radios; two of them fix one
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

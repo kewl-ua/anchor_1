@@ -81,6 +81,7 @@ add_library(engine STATIC
     src/engine/world_skills.cpp
     src/engine/world_artillery.cpp
     src/engine/world_engineering.cpp
+    src/engine/world_signals.cpp
     src/engine/pathfinding.cpp
     src/engine/simulation.cpp
     src/engine/scenario.cpp

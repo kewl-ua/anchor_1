@@ -166,6 +166,10 @@ void World::apply_ability(const Command& cmd) {
             continue;
         }
 
+        if (id == AbilityId::RadioSilence) {
+            u->silent = !u->silent;  // whatever it was doing, it goes on doing
+            continue;
+        }
         if (id == AbilityId::SwitchAmmo) {
             if (unit_type(u->type).alt_weapon.damage > 0) {
                 // The round in the breech has to come out: a full reload.
@@ -419,6 +423,7 @@ void World::update_ability(Unit& u) {
             return plant_charge(u);
 
         case AbilityId::SwitchAmmo:
+        case AbilityId::RadioSilence:
         case AbilityId::Count:
             break;
     }

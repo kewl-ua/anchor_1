@@ -43,7 +43,8 @@ void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowFi
 }
 
 // Bracketing: each shot at the same target lands closer to it. Scouts
-// looking at the target correct the fire, a step ahead.
+// looking at the target correct the fire, a step ahead, if the corrections
+// get through to the gun (not to one keeping radio silence alone).
 void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32_t wear) {
     const UnitTypeDef& def = unit_type(u.type);
     if (weapon.reload > 0) u.cooldown = weapon.reload;
@@ -54,7 +55,7 @@ void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32
     u.ranging_shots = same ? static_cast<uint8_t>(std::min<int>(3, u.ranging_shots + 1)) : 1;
     u.ranging_point = aim;
     int step = u.ranging_shots;
-    if (spotted_by_scouts(u.owner, aim)) step = std::min(3, step + 1);
+    if (in_touch(u) && spotted_by_scouts(u.owner, aim)) step = std::min(3, step + 1);
     const auto i = static_cast<size_t>(step - 1);
 
     const bool on_target = static_cast<int32_t>(rng_.next_below(100)) < kRangingChance[i];

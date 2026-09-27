@@ -307,6 +307,41 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if (options.scene == "signals" && options.mode == Options::Mode::Offline) {
+        // Offline: two DF stations set up on the flanks cross their bearings
+        // on an enemy command vehicle and tank out front and fix them. Our
+        // tanks go quiet; one out front, beyond any relay, is sent forward
+        // and its order goes by courier (it stays selected). Our command
+        // vehicle relays for those near it.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        for (const float side : {-8.0f, 8.0f}) {
+            w.unit_for_setup(w.spawn_unit(me, engine::UnitTypeId::DfStation, ahead(6.0f, side)))->deployed = true;
+        }
+        const engine::EntityId command = w.spawn_unit(me, engine::UnitTypeId::FieldHq, ahead(14.0f, 6.0f));
+        w.spawn_unit(me, engine::UnitTypeId::Signaler, ahead(15.0f, 4.0f));
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        w.spawn_unit(enemy, engine::UnitTypeId::FieldHq, ahead(20.0f, -3.0f));
+        w.spawn_unit(enemy, engine::UnitTypeId::Tank, ahead(21.0f, 3.0f));
+        std::vector<engine::EntityId> tanks;
+        for (const engine::Unit& u : world.units()) {
+            if (u.owner == me && u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+        }
+        if (tanks.empty()) return std::nullopt;
+        game.submit({.type = engine::CommandType::Ability, .units = tanks,
+                     .ability = static_cast<uint8_t>(engine::AbilityId::RadioSilence)});
+        const engine::EntityId lone = w.spawn_unit(me, engine::UnitTypeId::Tank, ahead(16.0f, -6.0f));
+        w.unit_for_setup(lone)->silent = true;
+        game.submit({.type = engine::CommandType::Move, .units = {lone}, .target = ahead(19.0f, -5.0f)});
+        game.select_units({lone});
+        return render::to_vector2(ahead(12.0f, 0.0f));
+    }
+
     if (options.scene == "build") {
         // Three rear troops put up an infantry barracks in front of the
         // headquarters, two a warehouse towards the woodline.

@@ -68,6 +68,7 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
     std::array<std::vector<EntityId>, 2> guns;
     std::array<EntityId, 2> rockets{};
     std::array<EntityId, 2> sappers{};
+    std::array<EntityId, 2> stations{};
     for (PlayerId p = 0; p < 2; ++p) {
         const FixedVec2 base = demo_base_position(sim.world().map().width(), p);
         const Fixed step = Fixed::from_int(p == 0 ? 8 : -8);
@@ -76,6 +77,9 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
         guns[p].push_back(sim.world_for_setup().spawn_unit(p, UnitTypeId::Ags, {base.x, base.y - step}));
         rockets[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Mlrs, {base.x + step, base.y + step});
         sappers[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::Sapper, {base.x + step, base.y - step});
+        // Each side listens for the other's radios; its rockets keep silence.
+        stations[p] = sim.world_for_setup().spawn_unit(p, UnitTypeId::DfStation, {base.x, base.y + step});
+        sim.world_for_setup().unit_for_setup(rockets[p])->silent = true;
     }
 
     std::vector<uint64_t> checksums;
@@ -83,6 +87,11 @@ std::vector<uint64_t> play_script(uint64_t seed, int ticks) {
         if (t == 0) {
             issue(sim, make_order(CommandType::AttackMove, 0, units_of(sim.world(), 0), center, center));
             issue(sim, make_order(CommandType::AttackMove, 1, units_of(sim.world(), 1), center, center));
+            for (PlayerId p = 0; p < 2; ++p) {
+                Command deploy = make_order(CommandType::Ability, p, {stations[p]}, 0, 0);
+                deploy.ability = static_cast<uint8_t>(AbilityId::Deploy);
+                issue(sim, deploy);
+            }
         }
         if (t == 5) {
             for (PlayerId p = 0; p < 2; ++p) {
@@ -1752,15 +1761,19 @@ bool on_the_spot(FixedVec2 landing, FixedVec2 aim) {
 }
 
 // On-target shells by shot number (1st, 2nd, 3rd) over 100 fire missions of
-// a mortar at (5, 10) on (15, 10); `scout` puts one of ours next to the target.
-std::array<int, 3> bracketing(bool scout) {
+// a mortar at (5, 10) on (15, 10); `scout` puts one of ours next to the
+// target; `silent`, the mortar keeps radio silence, `relay` with a
+// signaller next to it.
+std::array<int, 3> bracketing(bool scout, bool silent = false, bool relay = false) {
     std::array<int, 3> on{};
     for (uint64_t seed = 1; seed <= 100; ++seed) {
         Simulation sim(seed, TileMap(30, 20));
         const EntityId mortar = sim.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
         if (scout) sim.world_for_setup().spawn_unit(0, UnitTypeId::Scout, at(17, 12));
+        sim.world_for_setup().unit_for_setup(mortar)->silent = silent;
+        if (relay) sim.world_for_setup().spawn_unit(0, UnitTypeId::Signaler, at(5, 12));
         sim.schedule(0, fire_at(0, {mortar}, 15, 10));
-        const std::vector<FixedVec2> landings = shell_landings(sim, 300);
+        const std::vector<FixedVec2> landings = shell_landings(sim, 300 + static_cast<int>(kCourierTicks));
         CHECK(landings.size() >= 3);
         for (size_t i = 0; i < 3 && i < landings.size(); ++i) on[i] += on_the_spot(landings[i], at(15, 10)) ? 1 : 0;
     }
@@ -1777,6 +1790,13 @@ void test_artillery_brackets_its_target() {
     const std::array<int, 3> spotted = bracketing(true);
     CHECK(spotted[0] >= 35 && spotted[0] <= 65);
     CHECK(spotted[1] >= 85);
+    // Keeping radio silence alone, the gun doesn't hear the corrections; a
+    // signaller by it passes them on.
+    const std::array<int, 3> silent = bracketing(true, true);
+    CHECK(silent[0] >= 5 && silent[0] <= 30);
+    CHECK(silent[1] >= 35 && silent[1] <= 65);
+    const std::array<int, 3> relayed = bracketing(true, true, true);
+    CHECK(relayed[0] >= 35 && relayed[0] <= 65);
 }
 
 // The same target (a new aim point close to the last) keeps the ranging; a
@@ -2346,6 +2366,145 @@ void test_demolition_charges() {
     CHECK(sim.world().map().terrain(20, 10) == Terrain::Water);
 }
 
+// --- Electronic warfare ------------------------------------------------------
+
+// How many ticks after its order a tank at (10, 10) starts moving; `prepare`
+// sets the scene (radio silence, relays around it).
+template <typename Prepare>
+Tick order_delay(Prepare prepare) {
+    Simulation sim(1, TileMap(60, 30));
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    prepare(sim, tank);
+    sim.step();
+    const Tick ordered = sim.world().tick() + 2;
+    issue(sim, make_move(0, {tank}, 40, 10));
+    const FixedVec2 start = sim.world().find_unit(tank)->pos;
+    for (Tick i = 0; i < kCourierTicks + 40; ++i) {
+        sim.step();
+        if (sim.world().find_unit(tank)->pos != start) return sim.world().tick() - ordered;
+    }
+    return kNeverFired;
+}
+
+// On the air, orders arrive at once; keeping silence, by courier, unless a
+// relay of ours on the air is close: the headquarters, a command vehicle, a
+// signaller.
+void test_couriers_reach_silent_units() {
+    auto silent = [](Simulation& sim, EntityId tank) { sim.world_for_setup().unit_for_setup(tank)->silent = true; };
+    CHECK(order_delay([](Simulation&, EntityId) {}) <= 2);
+    const Tick by_courier = order_delay(silent);
+    CHECK(by_courier >= kCourierTicks && by_courier <= kCourierTicks + 2);
+
+    auto relayed_by = [&](PlayerId owner, UnitTypeId relay, int32_t x, bool quiet) {
+        return order_delay([&](Simulation& sim, EntityId tank) {
+            silent(sim, tank);
+            const EntityId r = sim.world_for_setup().spawn_unit(owner, relay, at(x, 14));
+            sim.world_for_setup().unit_for_setup(r)->silent = quiet;
+        });
+    };
+    CHECK(relayed_by(0, UnitTypeId::FieldHq, 19, false) <= 2);              // 9.8 tiles
+    CHECK(relayed_by(0, UnitTypeId::FieldHq, 25, false) >= kCourierTicks);  // 15.5: too far
+    CHECK(relayed_by(0, UnitTypeId::FieldHq, 19, true) >= kCourierTicks);   // silent itself
+    CHECK(relayed_by(1, UnitTypeId::FieldHq, 19, false) >= kCourierTicks);  // the enemy's
+    CHECK(relayed_by(0, UnitTypeId::Signaler, 13, false) <= 2);             // 5 tiles
+    CHECK(relayed_by(0, UnitTypeId::Signaler, 16, false) >= kCourierTicks); // 7.2
+    auto headquarters_at = [&](int32_t x) {
+        return order_delay([&](Simulation& sim, EntityId tank) {
+            silent(sim, tank);
+            sim.world_for_setup().place_structure(StructureType::Headquarters, 0, {x, 9}, 3, 3);
+        });
+    };
+    CHECK(headquarters_at(18) <= 2);              // its center 9.5 tiles off
+    CHECK(headquarters_at(26) >= kCourierTicks);  // 17.5
+
+    // A group: whoever is on the air goes at once, the silent ones later.
+    Simulation sim(1, TileMap(60, 30));
+    const EntityId quiet = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    const EntityId loud = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(10, 16));
+    silent(sim, quiet);
+    const FixedVec2 quiet_start = sim.world().find_unit(quiet)->pos;
+    const FixedVec2 loud_start = sim.world().find_unit(loud)->pos;
+    issue(sim, make_move(0, {quiet, loud}, 40, 13));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(loud)->pos != loud_start);
+    CHECK(sim.world().find_unit(quiet)->pos == quiet_start);
+    CHECK(sim.world().couriers().size() == 1 && sim.world().couriers().front().cmd.units == std::vector<EntityId>{quiet});
+    for (Tick i = 0; i < kCourierTicks; ++i) sim.step();
+    CHECK(sim.world().find_unit(quiet)->pos != quiet_start);
+    CHECK(sim.world().couriers().empty());
+
+    // Back on the air takes a courier too; going quiet is at once.
+    issue(sim, use_ability(0, {quiet}, AbilityId::RadioSilence, 0, 0));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(quiet)->silent);
+    for (Tick i = 0; i < kCourierTicks; ++i) sim.step();
+    CHECK(!sim.world().find_unit(quiet)->silent);
+    issue(sim, use_ability(0, {quiet, loud}, AbilityId::RadioSilence, 0, 0));
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(quiet)->silent && sim.world().find_unit(loud)->silent);
+}
+
+int bearings_on(const World& w, EntityId target) {
+    return static_cast<int>(std::count_if(w.bearings().begin(), w.bearings().end(),
+                                          [&](const Bearing& b) { return b.target == target; }));
+}
+
+// A DF station, set up, takes a bearing on every enemy radio on the air in
+// its reach. Two bearings crossing at a wide enough angle fix the radio: the
+// enemy is seen there. From nearly the same spot they only give a direction.
+void test_direction_finding() {
+    Simulation sim(1, TileMap(80, 60));
+    World& w = sim.world_for_setup();
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(45, 30));
+    const EntityId rifle = w.spawn_unit(1, UnitTypeId::Rifleman, at(45, 33));  // no radio
+    const EntityId far = w.spawn_unit(1, UnitTypeId::Ifv, at(78, 30));        // out of reach
+    const EntityId a = w.spawn_unit(0, UnitTypeId::DfStation, at(12, 30));    // 33 tiles off
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(sim.world().bearings().empty());  // packed up: deaf
+
+    issue(sim, use_ability(0, {a}, AbilityId::Deploy, 0, 0));
+    for (Tick i = 0; i < unit_type(UnitTypeId::DfStation).deploy_time + 10; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->deployed);
+    CHECK(bearings_on(sim.world(), tank) == 1 && sim.world().bearings().size() == 1);
+    CHECK(sim.world().bearings().front().station == a && sim.world().bearings().front().owner == 0);
+    CHECK(!seen(sim, 0, tank));
+
+    const EntityId b = w.spawn_unit(0, UnitTypeId::DfStation, at(12, 33));  // 5 degrees off a's bearing
+    w.unit_for_setup(b)->deployed = true;
+    for (int i = 0; i < 6; ++i) sim.step();
+    CHECK(bearings_on(sim.world(), tank) == 2);
+    CHECK(!seen(sim, 0, tank));
+
+    const EntityId c = w.spawn_unit(0, UnitTypeId::DfStation, at(45, 5));  // square across
+    w.unit_for_setup(c)->deployed = true;
+    for (int i = 0; i < 6; ++i) sim.step();
+    CHECK(bearings_on(sim.world(), tank) == 3);
+    CHECK(seen(sim, 0, tank));
+    CHECK(!seen(sim, 0, rifle) && bearings_on(sim.world(), rifle) == 0);
+    CHECK(!seen(sim, 0, far) && bearings_on(sim.world(), far) == 0);
+
+    // Radio silence: nothing to take a bearing on.
+    issue(sim, use_ability(1, {tank}, AbilityId::RadioSilence, 0, 0));
+    for (int i = 0; i < 8; ++i) sim.step();
+    CHECK(sim.world().bearings().empty());
+    CHECK(!seen(sim, 0, tank));
+}
+
+// The signals barracks hires the signallers, command vehicles and DF
+// stations. Every radio can go quiet; the DF station has none to switch off.
+void test_signals_barracks() {
+    CHECK(std::find(std::begin(kBuildable), std::end(kBuildable), StructureType::SignalsBarracks) != std::end(kBuildable));
+    for (UnitTypeId t : {UnitTypeId::Signaler, UnitTypeId::FieldHq, UnitTypeId::DfStation}) {
+        CHECK(can_train(StructureType::SignalsBarracks, t));
+    }
+    for (size_t i = 0; i < kUnitTypeCount; ++i) {
+        const UnitTypeDef& def = unit_type(static_cast<UnitTypeId>(i));
+        CHECK(def.emitter == (ability_slot(def, AbilityId::RadioSilence) >= 0));
+        CHECK(def.relay_range.raw == 0 || def.emitter);
+    }
+    CHECK(unit_type(UnitTypeId::Tank).emitter && !unit_type(UnitTypeId::DfStation).emitter);
+}
+
 // --- Terrain and pathfinding -------------------------------------------------
 
 // A forest wall down the middle of the map with one trail through it.
@@ -2502,6 +2661,9 @@ int main() {
     test_wire_and_hedgehogs();
     test_pillbox();
     test_demolition_charges();
+    test_couriers_reach_silent_units();
+    test_direction_finding();
+    test_signals_barracks();
     test_structures_come_from_the_map();
     test_infantry_garrisons_a_house();
     test_garrison_is_safe_from_bullets();

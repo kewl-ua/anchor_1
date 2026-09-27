@@ -680,12 +680,44 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     const char* where = TextFormat("%s   %s, elevation %d", state,
                                    engine::terrain_def(world.map().terrain_at(u.pos)).name,
                                    world.map().elevation_at(u.pos));
-    draw_text(where, area.x, line2 + 2 * step, fitting_font(where, kCardFontSize, area.width), theme::kTextDim);
+    const int where_font = fitting_font(where, kCardFontSize, area.width);
+    draw_text(where, area.x, line2 + 2 * step, where_font, theme::kTextDim);
+    if (def.emitter) {
+        // On the air, or silent: then do orders get through at once?
+        const char* radio = def.relay_range.raw > 0 ? TextFormat("Radio on, relay %d", def.relay_range.to_int()) : "Radio on";
+        Color radio_color = theme::kTextDim;
+        if (u.silent) {
+            radio = world.in_touch(u) ? "Radio off, relayed"
+                                      : TextFormat("Radio off: courier %d s",
+                                                   static_cast<int>(engine::kCourierTicks / engine::kTicksPerSecond));
+            radio_color = theme::kWarning;
+        }
+        for (const engine::Courier& c : world.couriers()) {
+            if (std::find(c.cmd.units.begin(), c.cmd.units.end(), u.id) == c.cmd.units.end()) continue;
+            radio = TextFormat("%s, courier in %d s", u.silent ? "Radio off" : "Radio on",
+                               static_cast<int>((c.arrives - world.tick()) / engine::kTicksPerSecond + 1));
+            break;
+        }
+        const float x = area.x + static_cast<float>(MeasureText(where, where_font)) + 24;
+        draw_text(radio, x, line2 + 2 * step, fitting_font(radio, kCardFontSize, area.x + area.width - x), radio_color);
+    }
 
     // Fuel and rounds, or the cargo of a service vehicle.
     const char* supply = nullptr;
     Color supply_color = theme::kTextDim;
-    if (def.deploy_time > 0) {
+    if (def.df_range.raw > 0) {
+        // A direction finder: set up or not, and how many radios it hears.
+        const char* stance = u.deployed ? "Deployed" : "Packed up: deploy to take bearings";
+        if (u.deploy_work > 0) {
+            stance = TextFormat("%s %d%%", u.deployed ? "Packing up" : "Setting up",
+                                static_cast<int>(u.deploy_work * 100 / def.deploy_time));
+        }
+        int heard = 0;
+        for (const engine::Bearing& b : world.bearings()) heard += b.station == u.id ? 1 : 0;
+        supply = u.deployed ? TextFormat("%s    Bearings on %d radios within %d tiles", stance, heard, def.df_range.to_int())
+                            : stance;
+        if (!u.deployed) supply_color = theme::kWarning;
+    } else if (def.deploy_time > 0) {
         // A gun: set up or not, and how far along the bracketing is.
         const char* stance = u.deployed ? "Deployed" : "Packed up";
         if (u.deploy_work > 0) {
@@ -701,10 +733,14 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                             def.rounds_capacity, ranging);
         if (u.rounds <= 0) supply_color = theme::kDanger;
     } else if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
+        // Only what this one carries: a command vehicle has no rounds, a crew-served weapon no fuel.
         const int fuel = static_cast<int>(to_float(u.fuel));
-        supply = TextFormat("Fuel %d / %d tiles    Rounds %d / %d", fuel, static_cast<int>(to_float(def.fuel_capacity)),
-                            u.rounds, def.rounds_capacity);
-        if (u.fuel.raw <= 0 || u.rounds <= 0) supply_color = theme::kDanger;
+        const bool thirsty = def.fuel_capacity.raw > 0;
+        const bool armed = def.rounds_capacity > 0;
+        supply = TextFormat("%s%s%s", thirsty ? TextFormat("Fuel %d / %d tiles", fuel, def.fuel_capacity.to_int()) : "",
+                            thirsty && armed ? "    " : "",
+                            armed ? TextFormat("Rounds %d / %d", u.rounds, def.rounds_capacity) : "");
+        if ((thirsty && u.fuel.raw <= 0) || (armed && u.rounds <= 0)) supply_color = theme::kDanger;
     } else if (def.supplies != engine::Resource::Count) {
         supply = TextFormat("Aboard: %d / %d %s. Serves our vehicles within %d tiles.", u.carrying,
                             def.cargo_capacity, engine::resource_name(def.supplies),

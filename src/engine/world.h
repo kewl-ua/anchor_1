@@ -146,6 +146,30 @@ inline constexpr Fixed kSmokeRadius = Fixed::from_int(2);
 inline constexpr Fixed kSmokeAhead = Fixed::from_int(2);
 inline constexpr Tick kSmokeTicks = 20 * kTicksPerSecond;
 
+// Electronic warfare. Orders to a unit keeping radio silence go by courier,
+// this long, unless a relay is close: the headquarters, a command vehicle
+// or a signaller on the air.
+inline constexpr Tick kCourierTicks = 3 * kTicksPerSecond;
+inline constexpr Fixed kHeadquartersRelay = Fixed::from_int(12);
+// Two bearings on a radio fix it only if they cross at 20 degrees or more
+// (sin^2 20 = 0.117): from nearly the same spot they only give a direction.
+inline constexpr int64_t kFixSinSqPermille = 117;
+
+// A DF station's bearing on an enemy radio: from the station towards it.
+struct Bearing {
+    PlayerId owner = 0;
+    EntityId station = 0;
+    EntityId target = 0;
+    FixedVec2 from{};
+    FixedVec2 dir{};  // not normalized; only the direction is the player's to know
+};
+
+// An order on its way to a unit keeping radio silence.
+struct Courier {
+    Tick arrives = 0;
+    Command cmd;
+};
+
 // A smoke screen: nothing is seen into or through it.
 struct Smoke {
     FixedVec2 center{};
@@ -235,6 +259,8 @@ struct Unit {
     uint8_t ranging_shots = 0;
     bool camouflaged = false;  // under nets: hidden like in a forest until it moves
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
+
+    bool silent = false;  // radio silence: no bearings on it, orders by courier
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -326,6 +352,16 @@ public:
     bool has_upgrade(PlayerId player, UpgradeId id) const {
         return player < kMaxPlayers && ((upgrades_[player] >> static_cast<uint32_t>(id)) & 1u) != 0;
     }
+    // Electronic warfare. Bearings our DF stations took at the last fog
+    // update; orders still on their way to silent units.
+    const std::vector<Bearing>& bearings() const { return bearings_; }
+    const std::vector<Courier>& couriers() const { return couriers_; }
+    // Whether an order reaches the unit at once: its radio is on, or a
+    // relay of ours is close enough.
+    bool in_touch(const Unit& u) const;
+    // Two of `player`'s bearings on this radio cross at a wide enough angle:
+    // he knows where it is.
+    bool fixed_by(PlayerId player, const Unit& u) const;
     // Setup and tests: an upgrade without the research.
     void upgrade_for_setup(PlayerId player, UpgradeId id) {
         upgrades_[player % kMaxPlayers] |= 1u << static_cast<uint32_t>(id);
@@ -379,6 +415,8 @@ private:
 
     Unit* find_unit_mut(EntityId id);
     Structure* find_structure_mut(EntityId id);
+    // A command carried out now: apply() has already sent couriers off.
+    void deliver(const Command& cmd);
     void apply_group_move(const Command& cmd, Order order);
     void apply_attack(const Command& cmd);
     void apply_attack_ground(const Command& cmd);
@@ -493,6 +531,10 @@ private:
     // Work a job takes a unit, shortened by the owner's upgrades (shovels).
     Tick work_needed(const Unit& u, Tick base) const;
     void find_mines();
+
+    // Electronic warfare (world_signals.cpp).
+    void update_couriers();
+    void take_bearings();
     // The nearest visible enemy a pillbox's garrison can fire at through its slit.
     const Unit* find_enemy_in_slit(Unit& u, const Structure& pillbox);
 
@@ -567,6 +609,8 @@ private:
     std::vector<Charge> charges_;
     std::array<uint32_t, kMaxPlayers> upgrades_{};  // bit per UpgradeId
     std::vector<Smoke> smokes_;
+    std::vector<Bearing> bearings_;  // rebuilt with the fog
+    std::vector<Courier> couriers_;  // in the order they were sent, so they arrive in it
 };
 
 }  // namespace engine

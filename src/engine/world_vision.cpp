@@ -266,6 +266,7 @@ void World::update_vision() {
     // in cover only when he has just fired. Up close, anyone is made out,
     // even through the trees.
     find_mines();
+    take_bearings();
     for (Unit& u : units_) {
         u.seen_by = 0;
         const Structure* house = find_structure(u.inside);
@@ -278,7 +279,7 @@ void World::update_vision() {
             if (!present[p] || player == u.owner) continue;
             // A garrison is where its house is, and the house is seen if any wall is.
             const bool in_view = house ? sees(player, *house) : visible(player, tile);
-            if ((in_view && !hidden) || spotted(player, u) || betrayed(player, u)) {
+            if ((in_view && !hidden) || spotted(player, u) || betrayed(player, u) || fixed_by(player, u)) {
                 u.seen_by = static_cast<uint8_t>(u.seen_by | (1u << p));
             }
         }

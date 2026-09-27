@@ -28,6 +28,10 @@ constexpr float kCircleRy = iso::kTileHeight * 0.5f * 1.41421356f;
 float g_light = 1.0f;
 constexpr float kFogLight = 0.5f;
 
+// Electronic warfare: relays' reach, and bearings of our direction finders.
+constexpr Color kRadioColor = {120, 170, 255, 255};
+constexpr Color kBearingColor = {255, 160, 60, 255};
+
 // How high a unit's body is above its feet, pixels.
 float body_lift(const engine::Unit& u) { return engine::unit_type(u.type).vehicle ? 6.0f : 9.0f; }
 
@@ -816,6 +820,15 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const float radius = to_float(engine::unit_type(u.type).radius) + 0.1f;
         draw_ground_ellipse(on_terrain(map, unit_ground_pos(u, alpha)), radius, theme::kSelection);
         draw_orders(world, u, alpha);
+        const engine::UnitTypeDef& def = engine::unit_type(u.type);
+        if (def.relay_range.raw > 0 && !u.silent) {
+            draw_ground_ellipse(on_terrain(map, unit_ground_pos(u, alpha)), to_float(def.relay_range),
+                                ColorAlpha(kRadioColor, 0.5f));
+        }
+        if (def.df_range.raw > 0 && u.deployed) {
+            draw_ground_ellipse(on_terrain(map, unit_ground_pos(u, alpha)), to_float(def.df_range),
+                                ColorAlpha(kBearingColor, 0.35f));
+        }
     }
     draw_pings(map);
 
@@ -833,6 +846,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                                     on_terrain(map, {r.x + r.width, r.y + r.height}),
                                     on_terrain(map, {r.x, r.y + r.height})};
         for (int i = 0; i < 4; ++i) DrawLineEx(corners[i], corners[(i + 1) % 4], 2.0f, theme::kSelection);
+        if (s->type == engine::StructureType::Headquarters && s->owner == viewer_) {
+            draw_ground_ellipse(on_terrain(map, to_vector2(s->center)), to_float(engine::kHeadquartersRelay),
+                                ColorAlpha(kRadioColor, 0.5f));
+        }
     }
 
     // Units, projectiles, trees and houses back to front, so nearer things
@@ -960,13 +977,42 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
 
     draw_shots(world, alpha);
     draw_blasts(map);
+    for (const engine::Bearing& b : world.bearings()) {
+        if (b.owner != viewer_) continue;
+        const engine::Unit* station = world.find_unit(b.station);
+        if (!station) continue;
+        const Vector2 from = to_vector2(b.from);
+        Vector2 dir = to_vector2(b.dir);
+        const float len = std::hypot(dir.x, dir.y);
+        if (len <= 0.0f) continue;
+        dir = {dir.x / len, dir.y / len};
+        const float reach = to_float(engine::unit_type(station->type).df_range);
+        for (float t = 0.5f; t < reach; t += 1.0f) {  // dashes, a tile apart
+            const Vector2 a{from.x + dir.x * t, from.y + dir.y * t};
+            const Vector2 z{from.x + dir.x * (t + 0.5f), from.y + dir.y * (t + 0.5f)};
+            DrawLineEx(on_terrain(map, a, 2.0f), on_terrain(map, z, 2.0f), 1.5f,
+                       ColorAlpha(kBearingColor, 0.55f * (1.0f - t / reach) + 0.15f));
+        }
+    }
     draw_structure_overlays(world, view);
     for (const Drawable& d : drawables) {
         if (d.unit && !d.unit->inside &&
             (is_selected(d.unit->id) || d.unit->hp < engine::unit_type(d.unit->type).max_hp)) {
             draw_health_bar(map, *d.unit, alpha);
         }
-        if (d.unit && !d.unit->inside && d.unit->owner == viewer_) draw_supply_warning(map, *d.unit, alpha);
+        if (d.unit && !d.unit->inside && d.unit->owner == viewer_) {
+            draw_supply_warning(map, *d.unit, alpha);
+            draw_radio_marks(world, *d.unit, alpha);
+        }
+        if (d.unit && d.unit->owner != viewer_ && world.fixed_by(viewer_, *d.unit)) {
+            // Located by our direction finders: a target marker around it.
+            const Vector2 p = on_terrain(map, unit_ground_pos(*d.unit, alpha));
+            const float r = to_float(engine::unit_type(d.unit->type).radius) + 0.35f;
+            draw_ground_ellipse(p, r, kBearingColor);
+            const float w = r * 32.0f;
+            DrawLineV({p.x - w - 4, p.y}, {p.x - w + 4, p.y}, kBearingColor);
+            DrawLineV({p.x + w - 4, p.y}, {p.x + w + 4, p.y}, kBearingColor);
+        }
     }
 
     EndMode2D();
@@ -1171,6 +1217,12 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
         DrawRectangleRec({hands.x + back.x - 3.5f, hands.y + back.y - 5.0f, 7.0f, 5.0f}, {120, 88, 52, 255});
     }
     DrawRectangleRoundedLines({feet.x - 3.0f, feet.y - 13.0f, 6.0f, 12.0f}, 0.6f, 4, dark);
+    if (u.type == engine::UnitTypeId::Signaler) {
+        const Vector2 back = iso_offset({-facing.x * 0.1f, -facing.y * 0.1f});
+        const Vector2 set{hands.x + back.x, hands.y + back.y - 2.0f};
+        DrawRectangleRec({set.x - 2.5f, set.y - 3.0f, 5.0f, 6.0f}, {70, 78, 58, 255});
+        DrawLineEx({set.x + 1.5f, set.y - 3.0f}, {set.x + 4.0f, set.y - 22.0f}, 1.0f, {30, 30, 30, 255});
+    }
 }
 
 void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground,
@@ -1234,6 +1286,39 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         } else {
             const Vector2 tip = on_terrain(map, {ground.x - facing.x * 0.6f, ground.y - facing.y * 0.6f}, 7.0f);
             DrawLineEx(hub, tip, 3.0f, steel);
+        }
+        return;
+    }
+
+    if (u.type == engine::UnitTypeId::FieldHq) {
+        // A long eight-wheeled hull with a shelter on top and whip antennas.
+        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
+        draw_box(map, ground, facing, 0.9f, 0.46f, 8.0f, color);
+        draw_box(map, at(-0.12f), facing, 0.4f, 0.34f, 5.0f, shade(color, 1.12f), 8.0f);
+        const Vector2 side{-facing.y * 0.16f, facing.x * 0.16f};
+        for (const float k : {-1.0f, 1.0f}) {
+            const Vector2 base{ground.x - facing.x * 0.3f + side.x * k, ground.y - facing.y * 0.3f + side.y * k};
+            const Vector2 foot = on_terrain(map, base, 12.0f);
+            DrawLineEx(foot, {foot.x + 3.0f * k, foot.y - 26.0f}, 1.2f, {30, 32, 30, 255});
+        }
+        return;
+    }
+
+    if (u.type == engine::UnitTypeId::DfStation) {
+        // A truck with a closed van body; set up, a mast with a loop antenna
+        // stands up from it, packed it lies along the roof.
+        auto at = [&](float k) { return Vector2{ground.x + facing.x * k, ground.y + facing.y * k}; };
+        draw_box(map, at(-0.12f), facing, 0.56f, 0.44f, 3.0f, shade(color, 0.7f));
+        draw_box(map, at(-0.12f), facing, 0.52f, 0.4f, 8.0f, {104, 110, 88, 255}, 3.0f);
+        draw_box(map, at(0.3f), facing, 0.26f, 0.42f, 10.0f, color);
+        const Vector2 foot = on_terrain(map, at(-0.2f), 11.0f);
+        const Color mast = {40, 42, 38, 255};
+        if (u.deployed) {
+            const Vector2 top{foot.x, foot.y - 26.0f};
+            DrawLineEx(foot, top, 1.5f, mast);
+            DrawEllipseLines(static_cast<int>(top.x), static_cast<int>(top.y - 4.0f), 3.0f, 5.0f, mast);
+        } else {
+            DrawLineEx(foot, on_terrain(map, at(0.2f), 12.0f), 1.5f, mast);
         }
         return;
     }
@@ -1364,6 +1449,29 @@ void WorldRenderer::draw_supply_warning(const engine::TileMap& map, const engine
         DrawRectangleRec({x, y, 10, 11}, state == 2 ? Color{200, 50, 40, 230} : Color{220, 160, 40, 230});
         DrawText(letter, static_cast<int>(x + 2), static_cast<int>(y + 1), 10, WHITE);
         x += 12.0f;
+    }
+}
+
+// Our own radios: silent ones, and the ones an order is on its way to by courier.
+void WorldRenderer::draw_radio_marks(const engine::World& world, const engine::Unit& u, float alpha) const {
+    const bool courier = std::any_of(world.couriers().begin(), world.couriers().end(), [&](const engine::Courier& c) {
+        return std::find(c.cmd.units.begin(), c.cmd.units.end(), u.id) != c.cmd.units.end();
+    });
+    if (!u.silent && !courier) return;
+    const Vector2 feet = on_terrain(world.map(), unit_ground_pos(u, alpha));
+    float x = feet.x - 29.0f;
+    const float y = feet.y - 30.0f;
+    if (u.silent) {
+        DrawRectangleRec({x, y, 10, 11}, {60, 74, 110, 230});
+        DrawText("R", static_cast<int>(x + 2), static_cast<int>(y + 1), 10, WHITE);
+        DrawLineEx({x, y + 11}, {x + 10, y}, 1.5f, {230, 80, 60, 255});
+        x -= 12.0f;
+    }
+    if (courier) {
+        // An envelope.
+        DrawRectangleRec({x, y + 2, 10, 7}, {236, 228, 204, 240});
+        DrawLineV({x, y + 2}, {x + 5, y + 6}, {110, 90, 60, 255});
+        DrawLineV({x + 10, y + 2}, {x + 5, y + 6}, {110, 90, 60, 255});
     }
 }
 
