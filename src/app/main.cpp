@@ -355,7 +355,8 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     if (options.scene == "artillery" && options.mode == Options::Mode::Offline) {
         // Offline: a howitzer and a mortar join the army; a scout goes out on
         // an observation post; the guns open up on the ground ahead, the
-        // howitzer blind. The howitzer stays selected.
+        // howitzer blind: incendiary from the mortar, white phosphorus from the
+        // howitzer, cluster rockets. The howitzer stays selected.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
         const Vector2 b = render::to_vector2(base);
@@ -376,6 +377,16 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(25.0f, 0.0f)});
         game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(24.0f, 2.0f)});
+        // The mortar with incendiary bombs, the howitzer with white phosphorus, the rockets cluster.
+        w.upgrade_for_setup(me, engine::UpgradeId::IncendiaryShells);
+        w.upgrade_for_setup(me, engine::UpgradeId::PhosphorusShells);
+        w.upgrade_for_setup(me, engine::UpgradeId::ClusterMunitions);
+        auto load = [&](engine::EntityId id, engine::Shell shell) {
+            game.submit({.type = engine::CommandType::LoadShell, .units = {id}, .ability = static_cast<uint8_t>(shell)});
+        };
+        load(mortar, engine::Shell::Incendiary);
+        load(howitzer, engine::Shell::Phosphorus);
+        load(mlrs, engine::Shell::Cluster);
         game.submit({.type = engine::CommandType::AttackGround, .units = {mortar}, .target = ahead(19.0f, -2.0f)});
         auto skill = [&](engine::EntityId id, engine::AbilityId ability, engine::FixedVec2 at) {
             game.submit({.type = engine::CommandType::Ability, .units = {id}, .target = at,

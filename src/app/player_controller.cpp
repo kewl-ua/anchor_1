@@ -379,14 +379,15 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         if (engine::is_shelter(engine::role_of(*s)) && !s->garrison.empty()) {
             put(0, Action::Unload, 0, "Leave", "Everyone out");
         }
-        // Research: the bottom row, whatever this building can research.
-        size_t research_slot = 2 * hud::kGridColumns;
-        for (size_t i = 0; i < engine::kUpgradeCount && research_slot < hud::kGridSlots; ++i) {
+        // Research: the bottom row, then the middle one, whatever this building can research.
+        static constexpr size_t kResearchSlots[] = {10, 11, 12, 13, 14, 5, 6, 7, 8, 9};
+        size_t research = 0;
+        for (size_t i = 0; i < engine::kUpgradeCount && research < std::size(kResearchSlots); ++i) {
             const auto id = static_cast<engine::UpgradeId>(i);
             const engine::UpgradeDef& up = engine::upgrade_def(id);
             if (up.building != engine::role_of(*s)) continue;
             const bool done = world.has_upgrade(player_, id);
-            hud::CommandButton& b = put(research_slot++, Action::Research, static_cast<uint8_t>(i), up.label,
+            hud::CommandButton& b = put(kResearchSlots[research++], Action::Research, static_cast<uint8_t>(i), up.label,
                                         TextFormat("%s: %s%s", up.name, up.description, done ? " (done)" : ""),
                                         done ? engine::Stock{} : up.cost);
             b.enabled = !done && s->research == engine::UpgradeId::Count;
@@ -536,6 +537,33 @@ void PlayerController::rebuild_grid(const engine::World& world) {
                    (id == engine::AbilityId::RadioSilence && !on_air);
     }
 
+    if (def.weapon.indirect) {
+        // The artillery's shells, on the bottom row: HE as standard, the rest once researched.
+        struct Kind {
+            const char* label;
+            const char* tooltip;
+        };
+        static constexpr Kind kShells[] = {
+            {"HE", "High-explosive fragmentation shells (standard)"},
+            {"Cluster", "Cluster: bomblets over a 4x4 area (research in the artillery barracks)"},
+            {"Incend.", "Incendiary: the ground burns 15 s, men and buildings in it too (research in the artillery barracks)"},
+            {"WP", "White phosphorus: a smoke screen 20 s, and it burns (research in the artillery barracks)"},
+        };
+        static_assert(std::size(kShells) == engine::kShellCount);
+        for (size_t k = 0; k < engine::kShellCount; ++k) {
+            const auto shell = static_cast<engine::Shell>(k);
+            bool all = true;
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (u && u->type == *lead) all = all && u->shell == shell;
+            }
+            hud::CommandButton& b = put(2 * hud::kGridColumns + k, Action::Shell, static_cast<uint8_t>(k),
+                                        kShells[k].label, kShells[k].tooltip);
+            b.enabled = shell == engine::Shell::He || world.has_upgrade(player_, engine::shell_upgrade(shell));
+            b.active = all;
+        }
+    }
+
     const bool armed = std::any_of(selection_.begin(), selection_.end(), [&](engine::EntityId id) {
         const engine::Unit* u = world.find_unit(id);
         return u && engine::is_armed(engine::unit_type(u->type));
@@ -608,6 +636,15 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                                                                       : engine::CommandType::Unload,
                                 .target_unit = selected_structure_};
             lockstep.submit(std::move(cmd));
+            break;
+        }
+        case Action::Shell: {
+            engine::Command load{.type = engine::CommandType::LoadShell, .ability = cell.param};
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (u && engine::unit_type(u->type).weapon.indirect) load.units.push_back(id);
+            }
+            if (!load.units.empty()) lockstep.submit(std::move(load));
             break;
         }
         case Action::Dismount: {

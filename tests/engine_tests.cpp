@@ -762,6 +762,12 @@ Command use_ability(PlayerId player, std::vector<EntityId> units, AbilityId abil
     return cmd;
 }
 
+Command load_shell(PlayerId player, std::vector<EntityId> units, Shell shell) {
+    Command cmd{.type = CommandType::LoadShell, .player = player, .units = std::move(units)};
+    cmd.ability = static_cast<uint8_t>(shell);
+    return cmd;
+}
+
 // Switching to armor-piercing takes a reload, then hits armor much harder.
 void test_tank_switches_rounds() {
     auto first_hit = [](bool armor_piercing) {
@@ -1683,7 +1689,7 @@ void test_tank_reaches_far() {
 // tank's health after each hit (0: knocked out), and whether he fired from
 // where he stands.
 std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, int32_t distance,
-                                               bool reactive_armor = false) {
+                                               UpgradeId upgrade = UpgradeId::Count) {
     TileMap map(40, 20);
     if (in_trees) {
         for (int y = 8; y <= 12; ++y) {
@@ -1698,7 +1704,7 @@ std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, in
     const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(10 + distance, 10));
     w.unit_for_setup(tank)->rounds = 0;
     w.unit_for_setup(tank)->hull = hull;
-    if (reactive_armor) w.upgrade_for_setup(1, UpgradeId::ReactiveArmor);
+    if (upgrade != UpgradeId::Count) w.upgrade_for_setup(1, upgrade);
     issue(sim, attack_order(0, {rpg}, tank));
     std::vector<int32_t> after;
     int32_t hp = unit_type(UnitTypeId::Tank).max_hp;
@@ -3375,16 +3381,22 @@ void test_upgrade_effects() {
     };
     CHECK(foxhole_ticks(true) * 100 < foxhole_ticks(false) * 75);
 
+    // Cluster munitions: a rocket launcher loaded with them fires cluster rockets.
     Simulation rockets(1, TileMap(40, 30));
-    rockets.world_for_setup().upgrade_for_setup(0, UpgradeId::ClusterRockets);
+    rockets.world_for_setup().upgrade_for_setup(0, UpgradeId::ClusterMunitions);
     const EntityId mlrs = rockets.world_for_setup().spawn_unit(0, UnitTypeId::Mlrs, at(5, 15));
-    rockets.schedule(0, use_ability(0, {mlrs}, AbilityId::Salvo, 25, 15));
-    Fixed burst{};
-    for (int i = 0; i < 200 && burst.raw == 0; ++i) {
+    rockets.schedule(0, load_shell(0, {mlrs}, Shell::Cluster));
+    rockets.schedule(1, use_ability(0, {mlrs}, AbilityId::Salvo, 25, 15));
+    Shell fired = Shell::He;
+    bool any = false;
+    for (int i = 0; i < 400 && !any; ++i) {
         rockets.step();
-        for (const Projectile& p : rockets.world().projectiles()) burst = p.weapon.splash_radius;
+        for (const Projectile& p : rockets.world().projectiles()) {
+            fired = p.shell;
+            any = true;
+        }
     }
-    CHECK(burst == unit_type(UnitTypeId::Mlrs).weapon.splash_radius * kClusterPercent / 100);
+    CHECK(any && fired == Shell::Cluster);
 }
 
 // --- Engineering ---------------------------------------------------------------
@@ -4308,7 +4320,7 @@ void test_armor_upgrades() {
     const int32_t hit = unit_type(UnitTypeId::Grenadier).weapon.damage -
                         unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::AntiTank)];
     const auto [plain, stood] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9);
-    const auto [era, stood_era] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, true);
+    const auto [era, stood_era] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, UpgradeId::ReactiveArmor);
     CHECK(!plain.empty() && plain[0] == full - hit);
     CHECK(!era.empty() && era[0] == full - hit * kReactiveArmorPercent / 100);
     CHECK(era.size() == 4);  // four hits in the front now
@@ -4577,6 +4589,136 @@ void test_air_upgrades() {
     CHECK(damaged > 0);
 }
 
+// Armor barracks, more: tuned engines drive faster; add-on armor takes a
+// fifth off an HE shell but nothing off an RPG; loading drills reload the
+// tank's and the IFV's guns a quarter faster, nobody else's.
+void test_armor_upgrades_more() {
+    auto drive = [](bool tuned, UnitTypeId type) {
+        Simulation sim(1, TileMap(60, 20));
+        if (tuned) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::TankEngine);
+        const EntityId unit = sim.world_for_setup().spawn_unit(0, type, at(5, 10));
+        issue(sim, make_move(0, {unit}, 55, 10));
+        for (int i = 0; i < 300; ++i) sim.step();
+        return sim.world().find_unit(unit)->pos.x - Fixed::from_int(5);
+    };
+    CHECK(drive(true, UnitTypeId::Tank) * 100 > drive(false, UnitTypeId::Tank) * 110);
+    CHECK(drive(true, UnitTypeId::Ifv) * 100 > drive(false, UnitTypeId::Ifv) * 110);
+    CHECK(drive(true, UnitTypeId::Truck) == drive(false, UnitTypeId::Truck));  // only the armor
+
+    auto he_hit = [](bool screens) {
+        Simulation sim(3, TileMap(30, 20));
+        World& w = sim.world_for_setup();
+        if (screens) w.upgrade_for_setup(1, UpgradeId::AddOnArmor);
+        w.spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+        const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(11, 10));
+        w.unit_for_setup(target)->rounds = 0;
+        for (int i = 0; i < 400 && hp_of(sim, target) == unit_type(UnitTypeId::Tank).max_hp; ++i) sim.step();
+        return unit_type(UnitTypeId::Tank).max_hp - hp_of(sim, target);
+    };
+    const int32_t he = unit_type(UnitTypeId::Tank).weapon.damage -
+                       unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::Explosive)];
+    CHECK(he_hit(false) == he);
+    CHECK(he_hit(true) == he * kAddOnArmorPercent / 100);
+    const auto [rpg, stood] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, UpgradeId::AddOnArmor);
+    CHECK(!rpg.empty() && rpg[0] == unit_type(UnitTypeId::Tank).max_hp / 2);  // the screens don't stop a rocket
+
+    auto reload = [](bool drills, UnitTypeId type) {
+        Simulation sim(1, TileMap(30, 20));
+        World& w = sim.world_for_setup();
+        if (drills) w.upgrade_for_setup(0, UpgradeId::FastReload);
+        const EntityId gun = w.spawn_unit(0, type, at(5, 10));
+        const EntityId target = w.spawn_unit(1, UnitTypeId::Truck, at(9, 10));
+        w.unit_for_setup(target)->hp = 100000;
+        for (int i = 0; i < 300; ++i) {
+            sim.step();
+            if (sim.world().find_unit(gun)->last_shot_tick != kNeverFired) return sim.world().find_unit(gun)->cooldown;
+        }
+        return Tick{0};
+    };
+    CHECK(reload(false, UnitTypeId::Tank) == unit_type(UnitTypeId::Tank).weapon.reload);
+    CHECK(reload(true, UnitTypeId::Tank) == unit_type(UnitTypeId::Tank).weapon.reload * kFastReloadPercent / 100);
+    CHECK(reload(true, UnitTypeId::Ifv) == unit_type(UnitTypeId::Ifv).weapon.reload * kFastReloadPercent / 100);
+    CHECK(reload(true, UnitTypeId::Rifleman) == unit_type(UnitTypeId::Rifleman).weapon.reload);
+}
+
+// A mortar at (5, 10) loaded with `shell` fires at (18, 10) until the first
+// one lands; then it has nothing left to fire. The impacts of that landing.
+struct ShellRun {
+    Simulation sim;
+    EntityId gun = 0;
+    std::vector<Impact> landing;
+};
+
+ShellRun fire_shell(Shell shell) {
+    ShellRun r{Simulation(2, TileMap(40, 20))};
+    World& w = r.sim.world_for_setup();
+    if (shell != Shell::He) w.upgrade_for_setup(0, shell_upgrade(shell));
+    r.gun = w.spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    r.sim.schedule(0, load_shell(0, {r.gun}, shell));
+    r.sim.schedule(1, fire_at(0, {r.gun}, 18, 10));
+    for (int i = 0; i < 1000 && r.landing.empty(); ++i) {
+        const Tick now = r.sim.world().tick();
+        r.sim.step();
+        for (const Impact& imp : r.sim.world().recent_impacts()) {
+            if (imp.tick == now && imp.shooter_type == UnitTypeId::Mortar) r.landing.push_back(imp);
+        }
+    }
+    w.unit_for_setup(r.gun)->rounds = 0;
+    return r;
+}
+
+// Artillery shells: HE until the others are researched. Cluster: bomblets
+// over an area. Incendiary: the ground burns; a man in it burns every second,
+// a building too, until it burns out. White phosphorus: a smoke screen, and
+// a smaller fire under it.
+void test_artillery_shells() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(5, 14));
+    issue(sim, load_shell(0, {mortar}, Shell::Cluster));
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(mortar)->shell == Shell::He);  // not researched
+    w.upgrade_for_setup(0, UpgradeId::ClusterMunitions);
+    issue(sim, load_shell(0, {mortar, tank}, Shell::Cluster));
+    issue(sim, load_shell(1, {mortar}, Shell::He));  // not the enemy's to load
+    for (int i = 0; i < 3; ++i) sim.step();
+    CHECK(sim.world().find_unit(mortar)->shell == Shell::Cluster);
+    CHECK(sim.world().find_unit(tank)->shell == Shell::He);  // not a gun
+
+    ShellRun cluster = fire_shell(Shell::Cluster);
+    CHECK(cluster.landing.size() == static_cast<size_t>(kClusterBomblets));
+    bool spread = false;
+    for (const Impact& imp : cluster.landing) spread = spread || imp.pos != cluster.landing.front().pos;
+    CHECK(spread);
+    CHECK(cluster.sim.world().fires().empty());
+    CHECK(fire_shell(Shell::He).landing.size() == 1);
+
+    ShellRun fire = fire_shell(Shell::Incendiary);
+    CHECK(fire.landing.size() == 1 && fire.sim.world().fires().size() == 1);
+    const Fire burning = fire.sim.world().fires().front();
+    CHECK(burning.radius == kFireRadius);
+    World& fw = fire.sim.world_for_setup();
+    const EntityId man = fw.spawn_unit(1, UnitTypeId::Rifleman, burning.center);
+    const TilePos t = tile_of(burning.center);
+    const EntityId store = fw.place_structure(StructureType::Warehouse, 1, {t.x + 1, t.y}, 2, 2);
+    const int32_t store_hp = fire.sim.world().find_structure(store)->hp;
+    for (Tick i = 0; i < 3 * kFireInterval; ++i) fire.sim.step();
+    const int32_t burnt = unit_type(UnitTypeId::Rifleman).max_hp - hp_of(fire.sim, man);
+    CHECK(burnt >= 2 * kFireBurn && burnt % kFireBurn == 0);
+    const int32_t charred = store_hp - fire.sim.world().find_structure(store)->hp;
+    CHECK(charred >= 2 * kFireStructureBurn && charred % kFireStructureBurn == 0);
+    for (Tick i = 0; i < kFireTicks; ++i) fire.sim.step();
+    CHECK(fire.sim.world().fires().empty());
+    const int32_t out = fire.sim.world().find_structure(store)->hp;
+    for (Tick i = 0; i < 3 * kFireInterval; ++i) fire.sim.step();
+    CHECK(fire.sim.world().find_structure(store)->hp == out);  // burnt out
+
+    ShellRun wp = fire_shell(Shell::Phosphorus);
+    CHECK(wp.sim.world().smokes().size() == 1 && wp.sim.world().smokes().front().radius == kPhosphorusSmokeRadius);
+    CHECK(wp.sim.world().fires().size() == 1 && wp.sim.world().fires().front().radius == kPhosphorusFireRadius);
+}
+
 // Every upgrade is researched in its own building, as offered on its card.
 void test_upgrade_buildings() {
     const std::pair<UpgradeId, StructureType> where[] = {
@@ -4595,16 +4737,22 @@ void test_upgrade_buildings() {
         {UpgradeId::MastAntennas, StructureType::SignalsBarracks},
         {UpgradeId::RadarTracking, StructureType::AirDefenseBarracks},
         {UpgradeId::CockpitArmor, StructureType::Airfield},
+        {UpgradeId::TankEngine, StructureType::ArmorBarracks},
+        {UpgradeId::AddOnArmor, StructureType::ArmorBarracks},
+        {UpgradeId::FastReload, StructureType::ArmorBarracks},
+        {UpgradeId::ClusterMunitions, StructureType::ArtilleryBarracks},
+        {UpgradeId::IncendiaryShells, StructureType::ArtilleryBarracks},
+        {UpgradeId::PhosphorusShells, StructureType::ArtilleryBarracks},
     };
     for (const auto& [id, building] : where) CHECK(upgrade_def(id).building == building);
     CHECK(ability_def(AbilityId::Atgm).needs == UpgradeId::Atgm);
-    // No building offers more than its bottom row holds.
+    // No building offers more than its bottom and middle rows hold.
     for (size_t b = 0; b < kStructureTypeCount; ++b) {
         int offered = 0;
         for (size_t i = 0; i < kUpgradeCount; ++i) {
             offered += upgrade_def(static_cast<UpgradeId>(i)).building == static_cast<StructureType>(b) ? 1 : 0;
         }
-        CHECK(offered <= 5);
+        CHECK(offered <= 10);
     }
 }
 
@@ -4714,6 +4862,8 @@ int main() {
     test_signals_upgrades();
     test_air_upgrades();
     test_upgrade_buildings();
+    test_armor_upgrades_more();
+    test_artillery_shells();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

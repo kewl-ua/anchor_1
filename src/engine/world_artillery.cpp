@@ -8,6 +8,7 @@
 namespace engine {
 
 // Drilled crews do it in half the time.
+// (The HUD shows it too.)
 Tick World::deploy_ticks(const Unit& u) const {
     const UnitTypeDef& def = unit_type(u.type);
     if (def.weapon.indirect && has_upgrade(u.owner, UpgradeId::DrilledCrews)) {
@@ -68,7 +69,7 @@ void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowFi
 // get through to the gun (not to one keeping radio silence alone).
 void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32_t wear) {
     const UnitTypeDef& def = unit_type(u.type);
-    if (weapon.reload > 0) u.cooldown = weapon.reload;
+    if (weapon.reload > 0) u.cooldown = reload_ticks(u, weapon);
     if (def.rounds_capacity > 0) u.rounds = std::max(0, u.rounds - 1);
     if (wear > 0) u.hp = std::max(1, u.hp - wear);  // the barrel, not the crew
 
@@ -86,7 +87,7 @@ void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32
     landing.y += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
     WeaponDef shell = weapon;
     shell.accuracy = 100;  // where it lands is decided above
-    lob(u, landing, shell, false);
+    lob(u, landing, shell, false, u.shell);
 }
 
 bool World::spotted_by_scouts(PlayerId player, FixedVec2 point) const {

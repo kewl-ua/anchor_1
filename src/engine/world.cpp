@@ -107,6 +107,27 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
     return u.id;
 }
 
+Tick World::reload_ticks(const Unit& u, const WeaponDef& weapon) const {
+    if ((u.type == UnitTypeId::Tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::FastReload)) {
+        return weapon.reload * kFastReloadPercent / 100;
+    }
+    return weapon.reload;
+}
+
+// The artillery loads a kind of shell for its next shots: HE, or one
+// researched; the one in the breech comes out first (a reload).
+void World::apply_load_shell(const Command& cmd) {
+    if (cmd.ability >= kShellCount) return;
+    const auto shell = static_cast<Shell>(cmd.ability);
+    if (shell != Shell::He && !has_upgrade(cmd.player, shell_upgrade(shell))) return;
+    for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
+        const WeaponDef& gun = def_of(*u).weapon;
+        if (!gun.indirect || u->shell == shell) continue;
+        u->shell = shell;
+        u->cooldown = std::max(u->cooldown, gun.reload);
+    }
+}
+
 int32_t World::rack(const Unit& u) const {
     const UnitTypeDef& def = def_of(u);
     if (can_ride(def) && has_upgrade(u.owner, UpgradeId::LoadVests)) return def.rounds_capacity * kVestRoundsPercent / 100;
@@ -444,6 +465,7 @@ void World::deliver(const Command& cmd) {
         case CommandType::Supply: apply_supply(cmd); break;
         case CommandType::Collect: apply_collect(cmd); break;
         case CommandType::Rally: apply_rally(cmd); break;
+        case CommandType::LoadShell: apply_load_shell(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -585,6 +607,7 @@ void World::step() {
     for (Unit& u : units_) u.still = u.moving ? 0 : u.still + 1;
     // Projectiles move after units, so a unit that stepped aside this tick dodges.
     move_projectiles();
+    update_fires();
     apply_damage_and_remove_dead();
 
     separate_units();
@@ -851,6 +874,9 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
     if (hungry(u.owner)) speed = speed * kHungrySpeedPercent / 100;
+    if ((u.type == UnitTypeId::Tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::TankEngine)) {
+        speed = speed * kEnginePercent / 100;
+    }
     // Terrain slows down (forest for infantry, villages for vehicles...).
     const int32_t terrain_pct = map_.speed_percent(tile_of(u.pos), move_class(def));
     if (terrain_pct > 0) speed = speed * terrain_pct / 100;
@@ -1016,7 +1042,7 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const Wea
     if (spends && out_of_rounds(shooter)) return true;
     // A grenade launcher lobs over whatever is in between.
     if (weapon.lobbed) {
-        if (weapon.reload > 0) shooter.cooldown = weapon.reload;
+        if (weapon.reload > 0) shooter.cooldown = reload_ticks(shooter, weapon);
         if (spends && def_of(shooter).rounds_capacity > 0) shooter.rounds = std::max(0, shooter.rounds - 1);
         lob(shooter, aim, weapon, false);
         return true;
@@ -1044,7 +1070,7 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const Wea
 void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends,
                  EntityId guide) {
     // A skill's own gun (a coaxial machine gun) doesn't reload the main one.
-    if (weapon.reload > 0) shooter.cooldown = weapon.reload;
+    if (weapon.reload > 0) shooter.cooldown = reload_ticks(shooter, weapon);
     if (spends && def_of(shooter).rounds_capacity > 0) shooter.rounds = std::max(0, shooter.rounds - 1);
 
     // Where he fires from: a foxhole spoils the aim; small arms fired from a
@@ -1178,11 +1204,106 @@ void World::move_projectiles() {
     std::erase_if(projectiles_, [](const Projectile& p) { return p.id == 0; });
 }
 
+// Explosions don't care whose units they hit (except the gun that fired). A
+// garrison is safe behind its walls until the house falls.
+void World::splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon) {
+    const Shot blast{at, p.shooter_elevation, true, p.lobbed};
+    for (const Unit& u : units_) {
+        if (u.id == p.shooter || u.inside || u.airborne) continue;
+        if ((u.pos - at).length_sq_raw() <= square_raw(weapon.splash_radius + def_of(u).radius)) {
+            hurt(u, weapon, blast);
+        }
+    }
+    // Every house or bridge the blast reaches takes it once.
+    std::vector<EntityId> hit;
+    const int32_t reach = weapon.splash_radius.to_int() + 1;
+    const TilePos c = tile_of(at);
+    for (int32_t y = c.y - reach; y <= c.y + reach; ++y) {
+        for (int32_t x = c.x - reach; x <= c.x + reach; ++x) {
+            const EntityId id = structure_id_at({x, y});
+            if (id == 0 || std::find(hit.begin(), hit.end(), id) != hit.end()) continue;
+            if (distance_sq_to_tile({x, y}, at) > square_raw(weapon.splash_radius)) continue;
+            hit.push_back(id);
+            hurt_structure(*find_structure(id), weapon);
+        }
+    }
+}
+
+// The artillery's other shells. Cluster: it opens over the target and the
+// bomblets land around it. Incendiary: a weaker burst, and the ground burns.
+// Phosphorus: a small burst, a smoke screen, and it burns under it.
+void World::burst_shell(const Projectile& p, FixedVec2 at) {
+    WeaponDef weapon = p.weapon;
+    auto blow = [&](FixedVec2 spot) {
+        recent_impacts_.push_back({tick_, spot, p.shooter_type, weapon.splash_radius});
+        maybe_crater(spot, weapon);
+        splash(p, spot, weapon);
+    };
+    switch (p.shell) {
+        case Shell::Cluster:
+            weapon.damage = weapon.damage * kBombletPercent / 100;
+            weapon.splash_radius = kBombletSplash;
+            for (int i = 0; i < kClusterBomblets; ++i) {
+                FixedVec2 spot = at;
+                spot.x += Fixed::from_raw(rng_.next_range(-kClusterScatter.raw, kClusterScatter.raw));
+                spot.y += Fixed::from_raw(rng_.next_range(-kClusterScatter.raw, kClusterScatter.raw));
+                blow(clamp_to_map(spot, Fixed{}));
+            }
+            return;
+        case Shell::Incendiary:
+            weapon.damage = weapon.damage * kIncendiaryBurstPercent / 100;
+            blow(at);
+            fires_.push_back({at, kFireRadius, tick_ + kFireTicks, p.owner});
+            return;
+        case Shell::Phosphorus:
+            weapon.damage = weapon.damage * kPhosphorusBurstPercent / 100;
+            blow(at);
+            smokes_.push_back({at, kPhosphorusSmokeRadius, tick_ + kPhosphorusSmokeTicks});
+            sight_cache_.clear();  // lines of sight have changed
+            fires_.push_back({at, kPhosphorusFireRadius, tick_ + kPhosphorusFireTicks, p.owner});
+            return;
+        default:
+            return;
+    }
+}
+
+// What burns: houses, blocks, buildings; not a bridge, not field works.
+static bool burns(StructureType type) {
+    return type != StructureType::Bridge && !is_fieldwork(type) && !is_obstacle(type) &&
+           type != StructureType::Dugout && type != StructureType::Pillbox && type != StructureType::Airfield;
+}
+
+// Fires burn out. While they burn, every second whoever is in one (a
+// garrison in a house it reaches too) takes the flames, and every building
+// it reaches loses some.
+void World::update_fires() {
+    std::erase_if(fires_, [&](const Fire& f) { return tick_ >= f.until; });
+    if (fires_.empty() || tick_ % kFireInterval != 0) return;
+    static constexpr WeaponDef kFlames{.name = "Fire", .damage = kFireBurn, .damage_type = DamageType::Explosive,
+                                       .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
+                                       .splash_radius = Fixed{}, .accuracy = 100, .miss_spread = Fixed{}};
+    for (const Fire& f : fires_) {
+        const Shot flames{f.center, map_.elevation_at(f.center), true, true};
+        for (const Unit& u : units_) {
+            if (u.airborne || u.hp <= 0) continue;
+            const Structure* home = find_structure(u.inside);
+            if (u.inside && !home) continue;  // aboard an IFV
+            const uint64_t d = home ? distance_sq_to(*home, f.center) : (u.pos - f.center).length_sq_raw();
+            if (d <= square_raw(f.radius + def_of(u).radius)) hurt(u, kFlames, flames);
+        }
+        for (const Structure& s : structures_) {
+            if (burns(s.type) && distance_sq_to(s, f.center) <= square_raw(f.radius)) {
+                pending_damage_.push_back({s.id, kFireStructureBurn});
+            }
+        }
+    }
+}
+
 void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
+    if (p.shell != Shell::He) return burst_shell(p, at);
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
     maybe_crater(at, weapon);
-    const Shot blast{at, p.shooter_elevation, true, p.lobbed};
 
     // Thrown in through a window or down a dugout's entrance: the men
     // inside take it, walls or not.
@@ -1196,30 +1317,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         }
     }
 
-    if (weapon.splash_radius.raw > 0) {
-        // Explosions don't care whose units they hit (except the gun that
-        // fired). A garrison is safe behind its walls until the house falls.
-        for (const Unit& u : units_) {
-            if (u.id == p.shooter || u.inside || u.airborne) continue;
-            if ((u.pos - at).length_sq_raw() <= square_raw(weapon.splash_radius + def_of(u).radius)) {
-                hurt(u, weapon, blast);
-            }
-        }
-        // Every house or bridge the blast reaches takes it once.
-        std::vector<EntityId> hit;
-        const int32_t reach = weapon.splash_radius.to_int() + 1;
-        const TilePos c = tile_of(at);
-        for (int32_t y = c.y - reach; y <= c.y + reach; ++y) {
-            for (int32_t x = c.x - reach; x <= c.x + reach; ++x) {
-                const EntityId id = structure_id_at({x, y});
-                if (id == 0 || std::find(hit.begin(), hit.end(), id) != hit.end()) continue;
-                if (distance_sq_to_tile({x, y}, at) > square_raw(weapon.splash_radius)) continue;
-                hit.push_back(id);
-                hurt_structure(*find_structure(id), weapon);
-            }
-        }
-        return;
-    }
+    if (weapon.splash_radius.raw > 0) return splash(p, at, weapon);
 
     if (!direct_hit) {
         // A rocket into a wall hits the house; into a pillbox, through the slit, the gunner too.
@@ -1310,6 +1408,10 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         amount = amount * kBodyArmorPercent / 100;
     }
     if (vd.aircraft && has_upgrade(victim.owner, UpgradeId::CockpitArmor)) amount = amount * kCockpitArmorPercent / 100;
+    if ((victim.type == UnitTypeId::Tank || victim.type == UnitTypeId::Ifv) &&
+        weapon.damage_type != DamageType::AntiTank && has_upgrade(victim.owner, UpgradeId::AddOnArmor)) {
+        amount = amount * kAddOnArmorPercent / 100;
+    }
 
     const uint8_t victim_elevation = map_.elevation_at(victim.pos);
     if (!victim.airborne && shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
@@ -1469,6 +1571,7 @@ uint64_t World::checksum() const {
         mix_fixed(u.fuel);
         mix(static_cast<uint32_t>(u.rounds));
         mix(static_cast<uint32_t>(u.missiles));
+        mix(static_cast<uint8_t>(u.shell));
         mix(u.deployed ? 1 : 0);
         mix(u.deploy_work);
         mix_vec(u.ranging_point);
@@ -1512,6 +1615,12 @@ uint64_t World::checksum() const {
         mix_vec(s.center);
         mix_fixed(s.radius);
         mix(s.clears);
+    }
+    for (const Fire& f : fires_) {
+        mix_vec(f.center);
+        mix_fixed(f.radius);
+        mix(f.until);
+        mix(f.owner);
     }
     for (const Structure& s : structures_) {
         mix(static_cast<uint8_t>(s.research));

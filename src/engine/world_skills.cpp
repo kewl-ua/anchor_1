@@ -197,7 +197,7 @@ void World::apply_ability(const Command& cmd) {
             if (unit_type(u->type).alt_weapon.damage > 0) {
                 // The round in the breech has to come out: a full reload.
                 u->round_type ^= 1;
-                u->cooldown = std::max(u->cooldown, weapon_of(*u).reload);
+                u->cooldown = std::max(u->cooldown, reload_ticks(*u, weapon_of(*u)));
             }
             continue;
         }
@@ -407,11 +407,8 @@ void World::update_ability(Unit& u) {
             aim.y += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
             WeaponDef rocket = weapon;
             rocket.accuracy = 100;
-            if (has_upgrade(u.owner, UpgradeId::ClusterRockets)) {
-                rocket.splash_radius = rocket.splash_radius * kClusterPercent / 100;
-            }
             u.rounds = std::max(0, u.rounds - 1);
-            lob(u, aim, rocket, false);
+            lob(u, aim, rocket, false, u.shell);
             if (out_of_rounds(u)) finish_ability(u);
             return;
         }
@@ -749,7 +746,7 @@ void World::serve(Unit& u) {
     hand_over(u, *neediest);
 }
 
-void World::lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters) {
+void World::lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters, Shell shell) {
     if (rng_.next_below(100) >= weapon.accuracy) {
         aim.x += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
         aim.y += Fixed::from_raw(rng_.next_range(-weapon.miss_spread.raw, weapon.miss_spread.raw));
@@ -770,6 +767,7 @@ void World::lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool ente
     p.weapon = weapon;
     p.lobbed = true;
     p.enters = enters;
+    p.shell = shell;
     shooter.last_shot_tick = tick_;
     shooter.last_shot_at = aim;
     projectiles_.push_back(p);

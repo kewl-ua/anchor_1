@@ -99,6 +99,9 @@ inline constexpr int32_t kSecureBearings = 3;          // bearings the enemy nee
 inline constexpr int32_t kMastRelayPercent = 150;      // of the headquarters' and a command vehicle's relay
 inline constexpr int32_t kRadarTrackingPercent = 120;  // of air defence accuracy
 inline constexpr int32_t kCockpitArmorPercent = 70;    // of the damage an attack aircraft takes
+inline constexpr int32_t kEnginePercent = 115;         // of a tank's, an IFV's speed
+inline constexpr int32_t kAddOnArmorPercent = 80;      // of shells, fragments, bullets a tank or an IFV takes
+inline constexpr int32_t kFastReloadPercent = 75;      // of a tank's, an IFV's reload
 
 // An IFV carries its squad: foot soldiers get in this close to it, ride
 // unseen and unhurt, and get out at the back. Knocked out with them aboard,
@@ -183,7 +186,28 @@ inline constexpr Fixed kSapperRetreat = Fixed::from_int(3);  // runs this far fr
 inline constexpr Tick kTrainIntervalUpgraded = 45 * kTicksPerSecond;
 inline constexpr int32_t kTrainCapacityPercent = 150;
 inline constexpr int32_t kSabotPercent = 130;
-inline constexpr int32_t kClusterPercent = 150;
+// Artillery shells. Cluster: the shell opens over the target and this many
+// bomblets land within kClusterScatter of it, each a small burst of this
+// share of the shell's damage.
+inline constexpr int32_t kClusterBomblets = 8;
+inline constexpr Fixed kClusterScatter = Fixed::from_int(2);
+inline constexpr int32_t kBombletPercent = 40;
+inline constexpr Fixed kBombletSplash = Fixed::from_ratio(3, 5);
+// Incendiary: a burst of this share, and the ground burns: every second
+// whoever is in the fire (a garrison in a house it reaches too) takes the
+// flames, and a building it reaches loses this much.
+inline constexpr int32_t kIncendiaryBurstPercent = 50;
+inline constexpr Fixed kFireRadius = Fixed::from_ratio(3, 2);
+inline constexpr Tick kFireTicks = 15 * kTicksPerSecond;
+inline constexpr Tick kFireInterval = kTicksPerSecond;
+inline constexpr int32_t kFireBurn = 6;
+inline constexpr int32_t kFireStructureBurn = 20;
+// White phosphorus: a small burst, a smoke screen, a smaller fire.
+inline constexpr int32_t kPhosphorusBurstPercent = 30;
+inline constexpr Fixed kPhosphorusSmokeRadius = Fixed::from_int(2);
+inline constexpr Tick kPhosphorusSmokeTicks = 20 * kTicksPerSecond;
+inline constexpr Fixed kPhosphorusFireRadius = Fixed::from_int(1);
+inline constexpr Tick kPhosphorusFireTicks = 8 * kTicksPerSecond;
 inline constexpr Fixed kOpticsDetection = Fixed::from_int(2);
 inline constexpr int32_t kOpticsSectorTiles = 3;
 inline constexpr int32_t kShovelWorkPercent = 67;  // of the digging time
@@ -261,6 +285,14 @@ struct Smoke {
     FixedVec2 center{};
     Fixed radius{};
     Tick clears = 0;
+};
+
+// Ground burning where an incendiary or phosphorus shell landed.
+struct Fire {
+    FixedVec2 center{};
+    Fixed radius{};
+    Tick until = 0;
+    PlayerId owner = 0;  // whose shell it was
 };
 
 // A mine on a tile.
@@ -342,6 +374,7 @@ struct Unit {
     Fixed fuel{};
     int32_t rounds = 0;
     int32_t missiles = 0;  // guided missiles aboard (an IFV's ATGMs)
+    Shell shell = Shell::He;  // artillery: what it fires next
 
     // Guns: set up or packed, and how far that is along; the point being
     // bracketed and how many shots in.
@@ -392,6 +425,7 @@ struct Projectile {
     // missile that is going to hit flies after `homing`; one that misses, 0.
     bool at_air = false;
     EntityId homing = 0;
+    Shell shell = Shell::He;  // an artillery shell's kind
 };
 
 // Where a projectile went off, kept for a few seconds so the renderer (and
@@ -505,6 +539,9 @@ public:
     Fixed headquarters_relay(PlayerId player) const;
     // Ranging in: the chance of landing on target at a shot (1, 2, 3...).
     int32_t ranging_chance(PlayerId player, int shot) const;
+    // Ticks for a gun to set up or pack up (drilled crews: fewer).
+    Tick deploy_ticks(const Unit& u) const;
+    const std::vector<Fire>& fires() const { return fires_; }
     // Housing: the men in service and in training, and the bunks there are for them.
     int32_t population(PlayerId player) const;
     int32_t bunks(PlayerId player) const;
@@ -594,7 +631,7 @@ private:
     void finish_ability(Unit& u);
     void update_upgrades();
     // A lobbed shot: arcs over everything, comes down at the aim point.
-    void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters);
+    void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters, Shell shell = Shell::He);
     EntityId place_fieldwork(StructureType type, PlayerId owner, TilePos t, FixedVec2 facing);
     void update_gathering(Unit& u);
     void update_retrain(Unit& u);
@@ -673,8 +710,13 @@ private:
               EntityId guide = 0);
     // What a unit is short of, per mille of a full tank or rack (and missiles).
     int64_t shortage(const Unit& v, Resource cargo) const;
-    Tick deploy_ticks(const Unit& u) const;
     Fixed gun_reach(const Unit& u, const WeaponDef& weapon) const;
+    Tick reload_ticks(const Unit& u, const WeaponDef& weapon) const;
+    void apply_load_shell(const Command& cmd);
+    // A burst at a point: everyone and every building in reach takes it.
+    void splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon);
+    void burst_shell(const Projectile& p, FixedVec2 at);
+    void update_fires();
     bool out_of_rounds(const Unit& u) const;
     // Service vehicles: look after our vehicles nearby; load up at a depot.
     void serve(Unit& u);
@@ -806,6 +848,7 @@ private:
     uint32_t next_mine_id_ = 1;
     std::vector<Charge> charges_;
     std::array<uint32_t, kMaxPlayers> upgrades_{};  // bit per UpgradeId
+    std::vector<Fire> fires_;
     std::vector<Smoke> smokes_;
     std::vector<Bearing> bearings_;  // rebuilt with the fog
     std::vector<Courier> couriers_;  // in the order they were sent, so they arrive in it

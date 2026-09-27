@@ -1060,12 +1060,15 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                             : stance;
         if (!u.deployed) supply_color = theme::kWarning;
     } else if (def.deploy_time > 0) {
-        // A gun: set up or not, and how far along the bracketing is.
+        // A gun: set up or not, what it's loaded with, and how far along the bracketing is.
+        static constexpr const char* kShellNames[] = {"HE", "cluster", "incendiary", "white phosphorus"};
+        static_assert(std::size(kShellNames) == engine::kShellCount);
         const char* stance = u.deployed ? "Deployed" : "Packed up";
         if (u.deploy_work > 0) {
             stance = TextFormat("%s %d%%", u.deployed ? "Packing up" : "Setting up",
-                                static_cast<int>(u.deploy_work * 100 / def.deploy_time));
+                                static_cast<int>(u.deploy_work * 100 / std::max<engine::Tick>(1, world.deploy_ticks(u))));
         }
+        if (def.weapon.indirect) stance = TextFormat("%s, %s", stance, kShellNames[static_cast<size_t>(u.shell)]);
         const char* ranging = "not ranged in";
         if (u.ranging_shots > 0) {
             ranging = TextFormat("ranging shot %d (%d%% on target)", u.ranging_shots,

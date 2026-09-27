@@ -55,7 +55,7 @@ struct WeaponDef {
 enum class UpgradeId : uint8_t {
     SmokeGrenades,     // ammunition depot: tanks can lay a smoke screen
     SabotRounds,       // ammunition depot: tank AP rounds hit harder
-    ClusterRockets,    // ammunition depot: MLRS rockets burst wider
+    ClusterMunitions,  // artillery barracks: cluster shells and rockets
     TrainSchedule,     // station: trains come more often
     TrainCapacity,     // station: trains bring more
     Optics,            // recon barracks: scouts and observation posts see more
@@ -75,9 +75,34 @@ enum class UpgradeId : uint8_t {
     MastAntennas,      // signals barracks: the headquarters and command vehicles relay farther
     RadarTracking,     // air defence barracks: better aim at aircraft
     CockpitArmor,      // airfield: attack aircraft take less damage
+    TankEngine,        // armor barracks: tanks and IFVs drive faster
+    AddOnArmor,        // armor barracks: tanks and IFVs take less from shells, fragments, bullets
+    FastReload,        // armor barracks: tank and IFV guns reload faster
+    IncendiaryShells,  // artillery barracks: shells that set the ground on fire
+    PhosphorusShells,  // artillery barracks: white phosphorus, a burning smoke screen
     Count,
 };
 inline constexpr size_t kUpgradeCount = static_cast<size_t>(UpgradeId::Count);
+
+// What the artillery (mortars, howitzers, SPGs, rocket launchers) fires:
+// high-explosive fragmentation as standard, the others once researched.
+enum class Shell : uint8_t {
+    He,          // high-explosive fragmentation
+    Cluster,     // opens over the target: bomblets over an area
+    Incendiary,  // a weaker burst, and the ground burns
+    Phosphorus,  // white phosphorus: a smoke screen that burns
+    Count,
+};
+inline constexpr size_t kShellCount = static_cast<size_t>(Shell::Count);
+
+inline UpgradeId shell_upgrade(Shell shell) {
+    switch (shell) {
+        case Shell::Cluster: return UpgradeId::ClusterMunitions;
+        case Shell::Incendiary: return UpgradeId::IncendiaryShells;
+        case Shell::Phosphorus: return UpgradeId::PhosphorusShells;
+        default: return UpgradeId::Count;  // standard, nothing to research
+    }
+}
 
 // Skills, used with a command-grid button. Each unit type lists its own.
 enum class AbilityId : uint8_t {

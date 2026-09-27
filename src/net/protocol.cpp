@@ -89,6 +89,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
     if (cmd.type == engine::CommandType::Build) w.u8(cmd.structure_type);
     if (cmd.type == engine::CommandType::Research) w.u8(cmd.upgrade);
     if (cmd.type == engine::CommandType::Haul) w.u8(cmd.cargo);
+    if (cmd.type == engine::CommandType::LoadShell) w.u8(cmd.ability);
     if (cmd.type == engine::CommandType::Ability) {
         w.u8(cmd.ability);
         w.i32(cmd.target_end.x.raw);
@@ -99,7 +100,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
 std::optional<engine::Command> read_command(Reader& r) {
     engine::Command cmd;
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(engine::CommandType::Rally)) return std::nullopt;
+    if (type > static_cast<uint8_t>(engine::CommandType::LoadShell)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
 
     const uint16_t count = r.u16();
@@ -116,6 +117,7 @@ std::optional<engine::Command> read_command(Reader& r) {
     if (cmd.type == engine::CommandType::Build) cmd.structure_type = r.u8();
     if (cmd.type == engine::CommandType::Research) cmd.upgrade = r.u8();
     if (cmd.type == engine::CommandType::Haul) cmd.cargo = r.u8();
+    if (cmd.type == engine::CommandType::LoadShell) cmd.ability = r.u8();
     if (cmd.type == engine::CommandType::Ability) {
         cmd.ability = r.u8();
         cmd.target_end.x = engine::Fixed::from_raw(r.i32());

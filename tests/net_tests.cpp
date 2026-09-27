@@ -197,6 +197,10 @@ TickInput sample_input() {
     rally.type = CommandType::Rally;
     rally.target_unit = 25;
     input.commands.push_back(rally);
+    Command shell = make_move({26, 27}, 0, 0);
+    shell.type = CommandType::LoadShell;
+    shell.ability = 2;
+    input.commands.push_back(shell);
     Command post = make_move({19}, 60, 61);
     post.type = CommandType::Observe;
     input.commands.push_back(post);

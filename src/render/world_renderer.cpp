@@ -1357,6 +1357,25 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     g_light = 1.0f;
 
+    // Fires: flames flickering over the burning ground.
+    for (const engine::Fire& f : world.fires()) {
+        const Vector2 c = to_vector2(f.center);
+        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
+        const float r = to_float(f.radius);
+        fill_ground_ellipse(on_terrain(map, c), r, ColorAlpha({40, 26, 18, 255}, 0.55f));  // scorched
+        const auto t = static_cast<float>(world.tick());
+        for (int i = 0; i < 9; ++i) {
+            const float a = static_cast<float>(i) * 2.4f;
+            const float d = r * (0.25f + 0.6f * static_cast<float>(i % 3) / 2.0f);
+            const Vector2 g{c.x + std::cos(a) * d, c.y + std::sin(a) * d};
+            const Vector2 base = on_terrain(map, g);
+            const float h = 7.0f + 4.0f * std::sin(t * 0.7f + static_cast<float>(i));
+            DrawTriangle({base.x + 3, base.y}, {base.x, base.y - h}, {base.x - 3, base.y}, {230, 120, 30, 230});
+            DrawTriangle({base.x + 1.5f, base.y}, {base.x, base.y - h * 0.6f}, {base.x - 1.5f, base.y},
+                         {255, 210, 80, 240});
+        }
+    }
+
     // Smoke screens: billowing puffs over whatever is in them.
     for (const engine::Smoke& s : world.smokes()) {
         const Vector2 c = to_vector2(s.center);

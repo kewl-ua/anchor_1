@@ -35,6 +35,7 @@ enum class CommandType : uint8_t {
     Supply,        // tankers, ammunition trucks: look after one unit (target_unit) for good
     Collect,       // supply trucks: park by the wood or the stone at `target` and take the rear troops' loads in
     Rally,         // a building (target_unit) sends the units it hires to `target`
+    LoadShell,     // artillery: load a kind of shell (`ability` = Shell) for the next shots
 };
 
 // The only way anything outside the engine can change the game state.
