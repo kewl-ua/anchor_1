@@ -606,12 +606,13 @@ void test_sight_lines() {
 // A forest block on x = 12..15; a man at its edge on (12.5, 10.5) watched
 // from `distance` tiles to the west, out in the open. Is he seen at the first
 // look (or, moving, at the next one)?
-bool seen_in_cover(UnitTypeId watcher, Fixed distance, UnitTypeId hider, bool hider_moves) {
+bool seen_in_cover(UnitTypeId watcher, Fixed distance, UnitTypeId hider, bool hider_moves, bool ghillie = false) {
     TileMap map(40, 20);
     for (int y = 3; y <= 17; ++y) {
         for (int x = 12; x <= 15; ++x) map.set_terrain(x, y, Terrain::Forest);
     }
     Simulation sim(1, map);
+    if (ghillie) sim.world_for_setup().upgrade_for_setup(1, UpgradeId::GhillieSuits);
     const FixedVec2 spot = at_half(25, 21);
     const EntityId hidden = sim.world_for_setup().spawn_unit(1, hider, spot);
     sim.world_for_setup().spawn_unit(0, watcher, {spot.x - distance, spot.y});
@@ -1620,10 +1621,11 @@ void test_quarters_house_the_men() {
 // A tank at (5, 10) fires armor-piercing rounds at an enemy tank `distance`
 // tiles east that can't answer, spotted by a scout of ours: its hits out
 // of `shots`, and whether it fired from where it stands.
-std::pair<int, bool> tank_hits(int32_t distance, int shots) {
+std::pair<int, bool> tank_hits(int32_t distance, int shots, bool fire_control = false) {
     TileMap map(70, 20);
     Simulation sim(1, map);
     World& w = sim.world_for_setup();
+    if (fire_control) w.upgrade_for_setup(0, UpgradeId::FireControl);
     const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(5, 10));
     w.unit_for_setup(tank)->round_type = 1;  // armor-piercing: no burst to count
     const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(5 + distance, 10));
@@ -1680,7 +1682,8 @@ void test_tank_reaches_far() {
 // answer, its hull pointing `hull`; hidden in the trees if `in_trees`. The
 // tank's health after each hit (0: knocked out), and whether he fired from
 // where he stands.
-std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, int32_t distance) {
+std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, int32_t distance,
+                                               bool reactive_armor = false) {
     TileMap map(40, 20);
     if (in_trees) {
         for (int y = 8; y <= 12; ++y) {
@@ -1695,6 +1698,7 @@ std::pair<std::vector<int32_t>, bool> rpg_hits(FixedVec2 hull, bool in_trees, in
     const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(10 + distance, 10));
     w.unit_for_setup(tank)->rounds = 0;
     w.unit_for_setup(tank)->hull = hull;
+    if (reactive_armor) w.upgrade_for_setup(1, UpgradeId::ReactiveArmor);
     issue(sim, attack_order(0, {rpg}, tank));
     std::vector<int32_t> after;
     int32_t hp = unit_type(UnitTypeId::Tank).max_hp;
@@ -4295,6 +4299,315 @@ void test_group_moves_at_slowest_speed() {
 
 }  // namespace
 
+// --- Upgrades in the barracks ------------------------------------------------
+
+// Armor barracks. Reactive armor: a tank takes 35% less from an RPG. Fire
+// control: tank guns hit more far out.
+void test_armor_upgrades() {
+    const int32_t full = unit_type(UnitTypeId::Tank).max_hp;
+    const int32_t hit = unit_type(UnitTypeId::Grenadier).weapon.damage -
+                        unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::AntiTank)];
+    const auto [plain, stood] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9);
+    const auto [era, stood_era] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, true);
+    CHECK(!plain.empty() && plain[0] == full - hit);
+    CHECK(!era.empty() && era[0] == full - hit * kReactiveArmorPercent / 100);
+    CHECK(era.size() == 4);  // four hits in the front now
+
+    const auto [far, stood_far] = tank_hits(45, 30);
+    const auto [far_fcs, stood_fcs] = tank_hits(45, 30, true);
+    CHECK(far_fcs > far);
+}
+
+// ATGM launchers: an IFV fires a guided missile at an enemy tank 20 tiles
+// off, which drives away across: the missile flies after it and hits. Not
+// researched, the skill does nothing. An ammunition truck brings a new one.
+void test_atgm() {
+    auto run = [](bool researched, uint64_t seed) {
+        Simulation sim(seed, TileMap(50, 30));
+        World& w = sim.world_for_setup();
+        if (researched) w.upgrade_for_setup(0, UpgradeId::Atgm);
+        const EntityId ifv = w.spawn_unit(0, UnitTypeId::Ifv, at(5, 15));
+        const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(25, 8));
+        w.unit_for_setup(tank)->rounds = 0;
+        const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(21, 10));
+        w.unit_for_setup(scout)->rounds = 0;
+        issue(sim, make_move(1, {tank}, 25, 26));
+        for (int i = 0; i < 10; ++i) sim.step();
+        issue(sim, use_ability(0, {ifv}, AbilityId::Atgm, 25, 8));
+        for (int i = 0; i < 400; ++i) sim.step();
+        const int32_t lost = sim.world().find_unit(tank) ? unit_type(UnitTypeId::Tank).max_hp - hp_of(sim, tank)
+                                                          : unit_type(UnitTypeId::Tank).max_hp;
+        const bool stood = (sim.world().find_unit(ifv)->pos - at(5, 15)).length() < Fixed::from_int(1);
+        const int32_t missiles = sim.world().find_unit(ifv)->missiles;
+        int32_t refilled = missiles;
+        if (researched) {
+            w.spawn_unit(0, UnitTypeId::AmmoTruck, at(7, 16));
+            for (Tick i = 0; i < 4 * kRearmInterval; ++i) sim.step();
+            refilled = sim.world().find_unit(ifv)->missiles;
+        }
+        return std::tuple{lost, stood, missiles, refilled};
+    };
+    const int32_t aboard = unit_type(UnitTypeId::Ifv).missile_capacity;
+    int hits = 0;
+    for (uint64_t seed = 1; seed <= 4; ++seed) {
+        const auto [lost, stood, missiles, refilled] = run(true, seed);
+        hits += lost > 0 ? 1 : 0;  // hit on the move (nine in ten do)
+        CHECK(stood && missiles == aboard - 1 && refilled == aboard);
+    }
+    CHECK(hits >= 3);
+    const auto [untouched, stood_idle, kept, same] = run(false, 2);
+    CHECK(untouched == 0 && kept == aboard);
+}
+
+// Artillery barracks. Firing tables: more first shots on target. Drilled
+// crews: set up and pack up in half the time. Long-range charges: a
+// howitzer fires 70 tiles out from where it stands.
+int first_shots_on_target(bool tables) {
+    Simulation sim(5, TileMap(50, 20));
+    World& w = sim.world_for_setup();
+    if (tables) w.upgrade_for_setup(0, UpgradeId::FiringTables);
+    const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    issue(sim, fire_at(0, {mortar}, 20, 10));
+    int on = 0;
+    for (int i = 0; i < 4000 && sim.world().find_unit(mortar)->rounds > 0; ++i) {
+        w.unit_for_setup(mortar)->ranging_shots = 0;  // every shot a first one
+        const Tick now = sim.world().tick();
+        sim.step();
+        for (const Impact& imp : sim.world().recent_impacts()) {
+            if (imp.tick == now && imp.shooter_type == UnitTypeId::Mortar &&
+                (imp.pos - at(20, 10)).length() < Fixed::from_ratio(1, 2)) {
+                ++on;
+            }
+        }
+    }
+    return on;
+}
+
+void test_artillery_upgrades() {
+    CHECK(first_shots_on_target(true) > first_shots_on_target(false));
+    Simulation plain(1, TileMap(20, 20));
+    plain.world_for_setup().upgrade_for_setup(1, UpgradeId::FiringTables);
+    CHECK(plain.world().ranging_chance(0, 1) == kRangingChance[0]);
+    CHECK(plain.world().ranging_chance(1, 1) == kTabledRangingChance[0]);
+
+    auto set_up = [](bool drilled) {
+        Simulation sim(1, TileMap(60, 20));
+        if (drilled) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::DrilledCrews);
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(5, 10));
+        issue(sim, fire_at(0, {gun}, 40, 10));
+        const Tick time = unit_type(UnitTypeId::Howitzer).deploy_time;
+        for (Tick i = 0; i < time * 6 / 10; ++i) sim.step();
+        const bool deployed = sim.world().find_unit(gun)->deployed;
+        issue(sim, make_move(0, {gun}, 5, 15));
+        for (Tick i = 0; i < time * 6 / 10 + 2; ++i) sim.step();
+        return std::pair{deployed, !sim.world().find_unit(gun)->deployed};
+    };
+    CHECK(set_up(true) == std::pair(true, true));
+    CHECK(set_up(false).first == false);
+    CHECK(unit_type(UnitTypeId::Howitzer).weapon.range == Fixed::from_int(60));
+
+    auto far_shot = [](bool charges) {
+        Simulation sim(1, TileMap(90, 20));
+        if (charges) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::LongRangeCharges);
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(5, 10));
+        issue(sim, fire_at(0, {gun}, 75, 10));  // 70 tiles
+        for (Tick i = 0; i < unit_type(UnitTypeId::Howitzer).deploy_time + 100; ++i) sim.step();
+        const Unit* u = sim.world().find_unit(gun);
+        return (u->pos - at(5, 10)).length() < Fixed::from_int(1) && u->last_shot_tick != kNeverFired;
+    };
+    CHECK(far_shot(true));
+    CHECK(!far_shot(false));
+}
+
+// Infantry barracks. Body armor: a rifle hit takes a quarter less. Vests:
+// half as many rounds again, from the barracks, a stocked trench, a truck.
+void test_infantry_upgrades() {
+    auto first_hit = [](bool armor) {
+        Simulation sim(1, TileMap(30, 20));
+        if (armor) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::BodyArmor);
+        const EntityId target = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(14, 10));
+        sim.world_for_setup().unit_for_setup(target)->rounds = 0;
+        sim.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(10, 10));
+        for (int i = 0; i < 300 && hp_of(sim, target) == unit_type(UnitTypeId::Rifleman).max_hp; ++i) sim.step();
+        return unit_type(UnitTypeId::Rifleman).max_hp - hp_of(sim, target);
+    };
+    const int32_t rifle = unit_type(UnitTypeId::Rifleman).weapon.damage;
+    CHECK(first_hit(false) == rifle);
+    CHECK(first_hit(true) == rifle * kBodyArmorPercent / 100);
+
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    w.upgrade_for_setup(0, UpgradeId::LoadVests);
+    const int32_t vest = unit_type(UnitTypeId::Rifleman).rounds_capacity * kVestRoundsPercent / 100;
+    const EntityId fresh = w.spawn_unit(0, UnitTypeId::Rifleman, at(3, 3));
+    CHECK(sim.world().find_unit(fresh)->rounds == vest);
+    CHECK(sim.world().rack(*sim.world().find_unit(fresh)) == vest);
+    const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(3, 6));
+    CHECK(sim.world().find_unit(tank)->rounds == unit_type(UnitTypeId::Tank).rounds_capacity);
+    // At a stocked trench, and by an ammunition truck: topped up past the old rack.
+    const EntityId trench = w.place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+    w.structure_for_setup(trench)->cache = 20;
+    w.structure_for_setup(trench)->cache_owner = 0;
+    const EntityId dug_in = w.spawn_unit(0, UnitTypeId::Rifleman, tile_center({10, 10}));
+    w.unit_for_setup(dug_in)->rounds = vest - 30;
+    const EntityId by_truck = w.spawn_unit(0, UnitTypeId::Rifleman, at(20, 15));
+    w.unit_for_setup(by_truck)->rounds = vest - 30;
+    w.spawn_unit(0, UnitTypeId::AmmoTruck, at(21, 16));
+    for (Tick i = 0; i < 20 * kRearmInterval; ++i) sim.step();
+    CHECK(sim.world().find_unit(dug_in)->rounds == vest);
+    CHECK(sim.world().find_unit(by_truck)->rounds == vest);
+}
+
+// Recon: in ghillie suits a scout in cover is made out only from half as
+// close. Engineers: heavier mines and charges; prefab pillboxes go up in
+// half the time.
+void test_recon_and_engineer_upgrades() {
+    const Fixed close = Fixed::from_ratio(4, 5);
+    CHECK(seen_in_cover(UnitTypeId::Rifleman, close, UnitTypeId::Scout, false));
+    CHECK(!seen_in_cover(UnitTypeId::Rifleman, close, UnitTypeId::Scout, false, true));
+
+    auto mine_on_tank = [](bool heavy) {
+        Simulation sim(1, TileMap(40, 20));
+        if (heavy) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::HeavyCharges);
+        lay_a_mine(sim, 0, true, 15, 10);
+        const EntityId tank = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at_half(21, 21));
+        issue(sim, make_move(1, {tank}, 25, 10));
+        for (int i = 0; i < 600; ++i) sim.step();
+        return unit_type(UnitTypeId::Tank).max_hp - hp_of(sim, tank);
+    };
+    const int32_t plain = mine_on_tank(false);
+    CHECK(plain > 0 && mine_on_tank(true) == plain * kHeavyChargePercent / 100);
+
+    auto charge_on_bridge = [](bool heavy) {
+        Simulation sim(1, village_map());
+        if (heavy) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::HeavyCharges);
+        const EntityId bridge = sim.world().structure_at({20, 10})->id;
+        const EntityId sapper = sim.world_for_setup().spawn_unit(0, UnitTypeId::Sapper, at(17, 9));
+        issue(sim, use_ability(0, {sapper}, AbilityId::Demolish, 20, 10));
+        for (Tick i = 0; i < kPlantWork + kFuseTicks + 70; ++i) sim.step();
+        const Structure* b = sim.world().find_structure(bridge);
+        return b ? structure_type(StructureType::Bridge).max_hp - b->hp : -1;
+    };
+    const int32_t armor = structure_type(StructureType::Bridge).armor[static_cast<size_t>(DamageType::AntiTank)];
+    const int32_t charge = charge_on_bridge(false) + armor;  // the charge's damage
+    CHECK(charge > armor && charge_on_bridge(true) == charge * kHeavyChargePercent / 100 - armor);
+
+    auto pillbox_up = [](bool prefab) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        if (prefab) w.upgrade_for_setup(0, UpgradeId::PrefabPillbox);
+        w.set_stock(0, structure_type(StructureType::Pillbox).cost);
+        const EntityId sapper = w.spawn_unit(0, UnitTypeId::Sapper, post());
+        issue(sim, use_ability(0, {sapper}, AbilityId::BuildPillbox, 20, 10));
+        for (Tick i = 0; i < structure_type(StructureType::Pillbox).build_time * 6 / 10; ++i) sim.step();
+        const Structure* box = sim.world().structure_at({10, 10});
+        return box && box->built;
+    };
+    CHECK(pillbox_up(true));
+    CHECK(!pillbox_up(false));
+}
+
+// Signals. Secure radios: two crossing bearings no longer fix a tank, a
+// third does. Mast antennas: the headquarters and a command vehicle relay
+// half as far again.
+void test_signals_upgrades() {
+    auto fixed = [](bool secure, int stations) {
+        Simulation sim(1, TileMap(80, 60));
+        World& w = sim.world_for_setup();
+        if (secure) w.upgrade_for_setup(1, UpgradeId::SecureComms);
+        const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at(45, 30));
+        const TilePos spots[] = {{12, 30}, {45, 5}, {70, 10}};
+        for (int i = 0; i < stations; ++i) {
+            const EntityId df = w.spawn_unit(0, UnitTypeId::DfStation, tile_center(spots[i]));
+            w.unit_for_setup(df)->deployed = true;
+        }
+        for (int i = 0; i < 8; ++i) sim.step();
+        return seen(sim, 0, tank);
+    };
+    CHECK(fixed(false, 2));
+    CHECK(!fixed(true, 2));
+    CHECK(fixed(true, 3));
+
+    Simulation sim(1, TileMap(80, 40));
+    World& w = sim.world_for_setup();
+    w.place_structure(StructureType::Headquarters, 0, {4, 4}, 3, 3);
+    const EntityId near_hq = w.spawn_unit(0, UnitTypeId::Tank, at(20, 6));    // 14.5 tiles off
+    const EntityId command = w.spawn_unit(0, UnitTypeId::FieldHq, at(50, 30));
+    const EntityId near_car = w.spawn_unit(0, UnitTypeId::Tank, at(65, 30));  // 15 tiles off
+    w.unit_for_setup(near_hq)->silent = true;
+    w.unit_for_setup(near_car)->silent = true;
+    CHECK(!sim.world().in_touch(*sim.world().find_unit(near_hq)));
+    CHECK(!sim.world().in_touch(*sim.world().find_unit(near_car)));
+    w.upgrade_for_setup(0, UpgradeId::MastAntennas);
+    CHECK(sim.world().in_touch(*sim.world().find_unit(near_hq)));
+    CHECK(sim.world().in_touch(*sim.world().find_unit(near_car)));
+    CHECK(sim.world().relay_reach(*sim.world().find_unit(command)) ==
+          unit_type(UnitTypeId::FieldHq).relay_range * kMastRelayPercent / 100);
+}
+
+// Air defence: radar tracking puts more rounds into an aircraft. Airfield:
+// cockpit armor takes 30% off every missile.
+void test_air_upgrades() {
+    auto shilka_damage = [](bool tracking) {
+        AirSetup a = air_setup(4);
+        World& w = a.sim.world_for_setup();
+        if (tracking) w.upgrade_for_setup(1, UpgradeId::RadarTracking);
+        w.spawn_unit(1, UnitTypeId::Shilka, at(40, 21));
+        w.unit_for_setup(a.plane)->hp = 100000;
+        issue(a.sim, fire_at(0, {a.plane}, 60, 20));
+        fly_sortie(a);
+        return 100000 - hp_of(a.sim, a.plane);
+    };
+    const int32_t plain = shilka_damage(false);
+    CHECK(plain > 0 && shilka_damage(true) > plain);
+
+    const int32_t per_hit = (unit_type(UnitTypeId::Manpads).weapon.damage - unit_type(UnitTypeId::Su25).armor[1]) *
+                            kCockpitArmorPercent / 100;
+    int damaged = 0;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        AirSetup a = air_setup(seed);
+        a.sim.world_for_setup().upgrade_for_setup(0, UpgradeId::CockpitArmor);
+        a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(40, 21));
+        issue(a.sim, fire_at(0, {a.plane}, 60, 20));
+        fly_sortie(a);
+        const int32_t lost = unit_type(UnitTypeId::Su25).max_hp - hp_of(a.sim, a.plane);
+        CHECK(lost % per_hit == 0);
+        damaged += lost > 0 ? 1 : 0;
+    }
+    CHECK(damaged > 0);
+}
+
+// Every upgrade is researched in its own building, as offered on its card.
+void test_upgrade_buildings() {
+    const std::pair<UpgradeId, StructureType> where[] = {
+        {UpgradeId::ReactiveArmor, StructureType::ArmorBarracks},
+        {UpgradeId::FireControl, StructureType::ArmorBarracks},
+        {UpgradeId::Atgm, StructureType::ArmorBarracks},
+        {UpgradeId::FiringTables, StructureType::ArtilleryBarracks},
+        {UpgradeId::DrilledCrews, StructureType::ArtilleryBarracks},
+        {UpgradeId::LongRangeCharges, StructureType::ArtilleryBarracks},
+        {UpgradeId::BodyArmor, StructureType::InfantryBarracks},
+        {UpgradeId::LoadVests, StructureType::InfantryBarracks},
+        {UpgradeId::GhillieSuits, StructureType::ReconBarracks},
+        {UpgradeId::HeavyCharges, StructureType::EngineerBarracks},
+        {UpgradeId::PrefabPillbox, StructureType::EngineerBarracks},
+        {UpgradeId::SecureComms, StructureType::SignalsBarracks},
+        {UpgradeId::MastAntennas, StructureType::SignalsBarracks},
+        {UpgradeId::RadarTracking, StructureType::AirDefenseBarracks},
+        {UpgradeId::CockpitArmor, StructureType::Airfield},
+    };
+    for (const auto& [id, building] : where) CHECK(upgrade_def(id).building == building);
+    CHECK(ability_def(AbilityId::Atgm).needs == UpgradeId::Atgm);
+    // No building offers more than its bottom row holds.
+    for (size_t b = 0; b < kStructureTypeCount; ++b) {
+        int offered = 0;
+        for (size_t i = 0; i < kUpgradeCount; ++i) {
+            offered += upgrade_def(static_cast<UpgradeId>(i)).building == static_cast<StructureType>(b) ? 1 : 0;
+        }
+        CHECK(offered <= 5);
+    }
+}
+
 int main() {
     test_fixed_math();
     test_rng();
@@ -4393,6 +4706,14 @@ int main() {
     test_quarters_house_the_men();
     test_tank_reaches_far();
     test_rpg_catches_tanks();
+    test_armor_upgrades();
+    test_atgm();
+    test_artillery_upgrades();
+    test_infantry_upgrades();
+    test_recon_and_engineer_upgrades();
+    test_signals_upgrades();
+    test_air_upgrades();
+    test_upgrade_buildings();
     test_headquarters_trains_rear_troops();
     test_rear_troops_retrain_as_riflemen();
     test_trains_bring_men_and_freight();

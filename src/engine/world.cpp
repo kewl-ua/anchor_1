@@ -97,13 +97,20 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
     // Fresh from the barracks: tanks full, racks full, cargo aboard.
     const UnitTypeDef& def = unit_type(type);
     u.fuel = def.fuel_capacity;
-    u.rounds = def.rounds_capacity;
+    u.rounds = rack(u);
+    u.missiles = def.missile_capacity;
     if (def.supplies != Resource::Count) {
         u.carrying = def.cargo_capacity;
         u.carrying_type = def.supplies;
     }
     units_.push_back(u);  // ids only grow, so the vector stays sorted
     return u.id;
+}
+
+int32_t World::rack(const Unit& u) const {
+    const UnitTypeDef& def = def_of(u);
+    if (can_ride(def) && has_upgrade(u.owner, UpgradeId::LoadVests)) return def.rounds_capacity * kVestRoundsPercent / 100;
+    return def.rounds_capacity;
 }
 
 const Unit* World::find_unit(EntityId id) const {
@@ -1028,13 +1035,14 @@ bool World::try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const Wea
         if (aimed == 0 || structure_id_at(tile_of(line.point(stop))) != aimed) return false;
     }
     if (own_troops_in_line(shooter, line, start)) return true;  // hold fire, the line itself is fine
-    fire(shooter, aim, aim_height, weapon, spends);
+    fire(shooter, aim, aim_height, weapon, spends, target ? target->id : 0);
     return true;
 }
 
 // --- Combat ------------------------------------------------------------------
 
-void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends) {
+void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends,
+                 EntityId guide) {
     // A skill's own gun (a coaxial machine gun) doesn't reload the main one.
     if (weapon.reload > 0) shooter.cooldown = weapon.reload;
     if (spends && def_of(shooter).rounds_capacity > 0) shooter.rounds = std::max(0, shooter.rounds - 1);
@@ -1052,7 +1060,9 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
         const Fixed distance = (aim - shooter.pos).length();
         const Fixed over = min(distance - near, weapon.range - near);
         if (over.raw > 0) {
-            accuracy = accuracy * (100 - ((over * (100 - kFarAccuracyPercent)) / (weapon.range - near)).to_int()) / 100;
+            const int32_t far = has_upgrade(shooter.owner, UpgradeId::FireControl) ? kFireControlFarPercent
+                                                                                     : kFarAccuracyPercent;
+            accuracy = accuracy * (100 - ((over * (100 - far)) / (weapon.range - near)).to_int()) / 100;
             spread = spread * (distance / near);
         }
     }
@@ -1075,7 +1085,8 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     }
 
     // A miss lands somewhere near the aim point, on the ground.
-    if (static_cast<int32_t>(rng_.next_below(100)) >= accuracy) {
+    const bool missed = static_cast<int32_t>(rng_.next_below(100)) >= accuracy;
+    if (missed) {
         aim.x += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
         aim.y += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
         aim = clamp_to_map(aim, Fixed{});
@@ -1122,6 +1133,7 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     if (&weapon == &def_of(shooter).alt_weapon && has_upgrade(shooter.owner, UpgradeId::SabotRounds)) {
         p.weapon.damage = weapon.damage * kSabotPercent / 100;
     }
+    if (weapon.guided && !missed) p.homing = guide;
     shooter.last_shot_at = p.target;
     projectiles_.push_back(p);
 }
@@ -1131,6 +1143,11 @@ void World::move_projectiles() {
         if (p.at_air) {
             move_missile(p);
             continue;
+        }
+        // A guided missile flies after its target while the launcher guides it.
+        if (const Unit* homed = p.homing && find_unit(p.shooter) ? find_unit(p.homing) : nullptr) {
+            p.target = homed->pos;
+            p.target_height = map_.surface_height(homed->pos) + center_height(*homed);
         }
         p.prev_pos = p.pos;
         const Fixed speed = p.weapon.projectile_speed;
@@ -1282,6 +1299,17 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         from_flank(victim, shot.from)) {
         amount = amount * kFlankHitPercent / 100;  // into the side or the rear
     }
+    // What our upgrades take off it.
+    const UnitTypeDef& vd = def_of(victim);
+    if (victim.type == UnitTypeId::Tank && weapon.damage_type == DamageType::AntiTank &&
+        has_upgrade(victim.owner, UpgradeId::ReactiveArmor)) {
+        amount = amount * kReactiveArmorPercent / 100;
+    }
+    if (!vd.vehicle && !vd.aircraft && weapon.damage_type != DamageType::AntiTank &&
+        has_upgrade(victim.owner, UpgradeId::BodyArmor)) {
+        amount = amount * kBodyArmorPercent / 100;
+    }
+    if (vd.aircraft && has_upgrade(victim.owner, UpgradeId::CockpitArmor)) amount = amount * kCockpitArmorPercent / 100;
 
     const uint8_t victim_elevation = map_.elevation_at(victim.pos);
     if (!victim.airborne && shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
@@ -1440,6 +1468,7 @@ uint64_t World::checksum() const {
         mix(u.still);
         mix_fixed(u.fuel);
         mix(static_cast<uint32_t>(u.rounds));
+        mix(static_cast<uint32_t>(u.missiles));
         mix(u.deployed ? 1 : 0);
         mix(u.deploy_work);
         mix_vec(u.ranging_point);

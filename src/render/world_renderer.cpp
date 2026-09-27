@@ -1170,7 +1170,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         draw_orders(world, u, alpha);
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         if (def.relay_range.raw > 0 && !u.silent) {
-            draw_ground_ellipse(on_terrain(map, unit_ground_pos(u, alpha)), to_float(def.relay_range),
+            draw_ground_ellipse(on_terrain(map, unit_ground_pos(u, alpha)), to_float(world.relay_reach(u)),
                                 ColorAlpha(kRadioColor, 0.5f));
         }
         if (def.df_range.raw > 0 && u.deployed) {
@@ -1202,7 +1202,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             DrawRectangleRec({to.x, to.y - 18.0f, 11.0f, 7.0f}, theme::player_color(s->owner));
         }
         if (s->type == engine::StructureType::Headquarters && s->owner == viewer_) {
-            draw_ground_ellipse(on_terrain(map, to_vector2(s->center)), to_float(engine::kHeadquartersRelay),
+            draw_ground_ellipse(on_terrain(map, to_vector2(s->center)), to_float(world.headquarters_relay(s->owner)),
                                 ColorAlpha(kRadioColor, 0.5f));
         }
     }

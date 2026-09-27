@@ -46,6 +46,9 @@ struct WeaponDef {
     Fixed effective_range{};
     // Against buildings, if not `damage`: a shaped charge punches a hole, no more.
     int32_t structure_damage = 0;
+    // A guided missile: one that is going to hit flies after its target, as
+    // long as the launcher is there to guide it.
+    bool guided = false;
 };
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.
@@ -57,6 +60,21 @@ enum class UpgradeId : uint8_t {
     TrainCapacity,     // station: trains bring more
     Optics,            // recon barracks: scouts and observation posts see more
     EntrenchingTools,  // infantry barracks: riflemen dig faster
+    ReactiveArmor,     // armor barracks: tanks take less from anti-tank hits
+    FireControl,       // armor barracks: tank guns keep their aim far out
+    Atgm,              // armor barracks: IFVs fire guided anti-tank missiles
+    FiringTables,      // artillery barracks: ranging in goes faster
+    DrilledCrews,      // artillery barracks: guns set up and pack up faster
+    LongRangeCharges,  // artillery barracks: howitzers, SPGs and mortars reach farther
+    BodyArmor,         // infantry barracks: foot soldiers take less from bullets and fragments
+    LoadVests,         // infantry barracks: foot soldiers carry more rounds
+    GhillieSuits,      // recon barracks: scouts in cover are harder to make out
+    HeavyCharges,      // engineer barracks: mines and demolition charges hit harder
+    PrefabPillbox,     // engineer barracks: pillboxes go up faster
+    SecureComms,       // signals barracks: enemy direction finders need a third bearing
+    MastAntennas,      // signals barracks: the headquarters and command vehicles relay farther
+    RadarTracking,     // air defence barracks: better aim at aircraft
+    CockpitArmor,      // airfield: attack aircraft take less damage
     Count,
 };
 inline constexpr size_t kUpgradeCount = static_cast<size_t>(UpgradeId::Count);
@@ -88,6 +106,7 @@ enum class AbilityId : uint8_t {
     Smoke,         // tank: a smoke screen ahead (needs smoke grenades)
     RadioSilence,  // radios: go quiet (direction finders lose it, orders come by courier) or back on air
     CallSupply,    // radios: call the nearest free tanker / ammunition truck over
+    Atgm,          // IFV: a guided anti-tank missile at an enemy vehicle (needs the launchers)
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -139,6 +158,8 @@ struct UnitTypeDef {
     int32_t cargo_capacity = 0;
     // Carries this many foot soldiers (an IFV's squad); 0: nobody.
     int32_t troop_capacity = 0;
+    // Guided missiles aboard (an IFV's ATGMs); ammunition trucks bring more.
+    int32_t missile_capacity = 0;
     // How close an enemy hiding in cover must be for this unit to make him out.
     Fixed detection = Fixed::from_int(2);
     bool stealthy = false;  // hard to spot in cover (scouts)

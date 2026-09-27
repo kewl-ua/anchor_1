@@ -301,7 +301,7 @@ void World::update_retrain(Unit& u) {
         leave_structure(u);
         u.type = UnitTypeId::Rifleman;
         u.hp = unit_type(u.type).max_hp;
-        u.rounds = unit_type(u.type).rounds_capacity;  // issued with the rifle
+        u.rounds = rack(u);  // issued with the rifle
         u.carrying = 0;
         u.cooldown = 0;
         return finish();
@@ -344,7 +344,8 @@ void World::update_building(Unit& u) {
             return;
         }
         const int32_t before = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
-        ++s->build_progress;
+        const bool prefab = s->type == StructureType::Pillbox && has_upgrade(u.owner, UpgradeId::PrefabPillbox);
+        s->build_progress = std::min(def.build_time, s->build_progress + (prefab ? 2 : 1));
         const int32_t after = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
         s->hp = std::min(def.max_hp, s->hp + after - before);
         if (s->build_progress >= def.build_time) {

@@ -7,8 +7,29 @@
 
 namespace engine {
 
+// Drilled crews do it in half the time.
+Tick World::deploy_ticks(const Unit& u) const {
+    const UnitTypeDef& def = unit_type(u.type);
+    if (def.weapon.indirect && has_upgrade(u.owner, UpgradeId::DrilledCrews)) {
+        return def.deploy_time * kDrilledCrewsPercent / 100;
+    }
+    return def.deploy_time;
+}
+
+// Long-range charges: howitzers, SPGs and mortars reach farther.
+Fixed World::gun_reach(const Unit& u, const WeaponDef& weapon) const {
+    const bool charges = u.type == UnitTypeId::Howitzer || u.type == UnitTypeId::Spg || u.type == UnitTypeId::Mortar;
+    if (charges && has_upgrade(u.owner, UpgradeId::LongRangeCharges)) return weapon.range * kLongRangePercent / 100;
+    return weapon.range;
+}
+
+int32_t World::ranging_chance(PlayerId player, int shot) const {
+    const auto& chances = has_upgrade(player, UpgradeId::FiringTables) ? kTabledRangingChance : kRangingChance;
+    return chances[static_cast<size_t>(std::clamp(shot, 1, 3) - 1)];
+}
+
 bool World::deploy_step(Unit& u) {
-    const Tick time = unit_type(u.type).deploy_time;
+    const Tick time = deploy_ticks(u);
     if (u.deployed || time == 0) return true;
     if (++u.deploy_work >= time) {
         u.deployed = true;
@@ -19,7 +40,7 @@ bool World::deploy_step(Unit& u) {
 
 bool World::pack_step(Unit& u) {
     if (!u.deployed) return true;
-    if (++u.deploy_work >= unit_type(u.type).deploy_time) {
+    if (++u.deploy_work >= deploy_ticks(u)) {
         u.deployed = false;
         u.deploy_work = 0;
     }
@@ -32,7 +53,7 @@ void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowFi
                             const WeaponDef& weapon) {
     const FixedVec2 to_aim = aim - u.pos;
     const uint64_t dist_sq = to_aim.length_sq_raw();
-    if (dist_sq > square_raw(weapon.range + unit_type(u.type).radius)) {
+    if (dist_sq > square_raw(gun_reach(u, weapon) + unit_type(u.type).radius)) {
         navigate(u, aim, path, goal, false);
         return;
     }
@@ -58,7 +79,7 @@ void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32
     if (in_touch(u) && spotted_by_scouts(u.owner, aim)) step = std::min(3, step + 1);
     const auto i = static_cast<size_t>(step - 1);
 
-    const bool on_target = static_cast<int32_t>(rng_.next_below(100)) < kRangingChance[i];
+    const bool on_target = static_cast<int32_t>(rng_.next_below(100)) < ranging_chance(u.owner, step);
     const Fixed spread = on_target ? kOnTargetSpread : kRangingSpread[i];
     FixedVec2 landing = aim;
     landing.x += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));

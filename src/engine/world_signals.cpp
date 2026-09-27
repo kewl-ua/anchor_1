@@ -12,7 +12,7 @@ bool World::in_touch(const Unit& u) const {
     if (!u.silent) return true;
     for (const Structure& s : structures_) {
         if (s.owner != u.owner || s.type != StructureType::Headquarters || !s.built) continue;
-        if ((s.center - u.pos).length_sq_raw() <= square_raw(kHeadquartersRelay)) return true;
+        if ((s.center - u.pos).length_sq_raw() <= square_raw(headquarters_relay(u.owner))) return true;
     }
     for (const Structure& s : structures_) {
         // Held: someone of ours up it (an empty tower belongs to nobody).
@@ -20,7 +20,7 @@ bool World::in_touch(const Unit& u) const {
         if ((s.center - u.pos).length_sq_raw() <= square_raw(kTowerRelay)) return true;
     }
     for (const Unit& r : units_) {
-        const Fixed reach = unit_type(r.type).relay_range;
+        const Fixed reach = relay_reach(r);
         if (r.owner != u.owner || r.id == u.id || r.silent || reach.raw == 0) continue;
         if ((r.pos - u.pos).length_sq_raw() <= square_raw(reach)) return true;
     }
@@ -56,7 +56,26 @@ void World::take_bearings() {
     }
 }
 
+Fixed World::relay_reach(const Unit& relay) const {
+    const Fixed reach = unit_type(relay.type).relay_range;
+    if (relay.type == UnitTypeId::FieldHq && has_upgrade(relay.owner, UpgradeId::MastAntennas)) {
+        return reach * kMastRelayPercent / 100;
+    }
+    return reach;
+}
+
+Fixed World::headquarters_relay(PlayerId player) const {
+    return has_upgrade(player, UpgradeId::MastAntennas) ? kHeadquartersRelay * kMastRelayPercent / 100 : kHeadquartersRelay;
+}
+
 bool World::fixed_by(PlayerId player, const Unit& u) const {
+    // Secure radios: it takes a third bearing.
+    if (has_upgrade(u.owner, UpgradeId::SecureComms)) {
+        const auto on_it = std::count_if(bearings_.begin(), bearings_.end(), [&](const Bearing& b) {
+            return b.owner == player && b.target == u.id;
+        });
+        if (on_it < kSecureBearings) return false;
+    }
     for (size_t i = 0; i < bearings_.size(); ++i) {
         const Bearing& a = bearings_[i];
         if (a.owner != player || a.target != u.id) continue;

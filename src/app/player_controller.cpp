@@ -506,11 +506,13 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         bool deployed = false;
         bool on_air = false;  // any radio of the selection
         bool heard = false;   // any of them can be heard over the radio (on the air, or by a relay)
+        bool missiles = false;  // any of them has a guided missile left
         for (engine::EntityId unit_id : selection_) {
             const engine::Unit* u = world.find_unit(unit_id);
             if (u && engine::unit_type(u->type).emitter && !u->silent) on_air = true;
             if (!u || u->type != *lead) continue;
             heard = heard || world.in_touch(*u);
+            missiles = missiles || u->missiles > 0;
             alt_loaded = u->round_type == 1;
             deployed = u->deployed;
             const engine::Tick ready = u->ability_ready[i];
@@ -529,7 +531,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         const size_t slot = i < hud::kGridColumns ? i : 2 * hud::kGridColumns + (i - hud::kGridColumns);
         hud::CommandButton& b = put(slot, Action::Ability, static_cast<uint8_t>(id), label, ability.name);
         b.cooldown = cooldown;
-        b.enabled = !locked && (id != engine::AbilityId::CallSupply || heard);
+        b.enabled = !locked && (id != engine::AbilityId::CallSupply || heard) && (id != engine::AbilityId::Atgm || missiles);
         b.active = (targeting_ == Targeting::Ability && aiming_ == id) || (id == engine::AbilityId::SwitchAmmo && alt_loaded) ||
                    (id == engine::AbilityId::RadioSilence && !on_air);
     }

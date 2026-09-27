@@ -431,6 +431,37 @@ void World::update_ability(Unit& u) {
             return;
         }
 
+        case AbilityId::Atgm: {
+            // At the enemy vehicle we see nearest the aim point: the missile
+            // flies after it. None there: at the point.
+            if (u.missiles <= 0) return finish_ability(u);
+            const Unit* target = nullptr;
+            uint64_t best = square_raw(kAtgmTargetReach) + 1;
+            for (const Unit& o : units_) {
+                if (o.owner == u.owner || !unit_type(o.type).vehicle || o.inside || o.airborne || !sees(u.owner, o)) continue;
+                const uint64_t d = (o.pos - u.order_point).length_sq_raw();
+                if (d < best) {
+                    target = &o;
+                    best = d;
+                }
+            }
+            const FixedVec2 aim = target ? target->pos : u.order_point;
+            const FixedVec2 to_aim = aim - u.pos;
+            if (to_aim.length_sq_raw() > square_raw(ability.weapon.range + def.radius)) {
+                navigate(u, aim, u.order_path, map_.clamp_tile(tile_of(aim)), false);
+                return;
+            }
+            if (to_aim.x.raw != 0 || to_aim.y.raw != 0) u.facing = to_aim;
+            if (u.cooldown > 0) return;
+            if (!try_fire(u, aim, target, ability.weapon, false)) {
+                navigate(u, aim, u.order_path, map_.clamp_tile(tile_of(aim)), false);  // a hill in the way
+            } else if (u.last_shot_tick == tick_) {
+                --u.missiles;
+                finish_ability(u);
+            }
+            return;
+        }
+
         case AbilityId::LayApMine:
         case AbilityId::LayAtMine:
             return lay_mine(u, u.order_ability == AbilityId::LayAtMine);
@@ -482,19 +513,7 @@ bool World::load_up(Unit& u) {
 namespace {
 
 // How much of a full tank or rack (per mille) `v` is short of, in the
-// cargo a service vehicle brings; 0 if it doesn't use that at all.
-int64_t missing(const Unit& v, Resource cargo) {
-    const UnitTypeDef& vd = unit_type(v.type);
-    if (vd.aircraft) return 0;  // rearmed at the airfield
-    if (cargo == Resource::Fuel && vd.fuel_capacity.raw > 0) {
-        return static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;
-    }
-    if (cargo == Resource::Ammo && vd.rounds_capacity > 0) {
-        return static_cast<int64_t>(vd.rounds_capacity - v.rounds) * 1000 / vd.rounds_capacity;
-    }
-    return 0;
-}
-
+// cargo a service vehicle brings (see World::shortage).
 bool uses(const Unit& v, Resource cargo) {
     const UnitTypeDef& vd = unit_type(v.type);
     if (vd.aircraft) return false;
@@ -533,7 +552,7 @@ void World::apply_supply(const Command& cmd) {
 // aboard) comes over, unless one is already on its way or with it.
 void World::call_supply(const Unit& caller) {
     for (const Resource cargo : {Resource::Fuel, Resource::Ammo}) {
-        if (missing(caller, cargo) <= 0) continue;
+        if (shortage(caller, cargo) <= 0) continue;
         const bool looked_after = std::any_of(units_.begin(), units_.end(), [&](const Unit& o) {
             return o.order == Order::Supply && o.serves == caller.id && unit_type(o.type).supplies == cargo;
         });
@@ -583,7 +602,7 @@ void World::update_supply(Unit& u) {
         if (u.on_call) return release();
         if (load_up(u)) return;  // off for more, or filling up
     }
-    if (u.carrying > 0 && missing(*v, cargo) > 0) return hand_over(u, *v);
+    if (u.carrying > 0 && shortage(*v, cargo) > 0) return hand_over(u, *v);
     if (u.on_call) return release();
     if ((v->pos - u.pos).length_sq_raw() > square_raw(kEscortDistance)) {
         navigate(u, v->pos, u.chase_path, map_.clamp_tile(tile_of(v->pos)), false);
@@ -640,7 +659,8 @@ void World::stock_position(Unit& u, Structure& post) {
 void World::draw_from_caches() {
     for (Unit& u : units_) {
         const UnitTypeDef& def = unit_type(u.type);
-        if (def.rounds_capacity == 0 || u.rounds >= def.rounds_capacity || u.airborne) continue;
+        const int32_t full = rack(u);
+        if (full == 0 || u.rounds >= full || u.airborne) continue;
         Structure* best = nullptr;
         uint64_t best_sq = 0;
         for (Structure& s : structures_) {
@@ -652,7 +672,7 @@ void World::draw_from_caches() {
         }
         if (!best) continue;
         --best->cache;
-        u.rounds = std::min(def.rounds_capacity, u.rounds + def.rounds_per_supply);
+        u.rounds = std::min(full, u.rounds + def.rounds_per_supply);
     }
     // The pumps of a gas station we hold.
     for (Unit& u : units_) {
@@ -682,10 +702,27 @@ void World::hand_over(Unit& u, const Unit& target) {
     const UnitTypeDef& vd = unit_type(v->type);
     if (fuel) {
         v->fuel = min(vd.fuel_capacity, v->fuel + Fixed::from_int(kTilesPerFuel));
+    } else if (v->rounds < rack(*v)) {
+        v->rounds = std::min(rack(*v), v->rounds + vd.rounds_per_supply);
     } else {
-        v->rounds = std::min(vd.rounds_capacity, v->rounds + vd.rounds_per_supply);
+        v->missiles = std::min(vd.missile_capacity, v->missiles + 1);  // a missile a unit
     }
     --u.carrying;
+}
+
+int64_t World::shortage(const Unit& v, Resource cargo) const {
+    const UnitTypeDef& vd = unit_type(v.type);
+    if (vd.aircraft) return 0;  // rearmed at the airfield
+    if (cargo == Resource::Fuel && vd.fuel_capacity.raw > 0) {
+        return static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;
+    }
+    if (cargo != Resource::Ammo) return 0;
+    int64_t most = 0;
+    if (const int32_t full = rack(v); full > 0) most = static_cast<int64_t>(full - v.rounds) * 1000 / full;
+    if (vd.missile_capacity > 0) {
+        most = std::max(most, static_cast<int64_t>(vd.missile_capacity - v.missiles) * 1000 / vd.missile_capacity);
+    }
+    return most;
 }
 
 // A tanker or an ammunition truck standing by looks after the neediest of
@@ -698,14 +735,7 @@ void World::serve(Unit& u) {
     int64_t most_missing = 0;  // per mille of a full tank or rack
     for (const Unit& v : units_) {
         if (v.owner != u.owner || v.inside || v.id == u.id) continue;
-        const UnitTypeDef& vd = unit_type(v.type);
-        if (vd.aircraft) continue;  // rearmed at the airfield
-        int64_t missing = 0;
-        if (fuel && vd.fuel_capacity.raw > 0) {
-            missing = static_cast<int64_t>(vd.fuel_capacity.raw - v.fuel.raw) * 1000 / vd.fuel_capacity.raw;
-        } else if (!fuel && vd.rounds_capacity > 0) {
-            missing = static_cast<int64_t>(vd.rounds_capacity - v.rounds) * 1000 / vd.rounds_capacity;
-        }
+        const int64_t missing = shortage(v, def.supplies);
         if (missing <= 0 || (v.pos - u.pos).length_sq_raw() > square_raw(kServiceRadius)) continue;
         if (!neediest || missing > most_missing) {
             neediest = &v;

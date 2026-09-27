@@ -1025,7 +1025,8 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     draw_text(where, area.x, line2 + 2 * step, where_font, theme::kTextDim);
     if (def.emitter) {
         // On the air, or silent: then do orders get through at once?
-        const char* radio = def.relay_range.raw > 0 ? TextFormat("Radio on, relay %d", def.relay_range.to_int()) : "Radio on";
+        const char* radio = def.relay_range.raw > 0 ? TextFormat("Radio on, relay %d", world.relay_reach(u).to_int())
+                                                    : "Radio on";
         Color radio_color = theme::kTextDim;
         if (u.silent) {
             radio = world.in_touch(u) ? "Radio off, relayed"
@@ -1068,10 +1069,10 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
         const char* ranging = "not ranged in";
         if (u.ranging_shots > 0) {
             ranging = TextFormat("ranging shot %d (%d%% on target)", u.ranging_shots,
-                                 engine::kRangingChance[static_cast<size_t>(u.ranging_shots) - 1]);
+                                 world.ranging_chance(u.owner, u.ranging_shots));
         }
         supply = TextFormat("%s%s    Rounds %d / %d    %s", stance, u.camouflaged ? ", camouflaged" : "", u.rounds,
-                            def.rounds_capacity, ranging);
+                            world.rack(u), ranging);
         if (u.rounds <= 0) supply_color = theme::kDanger;
     } else if (def.fuel_capacity.raw > 0 || def.rounds_capacity > 0) {
         // Only what this one carries: a command vehicle has no rounds, a crew-served weapon no fuel.
@@ -1080,8 +1081,11 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
         const bool armed = def.rounds_capacity > 0;
         supply = TextFormat("%s%s%s", thirsty ? TextFormat("Fuel %d / %d tiles", fuel, def.fuel_capacity.to_int()) : "",
                             thirsty && armed ? "    " : "",
-                            armed ? TextFormat("Rounds %d / %d", u.rounds, def.rounds_capacity) : "");
+                            armed ? TextFormat("Rounds %d / %d", u.rounds, world.rack(u)) : "");
         if ((thirsty && u.fuel.raw <= 0) || (armed && u.rounds <= 0)) supply_color = theme::kDanger;
+        if (def.missile_capacity > 0 && world.has_upgrade(u.owner, engine::UpgradeId::Atgm)) {
+            supply = TextFormat("%s    ATGM %d / %d", supply, u.missiles, def.missile_capacity);
+        }
     } else if (u.type == engine::UnitTypeId::Truck ||
                (def.supplies != engine::Resource::Count && u.order == engine::Order::Haul)) {
         std::tie(supply, supply_color) = truck_status(world, u);

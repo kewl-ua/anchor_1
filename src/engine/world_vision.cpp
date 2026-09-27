@@ -183,6 +183,9 @@ bool World::spotted(PlayerId player, const Unit& target) const {
     int32_t percent = 100;
     if (target.moving) percent = percent * kSpotMovingPercent / 100;
     if (unit_type(target.type).stealthy) percent = percent * kSpotStealthyPercent / 100;
+    if (unit_type(target.type).stealthy && has_upgrade(target.owner, UpgradeId::GhillieSuits)) {
+        percent = percent * kGhilliePercent / 100;
+    }
     for (const Unit& o : units_) {
         if (o.owner != player) continue;
         Fixed detection = unit_type(o.type).detection;

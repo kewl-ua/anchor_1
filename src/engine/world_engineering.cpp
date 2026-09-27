@@ -155,13 +155,14 @@ void World::update_mines() {
             if (unit_type(u.type).vehicle != m.anti_tank || tile_of(u.pos) != m.tile) continue;
             const FixedVec2 at = tile_center(m.tile);
             const WeaponDef& blast = m.anti_tank ? kAtMine : kApMine;
+            const int32_t percent = has_upgrade(m.owner, UpgradeId::HeavyCharges) ? kHeavyChargePercent : 100;
             recent_impacts_.push_back({tick_, at, u.type, m.anti_tank ? Fixed::from_int(1) : blast.splash_radius});
-            hurt(u, blast, {at, 0, true, true});
+            hurt(u, blast, {at, 0, true, true, percent});
             if (!m.anti_tank) {  // the fragments fly
                 for (const Unit& other : units_) {
                     if (other.id == u.id || other.inside || other.airborne || unit_type(other.type).vehicle) continue;
                     if ((other.pos - u.pos).length_sq_raw() <= square_raw(blast.splash_radius)) {
-                        hurt(other, blast, {at, 0, true, true});
+                        hurt(other, blast, {at, 0, true, true, percent});
                     }
                 }
             }
@@ -192,11 +193,14 @@ void World::update_charges() {
             continue;
         }
         recent_impacts_.push_back({tick_, c.pos, UnitTypeId::Sapper, kChargeBlast.splash_radius});
-        if (const Structure* s = find_structure(c.target)) hurt_structure(*s, kCharge);
+        const int32_t percent = has_upgrade(c.owner, UpgradeId::HeavyCharges) ? kHeavyChargePercent : 100;
+        WeaponDef charge = kCharge;
+        charge.damage = charge.damage * percent / 100;
+        if (const Structure* s = find_structure(c.target)) hurt_structure(*s, charge);
         for (const Unit& u : units_) {
             if (u.inside || u.airborne) continue;
             if ((u.pos - c.pos).length_sq_raw() <= square_raw(kChargeBlast.splash_radius)) {
-                hurt(u, kChargeBlast, {c.pos, 0, true, true});
+                hurt(u, kChargeBlast, {c.pos, 0, true, true, percent});
             }
         }
     }

@@ -85,6 +85,21 @@ inline constexpr int32_t kFarAccuracyPercent = 35;
 // the way it faces) does this much of its damage: an ambush from the flank.
 inline constexpr int32_t kFlankHitPercent = 200;
 
+// Upgrades (see UpgradeId): how much each one changes.
+inline constexpr int32_t kReactiveArmorPercent = 65;   // of an anti-tank hit a tank takes
+inline constexpr int32_t kFireControlFarPercent = 65;  // a tank's aim at its full range
+inline constexpr Fixed kAtgmTargetReach = Fixed::from_ratio(3, 2);  // an aim point this close to a vehicle means it
+inline constexpr int32_t kDrilledCrewsPercent = 50;    // of the time to set up or pack up a gun
+inline constexpr int32_t kLongRangePercent = 125;      // of a howitzer's, an SPG's, a mortar's reach
+inline constexpr int32_t kBodyArmorPercent = 75;       // of bullets and fragments a foot soldier takes
+inline constexpr int32_t kVestRoundsPercent = 150;     // of the rounds a foot soldier carries
+inline constexpr int32_t kGhilliePercent = 50;         // of the distance a scout in cover is made out from
+inline constexpr int32_t kHeavyChargePercent = 150;    // of a mine's, a demolition charge's damage
+inline constexpr int32_t kSecureBearings = 3;          // bearings the enemy needs to fix a secure radio
+inline constexpr int32_t kMastRelayPercent = 150;      // of the headquarters' and a command vehicle's relay
+inline constexpr int32_t kRadarTrackingPercent = 120;  // of air defence accuracy
+inline constexpr int32_t kCockpitArmorPercent = 70;    // of the damage an attack aircraft takes
+
 // An IFV carries its squad: foot soldiers get in this close to it, ride
 // unseen and unhurt, and get out at the back. Knocked out with them aboard,
 // they bail out, each losing this share of his health.
@@ -112,6 +127,7 @@ inline constexpr Fixed kCacheUnload = Fixed::from_ratio(3, 2);
 // off the others land. A new aim point this close to the last one is still
 // the same target. A target our scouts see is bracketed one step faster.
 inline constexpr std::array<int32_t, 3> kRangingChance = {17, 50, 95};
+inline constexpr std::array<int32_t, 3> kTabledRangingChance = {30, 70, 95};  // with firing tables
 inline constexpr std::array<Fixed, 3> kRangingSpread = {Fixed::from_int(4), Fixed::from_int(2), Fixed::from_int(1)};
 inline constexpr Fixed kOnTargetSpread = Fixed::from_ratio(3, 10);
 inline constexpr Fixed kSameTarget = Fixed::from_ratio(3, 2);
@@ -325,6 +341,7 @@ struct Unit {
     // Vehicles run out: fuel in tiles of driving, rounds for the main gun.
     Fixed fuel{};
     int32_t rounds = 0;
+    int32_t missiles = 0;  // guided missiles aboard (an IFV's ATGMs)
 
     // Guns: set up or packed, and how far that is along; the point being
     // bracketed and how many shots in.
@@ -480,6 +497,14 @@ public:
     bool fixed_by(PlayerId player, const Unit& u) const;
     // Rations: the men `player` has to feed, and whether his army went hungry.
     int32_t mouths(PlayerId player) const;
+    // A unit's rack: its rounds, more for foot soldiers in load-bearing vests.
+    int32_t rack(const Unit& u) const;
+    // How far orders get relayed: by a relay (a command vehicle, a
+    // signaller), and by `player`'s headquarters; mast antennas reach farther.
+    Fixed relay_reach(const Unit& relay) const;
+    Fixed headquarters_relay(PlayerId player) const;
+    // Ranging in: the chance of landing on target at a shot (1, 2, 3...).
+    int32_t ranging_chance(PlayerId player, int shot) const;
     // Housing: the men in service and in training, and the bunks there are for them.
     int32_t population(PlayerId player) const;
     int32_t bunks(PlayerId player) const;
@@ -643,7 +668,13 @@ private:
     bool own_troops_in_line(const Unit& shooter, const FireLine& line, Fixed start) const;
     // `spends` = the shot uses up one of the unit's rounds.
     bool try_fire(Unit& shooter, FixedVec2 aim, const Unit* target, const WeaponDef& weapon, bool spends = true);
-    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends = true);
+    // `guide`: a guided missile's target, followed if the shot is good.
+    void fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef& weapon, bool spends = true,
+              EntityId guide = 0);
+    // What a unit is short of, per mille of a full tank or rack (and missiles).
+    int64_t shortage(const Unit& v, Resource cargo) const;
+    Tick deploy_ticks(const Unit& u) const;
+    Fixed gun_reach(const Unit& u, const WeaponDef& weapon) const;
     bool out_of_rounds(const Unit& u) const;
     // Service vehicles: look after our vehicles nearby; load up at a depot.
     void serve(Unit& u);
