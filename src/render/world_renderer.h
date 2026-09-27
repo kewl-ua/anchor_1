@@ -80,6 +80,26 @@ private:
     static constexpr int kRemembered = 1;  // explored, not in view now
     static constexpr int kInView = 2;
     int fog(const engine::World& world, int tx, int ty) const;
+    // The light on the ground at a tile corner, from the slope around it,
+    // and at any ground point, blended from its tile's corners: smooth over
+    // hills and gullies.
+    float corner_light(int cx, int cy) const;
+    float light_at(Vector2 ground) const;
+    // A tile's ground, drawn like AoE II's: grass in patches of green and
+    // dry, ragged edges where kinds of ground meet, sand and foam along the
+    // water, bare trodden earth, tufts, bushes, flowers, stones.
+    // `overlay`: false, the ground itself; true, what goes over it once the
+    // tile's own markings (furrows, ruts, slabs) are down.
+    void paint_ground(const engine::World& world, int tx, int ty, engine::Terrain terrain, bool overlay) const;
+    // What ground shows at a point, and how much water is about it: every
+    // tile we know weighs on the points around its centre, fading out a tile
+    // away, and the heaviest ground shows, each weight wobbling a little so
+    // the lines between kinds of ground run ragged, not along tile edges.
+    struct GroundAt {
+        engine::Terrain terrain;
+        float water;  // 0..1
+    };
+    GroundAt ground_at(const engine::World& world, Vector2 p, engine::Terrain fallback) const;
     bool in_view(const engine::World& world, Vector2 ground) const;
     bool shows(const engine::World& world, const engine::Unit& u) const;
     void remember(const engine::World& world);
