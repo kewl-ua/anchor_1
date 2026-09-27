@@ -4350,6 +4350,69 @@ void test_crater_kinds() {
     CHECK(old[0] == 0 && old[1] > 0 && old[2] > 0 && old[3] > 0 && old[4] > 0);
 }
 
+// The highway runs straight along the diagonal, the same three tiles across
+// on both halves, so it crosses the river on a bridge as wide as the road.
+// The side bridges are two rows wide, a dirt road up to them from either
+// bank; a tank drives over one to the other side.
+void test_highway_and_bridges() {
+    for (const MapSizePreset& preset : kMapSizes) {
+        const TileMap map = make_demo_map(preset.tiles);
+        const int size = map.width();
+        int road = 0;
+        int central = 0;
+        int side = 0;
+        int approached = 0;
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const Terrain t = map.terrain(x, y);
+                const int a = x + y + 1 - size;  // along the river from the center
+                if (t == Terrain::Road) {
+                    ++road;
+                    CHECK(std::abs(a) <= 1);
+                }
+                if (t != Terrain::Bridge) continue;
+                if (std::abs(a) <= 1) {
+                    ++central;
+                    continue;
+                }
+                ++side;
+                const int offset = size * 25 / 100;
+                CHECK(std::abs(a) == offset || std::abs(a) == offset + 1);
+                bool dirt = false;
+                for (int k = 1; k <= 8; ++k) {
+                    for (const int d : {-1, 1}) {
+                        const int tx = x + d * k;
+                        const int ty = y - d * k;
+                        dirt = dirt || (map.contains_tile(tx, ty) && map.terrain(tx, ty) == Terrain::DirtRoad);
+                    }
+                }
+                approached += dirt ? 1 : 0;
+            }
+        }
+        CHECK(road > size && central >= 6 && side >= 6);
+        CHECK(approached == side);
+    }
+    // Over a side bridge, bank to bank.
+    Simulation sim(1, make_demo_map());
+    const int size = sim.world().map().width();
+    const int a = size * 25 / 100;
+    int bx = -1;
+    int by = -1;
+    for (int y = 0; y < size && bx < 0; ++y) {
+        for (int x = 0; x < size; ++x) {
+            if (sim.world().map().terrain(x, y) == Terrain::Bridge && x + y + 1 - size == a) {
+                bx = x;
+                by = y;
+                break;
+            }
+        }
+    }
+    CHECK(bx >= 0);
+    const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, tile_center({bx + 6, by - 6}));
+    const Trip trip = drive(sim, tank, bx - 6, by + 6, 3000);
+    CHECK(trip.arrived && trip.ticks < 900);
+}
+
 void test_vehicle_drives_around_forest() {
     Simulation sim(1, forest_wall_map());
     const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 5));
@@ -5204,6 +5267,7 @@ int main() {
     test_crops_swamps_and_craters();
     test_shelling_leaves_craters();
     test_crater_kinds();
+    test_highway_and_bridges();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
     test_group_moves_at_slowest_speed();

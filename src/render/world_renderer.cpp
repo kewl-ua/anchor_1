@@ -402,19 +402,26 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
     }
 
-    // Bridge decks: across the rows of the bridge's tiles, from bank to bank,
+    // Bridge decks: along the bridge's tiles from bank to bank, its middle a
+    // straight line through them, as wide as they lie either side of it,
     // level with the lowest bank beside it.
     bridge_decks_.clear();
     for (const engine::Structure& s : world.structures()) {
         if (s.type != engine::StructureType::Bridge || s.tiles.empty()) continue;
-        int row_min = 1 << 30;
-        int row_max = -(1 << 30);
         int col_min = 1 << 30;
         int col_max = -(1 << 30);
         int bank = engine::TileMap::kMaxElevation;
+        float sum_v = 0.0f;
+        float sum_u = 0.0f;
+        float sum_vv = 0.0f;
+        float sum_uv = 0.0f;
         for (const engine::TilePos& t : s.tiles) {
-            row_min = std::min(row_min, t.x + t.y);
-            row_max = std::max(row_max, t.x + t.y);
+            const auto u = static_cast<float>(t.x + t.y + 1);  // the tile's middle
+            const auto v = static_cast<float>(t.y - t.x);
+            sum_u += u;
+            sum_v += v;
+            sum_vv += v * v;
+            sum_uv += u * v;
             col_min = std::min(col_min, t.y - t.x);
             col_max = std::max(col_max, t.y - t.x);
             for (int dy = -1; dy <= 1; ++dy) {
@@ -425,8 +432,20 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 }
             }
         }
-        bridge_decks_.push_back({s.id, {static_cast<float>(row_min) + 0.5f, static_cast<float>(row_max) + 1.5f,
-                                        static_cast<float>(col_min) - 0.75f, static_cast<float>(col_max) + 0.75f,
+        const auto n = static_cast<float>(s.tiles.size());
+        const float spread = sum_vv - sum_v * sum_v / n;
+        const float slope = spread > 0.001f ? (sum_uv - sum_u * sum_v / n) / spread : 0.0f;
+        const float mean_u = sum_u / n;
+        const float mean_v = sum_v / n;
+        float half = 0.0f;
+        for (const engine::TilePos& t : s.tiles) {
+            const auto u = static_cast<float>(t.x + t.y + 1);
+            const auto v = static_cast<float>(t.y - t.x);
+            half = std::max(half, std::fabs(u - (mean_u + slope * (v - mean_v))));
+        }
+        const float v0 = static_cast<float>(col_min) - 1.0f;  // on to where the banks begin
+        const float v1 = static_cast<float>(col_max) + 1.0f;
+        bridge_decks_.push_back({s.id, {v0, v1, mean_u + slope * (v0 - mean_v), mean_u + slope * (v1 - mean_v), half + 0.65f,
                                         static_cast<float>(bank)}});
     }
     {
@@ -3221,14 +3240,15 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
 void ground_blob(const engine::TileMap& map, Vector2 c, float rx, float ry, Vector2 dir, Color color, uint32_t seed,
                  float rag);  // just below
 
-// A concrete road bridge from bank to bank, level with them: its deck of
-// patched asphalt with a faded centre line, cracks and potholes (more of them
-// the more it's been hit), expansion joints over the piers, pavements along
-// both sides behind kerbs, railings (broken in places once it's been hit), a
-// lamp post at each end; the concrete edge of the deck in front, the piers
-// under it standing in the river, foam round their feet, the deck's shadow on
-// the water.
+// A concrete road bridge from bank to bank, level with them and as wide as
+// the road, like Red Alert 2's: its deck of concrete slabs like the highway's
+// running on from the road, cracked and holed the more it's been hit; solid
+// concrete parapets along both sides, broken in a stretch once it's been
+// hit; along its near side a thick beam whose foot follows the ground, so at
+// both ends it runs into the bank; the piers standing in the river, foam
+// round their feet; its shadow on the water.
 void WorldRenderer::draw_bridges(const engine::World& world) const {
+    const engine::TileMap& map = world.map();
     for (const auto& [id, d] : bridge_decks_) {
         const engine::Structure* s = world.find_structure(id);
         if (!s) continue;
@@ -3240,131 +3260,140 @@ void WorldRenderer::draw_bridges(const engine::World& world) const {
             std::clamp(1.0f - static_cast<float>(s->hp) / static_cast<float>(engine::structure_type(s->type).max_hp), 0.0f, 1.0f);
         const uint32_t h = tile_hash(mid.x, mid.y);
         auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 6) + i * 19, i * 7 + 11)); };
-        auto at = [&](float u, float v, float lift = 0.0f) {
-            Vector2 p = iso::project({(u - v) * 0.5f, (u + v) * 0.5f}, d.height);
+        auto ground_of = [](float u, float v) { return Vector2{(u - v) * 0.5f, (u + v) * 0.5f}; };
+        // A point on the deck: `across` -1 at its far edge, 1 at its near one; `out` beyond that, in u.
+        auto at = [&](float across, float v, float lift = 0.0f, float out = 0.0f) {
+            Vector2 p = iso::project(ground_of(d.middle(v) + across * d.half + out, v), d.height);
             p.y -= lift;
             return p;
         };
-        auto water = [&](float u, float v) { return iso::project({(u - v) * 0.5f, (u + v) * 0.5f}, 0.0f); };
-        constexpr float kThick = 10.0f;  // the deck's beam, pixels
-        const Color concrete{156, 152, 142, 255};
+        auto ground_px = [&](float across, float v, float out) {  // the ground itself there, not the deck
+            const Vector2 g = ground_of(d.middle(v) + across * d.half + out, v);
+            const int tx = static_cast<int>(std::floor(g.x));
+            const int ty = static_cast<int>(std::floor(g.y));
+            float hgt = 0.0f;
+            if (tx >= 0 && ty >= 0 && tx < cache_width_ && ty < cache_height_) {
+                const float fx = g.x - static_cast<float>(tx);
+                const float fy = g.y - static_cast<float>(ty);
+                const float top = corner(tx, ty) * (1 - fx) + corner(tx + 1, ty) * fx;
+                const float bottom = corner(tx, ty + 1) * (1 - fx) + corner(tx + 1, ty + 1) * fx;
+                hgt = top * (1 - fy) + bottom * fy;
+            }
+            return iso::project(g, hgt);
+        };
+        auto over_water = [&](float v) {
+            const Vector2 g = ground_of(d.middle(v) + d.half + 0.3f, v);
+            const int tx = static_cast<int>(std::floor(g.x));
+            const int ty = static_cast<int>(std::floor(g.y));
+            if (!map.contains_tile(tx, ty)) return false;
+            const engine::Terrain t = map.terrain(tx, ty);
+            return t == engine::Terrain::Water || t == engine::Terrain::Bridge;
+        };
+        constexpr float kBeam = 11.0f;    // the beam under the deck's edge, pixels
+        constexpr float kParapet = 5.0f;  // the parapets' height
+        const Color concrete{168, 164, 154, 255};
         const float length = d.v1 - d.v0;
-        const int spans = std::max(2, static_cast<int>(length / 1.4f));
+        const int spans = std::max(2, static_cast<int>(length / 1.1f));
         auto span_at = [&](int k) { return d.v0 + length * static_cast<float>(k) / static_cast<float>(spans); };
+        constexpr int kSteps = 40;
+        auto step_v = [&](int k) { return d.v0 + length * static_cast<float>(k) / kSteps; };
 
-        // Its shadow on the water, to the lower right, and the dark under the deck.
-        fill_quad(water(d.u1, d.v0 + 0.6f), water(d.u1, d.v1 - 0.6f), water(d.u1 + 0.6f, d.v1 - 0.9f),
-                  water(d.u1 + 0.6f, d.v0 + 0.3f), {8, 18, 28, 90});
-        // The abutments at both ends: concrete walls from the deck down to the bank.
-        for (const float v : {d.v0 + 0.35f, d.v1 - 0.35f}) {
-            const float side = v < (d.v0 + d.v1) * 0.5f ? 1.0f : -1.0f;  // towards the river
-            const Vector2 top_in = at(d.u1, v + side * 0.5f, -kThick);
-            const Vector2 top_out = at(d.u1, v - side * 0.3f, -kThick);
-            const Vector2 foot_in = water(d.u1 + 0.1f, v + side * 0.5f);
-            const Vector2 foot_out = water(d.u1 + 0.1f, v - side * 0.1f);
-            fill_quad(top_out, top_in, foot_in, foot_out, shade(concrete, side > 0.0f ? 0.8f : 0.62f));
+        // Its shadow on the water right under it, a little to the lower right.
+        for (int k = 0; k < kSteps; ++k) {
+            const float va = step_v(k);
+            const float vb = step_v(k + 1);
+            if (!over_water(va) || !over_water(vb)) continue;
+            auto water = [&](float v, float across) {
+                Vector2 p = iso::project(ground_of(d.middle(v) + across * d.half, v), 0.0f);
+                p.x += 7.0f;
+                return p;
+            };
+            fill_quad(water(va, -0.2f), water(vb, -0.2f), water(vb, 1.15f), water(va, 1.15f), {6, 14, 24, 90});
         }
-        // The piers under its near edge: a cap, a column, the waterline, foam.
+        // The piers in the river under its near side: a cap, a column, the waterline, foam.
         for (int k = 1; k < spans; ++k) {
             const float v = span_at(k);
-            const Vector2 top = at(d.u1 - 0.25f, v, -kThick);
-            const Vector2 foot = water(d.u1 - 0.25f, v);
-            if (foot.y <= top.y) continue;
-            fill_quad({top.x - 7.0f, top.y}, {top.x + 7.0f, top.y}, {top.x + 7.0f, top.y + 3.0f}, {top.x - 7.0f, top.y + 3.0f},
-                      shade(concrete, 0.75f));
-            fill_quad({top.x - 5.0f, top.y + 3.0f}, {top.x + 5.0f, top.y + 3.0f}, {foot.x + 5.0f, foot.y}, {foot.x - 5.0f, foot.y},
-                      shade(concrete, 0.55f));
-            fill_quad({top.x - 5.0f, top.y + 3.0f}, {top.x - 1.5f, top.y + 3.0f}, {foot.x - 1.5f, foot.y}, {foot.x - 5.0f, foot.y},
-                      shade(concrete, 0.8f));
-            DrawLineEx({foot.x - 5.0f, foot.y - 3.0f}, {foot.x + 5.0f, foot.y - 3.0f}, 1.5f, lit({66, 80, 66, 255}));  // the waterline
+            if (!over_water(v - 0.3f) || !over_water(v + 0.3f)) continue;
+            const Vector2 cap = at(1.0f, v, -kBeam, -0.15f);
+            const Vector2 foot = ground_px(1.0f, v, -0.15f);
+            if (foot.y <= cap.y + 2.0f) continue;
+            fill_quad({cap.x - 5.0f, cap.y}, {cap.x + 5.0f, cap.y}, {foot.x + 5.0f, foot.y}, {foot.x - 5.0f, foot.y}, shade(concrete, 0.55f));
+            fill_quad({cap.x - 5.0f, cap.y}, {cap.x - 1.5f, cap.y}, {foot.x - 1.5f, foot.y}, {foot.x - 5.0f, foot.y}, shade(concrete, 0.8f));
+            DrawLineEx({foot.x - 5.0f, foot.y - 3.0f}, {foot.x + 5.0f, foot.y - 3.0f}, 1.5f, lit({66, 80, 66, 255}));
             DrawEllipse(static_cast<int>(foot.x + 1.5f), static_cast<int>(foot.y), 9.0f, 2.6f, lit({214, 224, 226, 150}));
         }
-        // The beam along its near edge: a lit cornice over a shadowed face, stained along the bottom.
-        fill_quad(at(d.u1, d.v0), at(d.u1, d.v1), at(d.u1, d.v1, -kThick), at(d.u1, d.v0, -kThick), shade(concrete, 0.66f));
-        DrawLineEx(at(d.u1, d.v0, -1.5f), at(d.u1, d.v1, -1.5f), 3.0f, lit(shade(concrete, 0.95f)));
-        DrawLineEx(at(d.u1, d.v0, -kThick + 1.5f), at(d.u1, d.v1, -kThick + 1.5f), 2.0f, lit({74, 70, 62, 255}));
+        // The beam along its near side, down to the ground where there's ground under it.
+        for (int k = 0; k < kSteps; ++k) {
+            const float va = step_v(k);
+            const float vb = step_v(k + 1);
+            const Vector2 ta = at(1.0f, va);
+            const Vector2 tb = at(1.0f, vb);
+            const float ba = std::min(ground_px(1.0f, va, 0.05f).y, ta.y + kBeam);
+            const float bb = std::min(ground_px(1.0f, vb, 0.05f).y, tb.y + kBeam);
+            if (ba <= ta.y + 0.5f && bb <= tb.y + 0.5f) continue;  // buried in the bank
+            fill_quad(ta, tb, {tb.x, std::max(bb, tb.y)}, {ta.x, std::max(ba, ta.y)}, shade(concrete, 0.68f));
+        }
         for (int k = 1; k < spans; ++k) {
             const float v = span_at(k);
-            DrawLineV(at(d.u1, v, -2.5f), at(d.u1, v, -kThick), lit({70, 68, 62, 255}));  // the joints between the beams
+            if (!over_water(v)) continue;
+            DrawLineEx(at(1.0f, v, -2.5f), at(1.0f, v, -kBeam), 1.5f, lit(shade(concrete, 0.55f)));  // the joints
         }
 
         set_grain(grain_of(engine::Terrain::Road));
-        // The deck: asphalt between the pavements.
-        const float walk = 0.32f;
-        fill_quad(at(d.u0, d.v0), at(d.u0, d.v1), at(d.u1, d.v1), at(d.u1, d.v0), shade({82, 84, 86, 255}, 1.0f - 0.2f * damage));
-        fill_quad(at(d.u0, d.v0, 1.5f), at(d.u0, d.v1, 1.5f), at(d.u0 + walk, d.v1, 1.5f), at(d.u0 + walk, d.v0, 1.5f),
-                  shade(concrete, 0.95f));
-        fill_quad(at(d.u1 - walk, d.v0, 1.5f), at(d.u1 - walk, d.v1, 1.5f), at(d.u1, d.v1, 1.5f), at(d.u1, d.v0, 1.5f),
-                  shade(concrete, 0.9f));
-        DrawLineEx(at(d.u0 + walk, d.v0, 1.5f), at(d.u0 + walk, d.v1, 1.5f), 1.2f, lit({190, 186, 176, 255}));  // kerbs
-        DrawLineEx(at(d.u1 - walk, d.v0), at(d.u1 - walk, d.v1), 1.5f, lit({110, 108, 102, 255}));
-        // Patches, cracks and potholes.
-        const int marks = 5 + static_cast<int>(damage * 14.0f);
+        // The deck: slabs like the highway's, seams across, the joints over the piers.
+        fill_quad(at(-1.0f, d.v0), at(-1.0f, d.v1), at(1.0f, d.v1), at(1.0f, d.v0),
+                  shade(theme::terrain_color(engine::Terrain::Road), 1.0f - 0.2f * damage));
+        DrawLineEx(at(1.0f, d.v0, -1.2f), at(1.0f, d.v1, -1.2f), 2.4f, lit(shade(concrete, 0.95f)));  // the cornice
+        for (float v = d.v0 + 0.5f; v < d.v1 - 0.2f; v += 0.5f) DrawLineV(at(-0.85f, v), at(0.85f, v), lit({112, 112, 110, 255}));
+        for (int k = 1; k < spans; ++k) DrawLineEx(at(-0.85f, span_at(k)), at(0.85f, span_at(k)), 1.5f, lit({60, 60, 60, 255}));
+        // Cracks, and holes once it's been hit.
+        const int marks = 2 + static_cast<int>(damage * 10.0f);
         for (int k = 0; k < marks; ++k) {
-            const float u = d.u0 + walk + 0.1f + (d.u1 - d.u0 - 2.0f * walk - 0.2f) * rnd(k);
-            const float v = d.v0 + 0.3f + (length - 0.6f) * rnd(k + 40);
-            const int kind = k < 5 ? static_cast<int>(rnd(k + 80) * 2.0f) : 2;  // a hit leaves holes
-            if (kind == 0) {
-                ground_blob(world.map(), {(u - v) * 0.5f, (u + v) * 0.5f}, 0.22f, 0.14f, {0.7071f, 0.7071f},
-                            shade({70, 72, 74, 255}, 0.95f + 0.1f * rnd(k + 90)), h + static_cast<uint32_t>(k), 0.2f);
-            } else if (kind == 1) {
-                Vector2 p = at(u, v);
+            const Vector2 p = at(-0.7f + 1.4f * rnd(k), d.v0 + 0.4f + (length - 0.8f) * rnd(k + 40));
+            if (k < 2) {
+                Vector2 q = p;
                 for (int j = 0; j < 4; ++j) {
-                    const Vector2 q{p.x + (rnd(k * 5 + j) - 0.5f) * 10.0f, p.y + (rnd(k * 5 + j + 20) - 0.5f) * 4.0f};
-                    DrawLineV(p, q, lit({44, 44, 46, 255}));
-                    p = q;
+                    const Vector2 r{q.x + (rnd(k * 5 + j) - 0.5f) * 10.0f, q.y + (rnd(k * 5 + j + 20) - 0.5f) * 4.0f};
+                    DrawLineV(q, r, lit({70, 70, 70, 255}));
+                    q = r;
                 }
             } else {
-                const Vector2 p = at(u, v);
                 const float r = 2.0f + 2.5f * rnd(k + 60);
-                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), r * 1.7f, r * 0.8f, lit({112, 108, 100, 255}));
-                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y + 0.4f), r * 1.3f, r * 0.55f, lit({34, 32, 30, 255}));
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), r * 1.7f, r * 0.8f, lit({120, 116, 108, 255}));
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y + 0.4f), r * 1.3f, r * 0.55f, lit({30, 28, 26, 255}));
             }
-        }
-        // Expansion joints over the piers, the faded centre line.
-        for (int k = 1; k < spans; ++k) {
-            const float v = d.v0 + length * static_cast<float>(k) / static_cast<float>(spans);
-            DrawLineEx(at(d.u0 + walk, v), at(d.u1 - walk, v), 1.5f, lit({52, 52, 54, 255}));
-        }
-        const float centre = (d.u0 + d.u1) * 0.5f;
-        for (float v = d.v0 + 0.3f; v < d.v1 - 0.4f; v += 0.6f) {
-            DrawLineEx(at(centre, v), at(centre, v + 0.3f), 1.6f, lit({196, 192, 172, 150}));
-        }
-        for (const float u : {d.u0 + walk + 0.12f, d.u1 - walk - 0.12f}) {
-            DrawLineEx(at(u, d.v0 + 0.1f), at(u, d.v1 - 0.1f), 1.2f, lit({184, 180, 164, 110}));  // the lane edges
-        }
-        const float lane = (d.u1 - d.u0 - 2.0f * walk) * 0.25f;
-        for (const float u : {d.u0 + walk + lane * 0.7f, d.u0 + walk + lane * 1.3f, d.u1 - walk - lane * 1.3f, d.u1 - walk - lane * 0.7f}) {
-            DrawLineEx(at(u, d.v0), at(u, d.v1), 2.4f, lit({64, 66, 68, 120}));  // worn by the wheels
         }
         set_grain(kObjectGrain);
-        // Railings on both sides: kerb posts and two rails, broken where it's been hit.
-        const float gap = damage > 0.25f ? d.v0 + length * (0.2f + 0.6f * rnd(200)) : -1.0e6f;
-        const float gap_len = 0.4f + damage * 1.2f;
-        for (const float u : {d.u0 + 0.05f, d.u1 - 0.05f}) {
-            const Color metal = u < centre ? Color{104, 108, 104, 255} : Color{88, 92, 88, 255};
-            for (float v = d.v0 + 0.1f; v <= d.v1 - 0.1f; v += 0.16f) {
-                if (u > centre && v > gap && v < gap + gap_len) continue;
-                const Vector2 b = at(u, v, 1.5f);
-                DrawLineEx(b, {b.x, b.y - 10.0f}, 1.1f, lit(metal));
-            }
-            for (const float lift : {6.0f, 11.5f}) {
-                if (u > centre && gap > d.v0) {
-                    DrawLineEx(at(u, d.v0 + 0.1f, lift), at(u, gap, lift), 1.3f, lit(shade(metal, 1.15f)));
-                    DrawLineEx(at(u, std::min(d.v1 - 0.1f, gap + gap_len), lift), at(u, d.v1 - 0.1f, lift), 1.3f, lit(shade(metal, 1.15f)));
-                } else {
-                    DrawLineEx(at(u, d.v0 + 0.1f, lift), at(u, d.v1 - 0.1f, lift), 1.3f, lit(shade(metal, 1.15f)));
-                }
-            }
+        // The parapets: solid concrete, a lit top; the near one broken in a stretch once it's been hit.
+        const float gap = damage > 0.25f ? d.v0 + length * (0.25f + 0.5f * rnd(200)) : -1.0e6f;
+        const float gap_len = 0.4f + damage * 1.0f;
+        auto parapet = [&](float across, float va, float vb, float k) {
+            fill_quad(at(across, va), at(across, vb), at(across, vb, kParapet), at(across, va, kParapet), shade(concrete, k));
+            fill_quad(at(across, va, kParapet), at(across, vb, kParapet), at(across, vb, kParapet, -0.14f), at(across, va, kParapet, -0.14f),
+                      shade(concrete, 1.08f));
+            for (float v = va + 0.4f; v < vb - 0.1f; v += 0.8f) DrawLineV(at(across, v), at(across, v, kParapet), lit(shade(concrete, k * 0.8f)));
+        };
+        // Posts at the ends of the parapets, a little taller, where the bridge meets the road.
+        auto post = [&](float across, float v) {
+            const Vector2 b = at(across, v);
+            fill_quad({b.x - 3.5f, b.y}, {b.x + 3.5f, b.y}, {b.x + 3.5f, b.y - kParapet - 3.0f}, {b.x - 3.5f, b.y - kParapet - 3.0f},
+                      shade(concrete, 0.8f));
+            fill_quad({b.x - 3.5f, b.y}, {b.x, b.y}, {b.x, b.y - kParapet - 3.0f}, {b.x - 3.5f, b.y - kParapet - 3.0f}, shade(concrete, 1.0f));
+            fill_quad({b.x - 3.5f, b.y - kParapet - 3.0f}, {b.x + 3.5f, b.y - kParapet - 3.0f}, {b.x + 2.5f, b.y - kParapet - 4.5f},
+                      {b.x - 4.5f, b.y - kParapet - 4.5f}, shade(concrete, 1.12f));
+        };
+        post(-1.0f, d.v0 + 0.1f);
+        post(-1.0f, d.v1 - 0.1f);
+        parapet(-1.0f, d.v0, d.v1, 0.9f);  // the far one: its inner face towards us
+        if (gap > d.v0) {
+            parapet(1.0f, d.v0, gap, 0.76f);
+            parapet(1.0f, std::min(d.v1, gap + gap_len), d.v1, 0.76f);
+            for (int k = 0; k < 4; ++k) disc(at(0.7f - 0.3f * rnd(300 + k), gap + gap_len * rnd(310 + k)), 1.5f + rnd(320 + k), shade(concrete, 0.8f));
+        } else {
+            parapet(1.0f, d.v0, d.v1, 0.76f);
         }
-        // A lamp post at each end, on the near pavement: a pole, an arm, a lamp.
-        for (const float v : {d.v0 + 0.25f, d.v1 - 0.25f}) {
-            const Vector2 b = at(d.u1 - walk * 0.5f, v, 1.5f);
-            DrawLineEx(b, {b.x, b.y - 30.0f}, 2.0f, lit({78, 82, 80, 255}));
-            const float side = v < centre ? -1.0f : 1.0f;
-            DrawLineEx({b.x, b.y - 30.0f}, {b.x + side * 5.0f, b.y - 32.0f}, 1.5f, lit({78, 82, 80, 255}));
-            DrawEllipse(static_cast<int>(b.x + side * 6.0f), static_cast<int>(b.y - 31.0f), 2.6f, 1.4f, lit({200, 196, 170, 255}));
-        }
+        post(1.0f, d.v0 + 0.1f);
+        post(1.0f, d.v1 - 0.1f);
         set_grain({});
     }
     g_light = 1.0f;

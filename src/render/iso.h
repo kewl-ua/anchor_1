@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <vector>
 
 #include <raylib.h>
@@ -40,15 +41,19 @@ Vector2 pick_ground(const engine::TileMap& map, Vector2 iso_px);
 // Iso-space rectangle that contains the whole map.
 Rectangle map_bounds(const engine::TileMap& map);
 
-// A bridge's deck: flat at its banks' level over the river, between u0..u1
-// across the bridge and v0..v1 along it (u = x + y, v = y - x: on screen
-// rows and columns). A point on it stands on the deck, not in the water.
+// A bridge's deck: flat at its banks' level over the river, from v0 to v1
+// along it, its middle running from u0 (at v0) to u1 (at v1), `half` either
+// side of that (u = x + y, v = y - x: on screen rows and columns). A point on
+// it stands on the deck, not in the water.
 struct Deck {
-    float u0;
-    float u1;
     float v0;
     float v1;
+    float u0;
+    float u1;
+    float half;
     float height;  // elevation levels
+    float middle(float v) const { return u0 + (u1 - u0) * (v - v0) / (v1 - v0); }
+    bool contains(float u, float v) const { return v >= v0 && v <= v1 && std::fabs(u - middle(v)) <= half; }
 };
 void set_decks(std::vector<Deck> decks);
 

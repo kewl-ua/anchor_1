@@ -9,13 +9,23 @@ namespace render::iso {
 float corner_height(const engine::TileMap& map, int cx, int cy) {
     float sum = 0.0f;
     int count = 0;
+    bool bridge = false;
+    int land = -1;
     for (int ty = cy - 1; ty <= cy; ++ty) {
         for (int tx = cx - 1; tx <= cx; ++tx) {
             if (!map.contains_tile(tx, ty)) continue;
             sum += map.elevation(tx, ty);
             ++count;
+            const engine::Terrain t = map.terrain(tx, ty);
+            if (t == engine::Terrain::Bridge) {
+                bridge = true;
+            } else if (t != engine::Terrain::Water) {
+                land = std::max<int>(land, map.elevation(tx, ty));
+            }
         }
     }
+    // Where a bridge meets the bank, the bank stays level up to its end.
+    if (bridge && land >= 0) return static_cast<float>(land);
     return count ? sum / static_cast<float>(count) : 0.0f;
 }
 
@@ -29,7 +39,7 @@ float surface_height(const engine::TileMap& map, Vector2 ground) {
     const float u = ground.x + ground.y;
     const float v = ground.y - ground.x;
     for (const Deck& d : g_decks) {
-        if (u >= d.u0 && u <= d.u1 && v >= d.v0 && v <= d.v1) return d.height;
+        if (d.contains(u, v)) return d.height;
     }
     const float x = std::clamp(ground.x, 0.0f, static_cast<float>(map.width()) - 0.001f);
     const float y = std::clamp(ground.y, 0.0f, static_cast<float>(map.height()) - 0.001f);

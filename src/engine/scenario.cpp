@@ -126,9 +126,10 @@ constexpr int32_t kCowshedGap = 4;  // from one cowshed's front to the next one'
 constexpr Barn kHoldings[] = {{15, 66}, {33, 53}};
 constexpr int32_t kHoldingShedOffset = -4;  // tiles from the coop to the cow shed
 // The concrete highway runs from the base to the central bridge (and on,
-// mirrored, to the other base); dirt roads lead off it to the villages,
-// the farms and the fields.
-constexpr Segment kHighway = {18, 82, 50, 50};
+// mirrored, to the other base), straight along the diagonal x + y = size - 1,
+// three tiles across it (so the two halves meet in one straight road over
+// the river); dirt roads lead off it to the villages, the farms and the fields.
+constexpr Segment kHighway = {18, 82, 50, 50};  // the rows it runs through
 constexpr Segment kDirtRoads[] = {
     {34, 53, 34, 64}, {14, 63, 27, 73}, {20, 78, 20, 56}, {34, 64, 40, 60},
 };
@@ -159,8 +160,10 @@ constexpr Rect kShelledBelt = {35, 48, 15, 17};
 
 constexpr int32_t kRiverAmplitudePct = 5;
 constexpr int64_t kRiverHalfWidth = 2;   // in diagonal steps: ~3.5 tiles wide
-constexpr int64_t kBridgeHalfWidth = 2;  // along the river: wide enough to span it
 constexpr int32_t kBridgeOffsetPct = 25;  // side bridges, measured along the river from the center
+constexpr int32_t kBridgeApproach = 8;    // tiles of dirt road up to a side bridge from either bank
+// The side bridges are two rows of tiles wide (so a vehicle can follow them);
+// the highway gets its own where it crosses the river, as wide as the road.
 constexpr int32_t kBaseInsetPct = 15;     // bases sit this far from the corners
 constexpr int32_t kBaseClearingPct = 6;
 constexpr int32_t kArmyForwardTiles = 10;  // the army stands this far in front of the headquarters
@@ -238,7 +241,7 @@ void paint_river(Painter& p, int32_t size) {
     const int64_t wavelength = std::max<int64_t>(8, (size * 4 / 3) & ~int64_t{1});  // even
     const int64_t half = wavelength / 2;
     const int64_t amplitude = size * kRiverAmplitudePct / 100;
-    const int64_t bridges[] = {0, size * kBridgeOffsetPct / 100, -size * kBridgeOffsetPct / 100};
+    const int64_t side = size * kBridgeOffsetPct / 100;
 
     for (int32_t y = 0; y < size; ++y) {
         for (int32_t x = 0; x < size; ++x) {
@@ -251,8 +254,8 @@ void paint_river(Painter& p, int32_t size) {
             const int64_t center = phase < half ? bend : -bend;
             if (std::abs(b - center) > kRiverHalfWidth) continue;
 
-            bool bridge = false;
-            for (int64_t at : bridges) bridge = bridge || std::abs(a - at) <= kBridgeHalfWidth;
+            // Rows side and side + 1, and their mirror images -side and -side - 1.
+            const bool bridge = a == side || a == side + 1 || a == -side || a == -side - 1;
             p.paint(x, y, bridge ? Terrain::Bridge : Terrain::Water);
         }
     }
@@ -474,15 +477,28 @@ TileMap make_demo_map(int32_t size) {
                           under == Terrain::Swamp || under == Terrain::DirtRoad || under == Terrain::Wheat ||
                           under == Terrain::Orchard || under == Terrain::Garden;
         if (open) p.paint(x, y, t);
+        if (under == Terrain::Water && t == Terrain::Road) p.paint(x, y, Terrain::Bridge);  // over the river
     };
     for (const Segment& s : kDirtRoads) p.line(s, [&](int32_t x, int32_t y, int32_t) { road(x, y, Terrain::DirtRoad); });
-    p.line(kHighway, [&](int32_t x, int32_t y, int32_t) {
-        road(x, y, Terrain::Road);
-        road(x + 1, y, Terrain::Road);  // two lanes
+    // Dirt roads up to the side bridges from either bank, straight on from the deck.
+    for (int32_t y = 0; y < size; ++y) {
+        for (int32_t x = 0; x < size; ++x) {
+            if (map.terrain(x, y) != Terrain::Bridge || std::abs(x + y + 1 - size) <= 2) continue;  // not the highway's
+            for (int32_t k = 1; k <= kBridgeApproach; ++k) {
+                road(x - k, y + k, Terrain::DirtRoad);
+                road(x + k, y - k, Terrain::DirtRoad);
+            }
+        }
+    }
+    // The highway's tiles in a row: x + y from size - 2 to size (the same on the mirrored half).
+    auto lane = [size](int32_t y) { return size - 2 - y; };
+    p.line(kHighway, [&](int32_t, int32_t y, int32_t) {
+        for (int32_t k = 0; k < 3; ++k) road(lane(y) + k, y, Terrain::Road);
     });
-    p.line(kHighway, [&](int32_t x, int32_t y, int32_t i) {
+    p.line(kHighway, [&](int32_t, int32_t y, int32_t i) {
         if (i % kTreeLineGapEvery < kTreeLineGapWidth) return;
-        for (const int32_t tx : {x - 1 - kHighwayVerge, x + 2 + kHighwayVerge}) {
+        // Two tiles a row, so each tree line is one unbroken belt, not a string of lone trees.
+        for (const int32_t tx : {lane(y) - 2 - kHighwayVerge, lane(y) - 1 - kHighwayVerge, lane(y) + 3 + kHighwayVerge, lane(y) + 4 + kHighwayVerge}) {
             if (!map.contains_tile(tx, y)) continue;
             const Terrain under = map.terrain(tx, y);
             if (under == Terrain::Grass || under == Terrain::Plowed || under == Terrain::Crops || under == Terrain::Wheat) {
@@ -568,7 +584,7 @@ TileMap make_demo_map(int32_t size) {
     {
         // The highway runs where x + y = size: the station stands just off it.
         const int32_t x = p.at(kGasStationAlongPct);
-        building(x - 4, size - x - 1, 2, 2, Terrain::GasStation);
+        building(x - 5, size - x - 1, 2, 2, Terrain::GasStation);
     }
 
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
