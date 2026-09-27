@@ -160,6 +160,45 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(station->center);
     }
 
+    if (options.scene == "forward" && options.mode == Options::Mode::Offline) {
+        // Offline: the barn nearest our base is already an ammunition depot and
+        // an empty ammunition truck drives up to it to load; two rear troops
+        // are turning the other barn into a fuel depot. The depot stays selected.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        std::vector<const engine::Structure*> barns;
+        for (const engine::Structure& s : world.structures()) {
+            if (s.type == engine::StructureType::House && s.tiles.size() >= engine::kSpaciousTiles) barns.push_back(&s);
+        }
+        std::sort(barns.begin(), barns.end(), [&](const engine::Structure* a, const engine::Structure* b) {
+            return (a->center - base).length_sq_raw() < (b->center - base).length_sq_raw();
+        });
+        if (barns.size() < 2) return std::nullopt;
+        const engine::EntityId depot = barns[0]->id;
+        const engine::EntityId other = barns[1]->id;
+        engine::World& w = game.world_for_setup();
+        w.set_stock(me, {10, 300, 300, 300, 300});
+        engine::Structure* d = w.structure_for_setup(depot);
+        d->converted = engine::StructureType::AmmoDepot;
+        d->owner = me;
+        const engine::FixedVec2 near_other = w.find_structure(other)->center + engine::FixedVec2{engine::Fixed::from_int(3),
+                                                                                                 engine::Fixed::from_int(3)};
+        std::vector<engine::EntityId> crew;
+        for (int i = 0; i < 2; ++i) {
+            crew.push_back(w.spawn_unit(me, engine::UnitTypeId::Worker,
+                                        {near_other.x + engine::Fixed::from_int(i), near_other.y}));
+        }
+        game.submit({.type = engine::CommandType::Build, .units = crew, .target_unit = other,
+                     .structure_type = static_cast<uint8_t>(engine::StructureType::FuelDepot)});
+        const engine::EntityId truck = w.spawn_unit(
+            me, engine::UnitTypeId::AmmoTruck,
+            w.find_structure(depot)->center + engine::FixedVec2{engine::Fixed::from_int(8), engine::Fixed::from_int(4)});
+        w.unit_for_setup(truck)->carrying = 0;
+        game.submit({.type = engine::CommandType::Ability, .units = {truck},
+                     .ability = static_cast<uint8_t>(engine::AbilityId::Refill)});
+        game.select_structure(depot);
+        return render::to_vector2(w.find_structure(depot)->center);
+    }
+
     if (options.scene == "recon") {
         // The two scouts take up observation posts watching towards the
         // enemy; the sectors show while they are selected.

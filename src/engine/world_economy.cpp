@@ -83,6 +83,11 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
     return structures_.back().id;
 }
 
+bool World::can_convert(const Structure& s, PlayerId player) const {
+    return s.type == StructureType::House && s.converted == StructureType::Count && s.built &&
+           s.tiles.size() >= kSpaciousTiles && (s.owner == kNoOwner || s.owner == player);
+}
+
 bool World::can_place(StructureType type, TilePos origin) const {
     const StructureDef& def = structure_type(type);
     if (!def.buildable) return false;
@@ -125,9 +130,29 @@ void World::apply_build(const Command& cmd) {
 
     EntityId site = cmd.target_unit;
     if (site != 0) {
-        // Help finish one of our own building sites.
-        const Structure* s = find_structure(site);
-        if (!s || s->owner != cmd.player || s->built) return;
+        Structure* s = find_structure_mut(site);
+        if (!s) return;
+        const auto depot = static_cast<StructureType>(cmd.structure_type);
+        if (s->owner == cmd.player && !s->built) {
+            // Help finish one of our own building sites.
+        } else if (cmd.structure_type < kStructureTypeCount && depot_cargo(depot) && can_convert(*s, cmd.player)) {
+            // Turn a spacious village building into a depot: whoever of ours
+            // is inside comes out, and the work starts.
+            Stock& stock = stock_[cmd.player % kMaxPlayers];
+            if (!can_afford(stock, kConversionCost)) return;
+            pay(stock, kConversionCost);
+            const std::vector<EntityId> inside = s->garrison;
+            for (EntityId id : inside) {
+                if (Unit* u = find_unit_mut(id)) leave_structure(*u);
+            }
+            s = find_structure_mut(site);
+            s->converted = depot;
+            s->owner = cmd.player;
+            s->built = false;
+            s->build_progress = 0;
+        } else {
+            return;
+        }
     } else {
         // Lay a new foundation: paid up front, like in AoE II.
         if (cmd.structure_type >= kStructureTypeCount) return;
@@ -289,6 +314,11 @@ void World::update_building(Unit& u) {
     if (distance_sq_to(*s, u.pos) <= square_raw(kDoorReach)) {
         const StructureDef& def = structure_type(s->type);
         u.facing = s->center - u.pos;
+        if (s->converted != StructureType::Count) {
+            // A building being turned into a depot stands already: just the work.
+            if (++s->build_progress >= kConversionWork) s->built = true;
+            return;
+        }
         const int32_t before = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
         ++s->build_progress;
         const int32_t after = def.max_hp * static_cast<int32_t>(s->build_progress) / static_cast<int32_t>(def.build_time);
@@ -350,7 +380,7 @@ void World::update_trains() {
 void World::apply_haul(const Command& cmd) {
     const Structure* depot = find_structure(cmd.target_unit);
     const std::optional<Resource> depot_takes =
-        depot && depot->owner == cmd.player ? depot_cargo(depot->type) : std::nullopt;
+        depot && depot->owner == cmd.player ? depot_cargo(role_of(*depot)) : std::nullopt;
     std::optional<Resource> cargo;
     if (cmd.cargo >= haul_code(Resource::Personnel) && cmd.cargo <= haul_code(Resource::Fuel)) {
         cargo = static_cast<Resource>(cmd.cargo - 1);
@@ -380,7 +410,7 @@ void World::apply_haul(const Command& cmd) {
 
 const Structure* World::haul_destination(const Unit& truck, Resource cargo) const {
     if (const Structure* own = find_structure(truck.haul_depot);
-        own && own->owner == truck.owner && own->built && depot_cargo(own->type) == cargo) {
+        own && own->owner == truck.owner && own->built && depot_cargo(role_of(*own)) == cargo) {
         return own;
     }
     const std::optional<StructureType> type = depot_for(cargo);
@@ -512,7 +542,7 @@ const Structure* World::nearest_owned(PlayerId owner, StructureType type, FixedV
     const Structure* best = nullptr;
     uint64_t best_sq = 0;
     for (const Structure& s : structures_) {
-        if (s.type != type || s.owner != owner || !s.built) continue;
+        if (role_of(s) != type || s.owner != owner || !s.built) continue;
         const uint64_t d = distance_sq_to(s, from);
         if (!best || d < best_sq) {
             best = &s;

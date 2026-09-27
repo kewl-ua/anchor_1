@@ -66,6 +66,15 @@ struct Rect {
     int32_t h_pct;
 };
 constexpr Rect kVillages[] = {{36, 50, 4, 3}, {10, 62, 4, 3}};
+// Farm buildings near the middle, in a yard: spacious enough to be turned
+// into a forward depot (see kSpaciousTiles). Top-left corners; tiles.
+struct Barn {
+    int32_t x_pct;
+    int32_t y_pct;
+};
+constexpr Barn kBarns[] = {{31, 65}, {37, 55}};
+constexpr int32_t kBarnWidth = 4;
+constexpr int32_t kBarnHeight = 2;
 
 constexpr int32_t kRiverAmplitudePct = 5;
 constexpr int64_t kRiverHalfWidth = 2;   // in diagonal steps: ~3.5 tiles wide
@@ -235,6 +244,16 @@ TileMap make_demo_map(int32_t size) {
                 // 2x2 blocks of houses separated by one-tile streets.
                 const bool house = dx % 3 != 0 && dy % 3 != 0;
                 p.paint(x0 + dx, y0 + dy, house ? Terrain::House : Terrain::Urban);
+            }
+        }
+    }
+    for (const Barn& b : kBarns) {
+        const int32_t x0 = p.at(b.x_pct);
+        const int32_t y0 = p.at(b.y_pct);
+        for (int32_t dy = -1; dy <= kBarnHeight; ++dy) {
+            for (int32_t dx = -1; dx <= kBarnWidth; ++dx) {
+                const bool inside = dx >= 0 && dx < kBarnWidth && dy >= 0 && dy < kBarnHeight;
+                p.paint(x0 + dx, y0 + dy, inside ? Terrain::House : Terrain::Urban);
             }
         }
     }

@@ -37,11 +37,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         targeting_ = Targeting::None;
         placing_.reset();
         build_menu_ = false;
+        convert_menu_ = false;
     }
     if (selection_.empty()) targeting_ = Targeting::None;
     if (!has_workers(world)) {
         placing_.reset();
         build_menu_ = false;
+        convert_menu_ = false;
+        if (targeting_ == Targeting::Convert) targeting_ = Targeting::None;
     }
 
     // The grid's hotkeys: a key presses whatever its cell holds.
@@ -98,6 +101,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
             if (targeting_ == Targeting::Observe) order_to_point(lockstep, renderer, *target, engine::CommandType::Observe);
             if (targeting_ == Targeting::Ability) order_ability(lockstep, world, renderer, aiming_, *target, *target);
+            if (targeting_ == Targeting::Convert) {
+                order_convert(lockstep, world, renderer, *target);
+                convert_menu_ = false;
+            }
             if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more clicks
         } else if (!over_hud) {
             pressing_ = true;
@@ -135,7 +142,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             } else if (structure && structure->owner == player_ && !structure->built &&
                        (has_workers(world) || has_engineers(world))) {
                 order_help_build(lockstep, structure->id);
-            } else if (structure && structure->owner == player_ && refills_at(world, structure->type)) {
+            } else if (structure && structure->owner == player_ && refills_at(world, engine::role_of(*structure))) {
                 // Tankers to the fuel depot, ammunition trucks to the ammunition depot: load up.
                 engine::Command refill{.type = engine::CommandType::Ability,
                                        .ability = static_cast<uint8_t>(engine::AbilityId::Refill)};
@@ -143,16 +150,16 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                 for (engine::EntityId id : selection_) {
                     const engine::Unit* u = world.find_unit(id);
                     if (!u) continue;
-                    (depot_for_refill(u->type) == structure->type ? refill : move).units.push_back(id);
+                    (depot_for_refill(u->type) == engine::role_of(*structure) ? refill : move).units.push_back(id);
                 }
                 if (!refill.units.empty()) lockstep.submit(std::move(refill));
                 if (!move.units.empty()) lockstep.submit(std::move(move));
                 renderer.add_order_ping(ground, false);
-            } else if (structure && structure->owner == player_ && is_supply_point(structure->type) &&
+            } else if (structure && structure->owner == player_ && is_supply_point(engine::role_of(*structure)) &&
                        has_trucks(world)) {
                 // Trucks go back on the supply run (to this depot); anyone else selected just goes there.
                 order_haul(lockstep, world, renderer, ground, structure->id);
-            } else if (structure && engine::is_shelter(structure->type)) {
+            } else if (structure && engine::is_shelter(engine::role_of(*structure))) {
                 // Our infantry moves in; a house or dugout the enemy holds gets shelled.
                 if (structure->owner == engine::kNoOwner || structure->owner == player_) {
                     order_garrison(lockstep, structure->id);
@@ -250,7 +257,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
                 engine::kDugoutCost)
                 .enabled = !s->upgrading;
         }
-        if (engine::is_shelter(s->type) && !s->garrison.empty()) {
+        if (engine::is_shelter(engine::role_of(*s)) && !s->garrison.empty()) {
             put(0, Action::Unload, 0, "Leave", "Everyone out");
         }
         // Research: the bottom row, whatever this building can research.
@@ -258,7 +265,7 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         for (size_t i = 0; i < engine::kUpgradeCount && research_slot < hud::kGridSlots; ++i) {
             const auto id = static_cast<engine::UpgradeId>(i);
             const engine::UpgradeDef& up = engine::upgrade_def(id);
-            if (up.building != s->type) continue;
+            if (up.building != engine::role_of(*s)) continue;
             const bool done = world.has_upgrade(player_, id);
             hud::CommandButton& b = put(research_slot++, Action::Research, static_cast<uint8_t>(i), up.label,
                                         TextFormat("%s: %s%s", up.name, up.description, done ? " (done)" : ""),
@@ -295,8 +302,30 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         return;
     }
 
+    if (def.worker && convert_menu_) {
+        // What to make of a spacious village building: a depot near the front.
+        struct Depot {
+            engine::StructureType type;
+            const char* tooltip;
+        };
+        static constexpr Depot kDepots[] = {
+            {engine::StructureType::Warehouse, "Warehouse in a village building: food from trucks, materials"},
+            {engine::StructureType::AmmoDepot, "Ammo depot in a village building: ammunition trucks load up nearer the front"},
+            {engine::StructureType::FuelDepot, "Fuel depot in a village building: tankers fill up nearer the front"},
+        };
+        for (size_t i = 0; i < std::size(kDepots); ++i) {
+            put(i, Action::Convert, static_cast<uint8_t>(kDepots[i].type), building_label(kDepots[i].type),
+                kDepots[i].tooltip, engine::kConversionCost)
+                .active = targeting_ == Targeting::Convert && converting_ == kDepots[i].type;
+        }
+        put(14, Action::Back, 0, "Back", "Back (Esc)");
+        return;
+    }
+
     if (def.worker) {
         put(0, Action::BuildMenu, 0, "Build", "Build: barracks, warehouses, depots");
+        put(2, Action::ConvertMenu, 0, "Take over",
+            "Turn a spacious village building (a barn) into a depot: nearer the front, less driving for the supply");
         engine::Stock retrain{};
         retrain[static_cast<size_t>(engine::Resource::Ammo)] = 20;
         put(1, Action::Retrain, 0, "Retrain", "Retrain as riflemen at the headquarters", retrain);
@@ -404,7 +433,16 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Stop: order_stop(lockstep); break;
         case Action::Retrain: order_retrain(lockstep); break;
         case Action::BuildMenu: build_menu_ = true; break;
-        case Action::Back: build_menu_ = false; break;
+        case Action::ConvertMenu: convert_menu_ = true; break;
+        case Action::Back:
+            build_menu_ = false;
+            convert_menu_ = false;
+            if (targeting_ == Targeting::Convert) targeting_ = Targeting::None;
+            break;
+        case Action::Convert:
+            targeting_ = Targeting::Convert;
+            converting_ = static_cast<engine::StructureType>(cell.param);
+            break;
         case Action::Build:
             placing_ = static_cast<engine::StructureType>(cell.param);
             targeting_ = Targeting::None;
@@ -503,6 +541,22 @@ void PlayerController::select_army(const engine::World& world) {
             selection_.push_back(u.id);
         }
     }
+}
+
+void PlayerController::order_convert(net::Lockstep& lockstep, const engine::World& world,
+                                     render::WorldRenderer& renderer, Vector2 ground) {
+    const engine::TilePos tile{static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))};
+    const engine::Structure* s = world.structure_at(tile);
+    if (!s || !world.can_convert(*s, player_)) return;
+    engine::Command cmd{.type = engine::CommandType::Build, .target_unit = s->id,
+                        .structure_type = static_cast<uint8_t>(converting_)};
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (u && engine::unit_type(u->type).worker) cmd.units.push_back(id);
+    }
+    if (cmd.units.empty()) return;
+    lockstep.submit(std::move(cmd));
+    renderer.add_order_ping(render::to_vector2(s->center), false);
 }
 
 bool PlayerController::select_next_idle(const engine::World& world) {
@@ -643,6 +697,7 @@ const char* PlayerController::targeting_label() const {
         case Targeting::AttackGround: return "Fire at ground";
         case Targeting::Observe: return "Observation sector";
         case Targeting::Ability: return engine::ability_def(aiming_).name;
+        case Targeting::Convert: return "Click a spacious village building (a barn) to take it over";
         case Targeting::None: break;
     }
     return "";

@@ -56,6 +56,9 @@ public:
     void order_build(net::Lockstep& lockstep, const Placement& placement);
     void order_help_build(net::Lockstep& lockstep, engine::EntityId site);
     void order_stop(net::Lockstep& lockstep);
+    // Rear troops turn the spacious village building at the point into a depot.
+    void order_convert(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                       Vector2 ground);
 
     // The building following the cursor, if the player is placing one.
     const std::optional<Placement>& placement() const { return placement_; }
@@ -108,7 +111,7 @@ private:
     // The command grid. Each cell holds an action; its hotkey is the cell's.
     enum class Action : uint8_t {
         None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload,
-        Research
+        Research, ConvertMenu, Convert
     };
     struct Cell {
         Action action = Action::None;
@@ -121,7 +124,7 @@ private:
     void order_ability(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                        engine::AbilityId ability, Vector2 target, Vector2 end);
 
-    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability };
+    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability, Convert };
 
     engine::PlayerId player_;
     std::vector<engine::EntityId> selection_;  // sorted, unique
@@ -133,6 +136,8 @@ private:
     std::optional<engine::StructureType> placing_;
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
+    bool convert_menu_ = false;  // rear troops: what depot to make of a village building
+    engine::StructureType converting_ = engine::StructureType::Warehouse;  // Targeting::Convert
     std::optional<Vector2> line_start_;  // a line skill being dragged: where it started
     std::vector<engine::TilePos> trench_preview_;
     std::array<hud::CommandButton, hud::kGridSlots> buttons_{};

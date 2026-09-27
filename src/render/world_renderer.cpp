@@ -364,6 +364,9 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
     }
 }
 
+// A barn or a machine shed: one long building with a gable roof and big doors.
+void draw_barn(const engine::TileMap& map, const engine::Structure& s, float damage);
+
 // Ground rectangle covering a structure's tiles, shrunk by `inset` tiles.
 Rectangle footprint(const engine::Structure& s, float inset) {
     int x0 = s.tiles.front().x, x1 = x0, y0 = s.tiles.front().y, y1 = y0;
@@ -418,6 +421,46 @@ void draw_pillbox(const engine::TileMap& map, const engine::Structure& s) {
     const Vector2 a{mid.x - f.y * 0.18f, mid.y + f.x * 0.18f};
     const Vector2 b{mid.x + f.y * 0.18f, mid.y - f.x * 0.18f};
     DrawLineEx(on_terrain(map, a, 4.0f), on_terrain(map, b, 4.0f), 2.5f, lit({24, 22, 20, 255}));
+}
+
+void draw_barn(const engine::TileMap& map, const engine::Structure& s, float damage) {
+    constexpr float kWall = 15.0f;
+    constexpr float kRoof = 12.0f;
+    const Rectangle r = footprint(s, 0.1f);
+    const Vector2 ground[4] = {{r.x, r.y}, {r.x + r.width, r.y}, {r.x + r.width, r.y + r.height}, {r.x, r.y + r.height}};
+    Vector2 base[4];
+    Vector2 top[4];
+    for (int i = 0; i < 4; ++i) {
+        base[i] = on_terrain(map, ground[i]);
+        top[i] = {base[i].x, base[i].y - kWall};
+    }
+    const float soot = 1.0f - 0.45f * damage;
+    const Color wall = shade({168, 150, 124, 255}, soot);
+    const Color roof = shade({118, 122, 124, 255}, soot);  // corrugated iron
+    fill_quad(base[1], base[2], top[2], top[1], wall);
+    fill_quad(base[2], base[3], top[3], top[2], shade(wall, 0.72f));
+    // The ridge runs along the long side.
+    const bool along_x = r.width >= r.height;
+    const Vector2 r0 = along_x ? Vector2{r.x, r.y + r.height * 0.5f} : Vector2{r.x + r.width * 0.5f, r.y};
+    const Vector2 r1 = along_x ? Vector2{r.x + r.width, r.y + r.height * 0.5f} : Vector2{r.x + r.width * 0.5f, r.y + r.height};
+    const Vector2 ridge0 = on_terrain(map, r0, kWall + kRoof);
+    const Vector2 ridge1 = on_terrain(map, r1, kWall + kRoof);
+    if (along_x) {
+        fill_quad(top[0], top[1], ridge1, ridge0, shade(roof, 1.1f));
+        fill_triangle(top[1], top[2], ridge1, shade(wall, 0.9f));  // the gable end
+        fill_quad(ridge0, ridge1, top[2], top[3], shade(roof, 0.85f));
+    } else {
+        fill_quad(top[3], top[0], ridge0, ridge1, shade(roof, 1.1f));
+        fill_quad(ridge0, top[1], top[2], ridge1, shade(roof, 0.95f));
+        fill_triangle(top[2], top[3], ridge1, shade(wall, 0.8f));
+    }
+    DrawLineV(ridge0, ridge1, lit(shade(roof, 0.6f)));
+    // Wide doors in the long wall facing the viewer.
+    const Vector2 a = along_x ? base[2] : base[1];
+    const Vector2 b = along_x ? base[3] : base[2];
+    const Vector2 d0 = lerp(a, b, 0.35f);
+    const Vector2 d1 = lerp(a, b, 0.65f);
+    fill_quad(d0, d1, {d1.x, d1.y - kWall * 0.8f}, {d0.x, d0.y - kWall * 0.8f}, {60, 54, 46, 255});
 }
 
 void draw_building(const engine::TileMap& map, const engine::Structure& s) {
@@ -775,6 +818,26 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
             DrawRectangleRec({c.x - 21, c.y - 1, 42, 5}, {0, 0, 0, 170});
             DrawRectangleRec({c.x - 20, c.y, 40 * frac, 3}, frac > 0.5f ? Color{200, 200, 190, 255} : Color{230, 110, 60, 255});
         }
+        if (s.converted != engine::StructureType::Count) {
+            // A depot in a village building: its owner's flag, crates by the door.
+            const Color flag = theme::player_color(s.owner);
+            DrawLineEx({c.x, c.y + 18}, {c.x, c.y - 10}, 1.5f, {40, 40, 40, 255});
+            DrawRectangleRec({c.x, c.y - 10, 16, 11}, flag);
+            const char* letter = s.converted == engine::StructureType::AmmoDepot   ? "A"
+                                 : s.converted == engine::StructureType::FuelDepot ? "F"
+                                                                                   : "W";
+            DrawText(letter, static_cast<int>(c.x + 4), static_cast<int>(c.y - 9), 10, WHITE);
+            const Vector2 door = on_terrain(map, {to_vector2(s.center).x + 1.4f, to_vector2(s.center).y + 1.4f});
+            for (int i = 0; i < 3; ++i) {
+                DrawRectangleRec({door.x - 9.0f + 6.0f * static_cast<float>(i), door.y - 5.0f, 5.0f, 5.0f},
+                                 {132, 104, 62, 255});
+            }
+            if (!s.built) {  // still being turned
+                const float done = static_cast<float>(s.build_progress) / static_cast<float>(engine::kConversionWork);
+                DrawRectangleRec({c.x - 21, c.y + 6, 42, 5}, {0, 0, 0, 170});
+                DrawRectangleRec({c.x - 20, c.y + 7, 40 * done, 3}, {230, 200, 60, 255});
+            }
+        }
         if (garrison_seen) {
             const char* count = TextFormat("%d", static_cast<int>(s.garrison.size()));
             const Color flag = theme::player_color(s.owner);
@@ -870,6 +933,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         int house_y = -1;
         bool ruins = false;
         bool rock = false;
+        const engine::Structure* barn = nullptr;  // a spacious village building, drawn whole
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
@@ -877,6 +941,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
     std::vector<Drawable> drawables;
     drawables.reserve(world.units().size() + world.projectiles().size() + 1024);
+    std::vector<const engine::Structure*> barns;
     for (const engine::Unit& u : world.units()) {
         if (u.inside || u.airborne || !shows(world, u)) continue;  // behind walls, up in the sky, or unseen
         const Vector2 g = unit_ground_pos(u, alpha);
@@ -901,9 +966,18 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 break;
             case engine::Terrain::House: {
                 float damage = 0.0f;
-                if (const engine::Structure* s = world.structure_at({tx, ty}); s && state == kInView) {
+                const engine::Structure* s = world.structure_at({tx, ty});
+                if (s && state == kInView) {
                     const int32_t max_hp = engine::structure_type(s->type).max_hp;
                     damage = 1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp);
+                }
+                if (s && s->tiles.size() >= engine::kSpaciousTiles) {
+                    // A barn is one building, drawn once whichever of its tiles is in view.
+                    if (std::find(barns.begin(), barns.end(), s) != barns.end()) break;
+                    barns.push_back(s);
+                    const Vector2 c = to_vector2(s->center);
+                    drawables.push_back({.depth = c.x + c.y + 1.0f, .barn = s, .damage = damage, .light = light});
+                    break;
                 }
                 drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
                                      .damage = damage, .light = light});
@@ -960,6 +1034,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_ruins(map, d.house_x, d.house_y);
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
+        } else if (d.barn) {
+            draw_barn(map, *d.barn, d.damage);
         } else if (d.house_x >= 0) {
             draw_house(map, d.house_x, d.house_y, d.damage);
         } else {

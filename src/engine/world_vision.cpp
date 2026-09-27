@@ -29,7 +29,8 @@ constexpr size_t kSightCacheLimit = 4096;
 Fixed eye_height(const UnitTypeDef& def) { return def.vehicle ? kVehicleTop : kInfantryTop; }
 
 int32_t structure_sight(const Structure& s) {
-    if (s.type == StructureType::House || s.type == StructureType::Bridge) return 0;  // the garrison looks instead
+    const StructureType role = role_of(s);
+    if (role == StructureType::House || role == StructureType::Bridge) return 0;  // the garrison looks instead
     if (is_fieldwork(s.type) || s.type == StructureType::Dugout) return 0;           // just holes in the ground
     if (!s.built) return kSiteSight;
     return s.type == StructureType::Headquarters ? kHeadquartersSight : kBuildingSight;

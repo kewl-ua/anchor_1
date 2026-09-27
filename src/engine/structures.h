@@ -126,7 +126,16 @@ struct Structure {
     // A building researching an upgrade (Count: nothing), and how far along.
     UpgradeId research = UpgradeId::Count;
     Tick research_progress = 0;
+
+    // A village building turned into a depot (Count: it's still a house);
+    // while `built` is false it's being turned.
+    StructureType converted = StructureType::Count;
 };
+
+// What a structure works as: a house turned into a depot is that depot.
+inline StructureType role_of(const Structure& s) {
+    return s.converted != StructureType::Count ? s.converted : s.type;
+}
 
 // Which depot takes in a resource that trucks bring (food, ammo, fuel).
 inline std::optional<StructureType> depot_for(Resource r) {

@@ -75,6 +75,14 @@ inline constexpr int32_t kUnloadDriverWork = 1;
 inline constexpr int32_t kUnloadHelperWork = 2;
 inline constexpr int32_t kMaxUnloadHelpers = 4;
 
+// --- Village buildings ---
+// A building this big (tiles: a barn, a machine shed) is spacious enough for
+// rear troops to turn it into a depot, a forward one near the front: it
+// costs this, and this much work for one rear trooper.
+inline constexpr size_t kSpaciousTiles = 6;
+inline constexpr Stock kConversionCost = {0, 0, 50, 0, 0};
+inline constexpr Tick kConversionWork = 20 * kTicksPerSecond;
+
 // A fuel depot going up burns this share of the owner's fuel.
 inline constexpr int32_t kFuelDepotLossPercent = 30;
 

@@ -1666,6 +1666,138 @@ void test_trucks_assigned_to_a_depot() {
     CHECK(food.world().find_unit(loaded)->haul_depot == depot);
 }
 
+// --- Village buildings as forward depots ---
+
+// A plain with a barn (4 x 2 House tiles at (20..23, 10..11)) and a cottage
+// (2 x 2 at (30..31, 10..11)), our headquarters, materials and fuel.
+Simulation farm_sim() {
+    TileMap map(48, 24);
+    for (int y = 10; y <= 11; ++y) {
+        for (int x = 20; x <= 23; ++x) map.set_terrain(x, y, Terrain::House);
+        for (int x = 30; x <= 31; ++x) map.set_terrain(x, y, Terrain::House);
+    }
+    Simulation sim(1, map);
+    sim.world_for_setup().place_structure(StructureType::Headquarters, 0, {3, 9}, 3, 3);
+    sim.world_for_setup().set_stock(0, {0, 0, 100, 100, 100});
+    return sim;
+}
+
+EntityId barn_of(const Simulation& sim) { return sim.world().structure_at({20, 10})->id; }
+
+Command take_over(PlayerId player, std::vector<EntityId> crew, EntityId building, StructureType depot) {
+    return {.type = CommandType::Build, .player = player, .units = std::move(crew), .target_unit = building,
+            .structure_type = static_cast<uint8_t>(depot)};
+}
+
+std::vector<EntityId> farm_crew(Simulation& sim) {
+    std::vector<EntityId> crew;
+    for (int i = 0; i < 2; ++i) crew.push_back(sim.world_for_setup().spawn_unit(0, UnitTypeId::Worker, at(18, 13 + i)));
+    return crew;
+}
+
+// The demo map has barns near the middle, two a side, well away from both bases.
+void test_demo_map_has_barns() {
+    for (const MapSizePreset& preset : kMapSizes) {
+        const World world(1, make_demo_map(preset.tiles));
+        int barns = 0;
+        for (const Structure& s : world.structures()) {
+            if (s.type != StructureType::House || s.tiles.size() < kSpaciousTiles) continue;
+            ++barns;
+            for (PlayerId p = 0; p < 2; ++p) {
+                CHECK((s.center - demo_base_position(preset.tiles, p)).length() > Fixed::from_int(preset.tiles / 5));
+            }
+        }
+        CHECK(barns == 4);
+    }
+}
+
+// Rear troops turn a spacious village building into a depot: paid up front,
+// worked on like a building site, then it's a depot like any other, nearer
+// the front. A cottage is too small; a depot is no shelter.
+void test_take_over_a_village_building() {
+    Simulation sim = farm_sim();
+    const std::vector<EntityId> crew = farm_crew(sim);
+    const EntityId barn = barn_of(sim);
+    const EntityId cottage = sim.world().structure_at({30, 10})->id;
+    CHECK(sim.world().can_convert(*sim.world().find_structure(barn), 0));
+    CHECK(!sim.world().can_convert(*sim.world().find_structure(cottage), 0));
+    CHECK(!sim.world().can_convert(*sim.world().structure_at({3, 9}), 0));  // our headquarters: not a village building
+
+    issue(sim, take_over(0, crew, cottage, StructureType::AmmoDepot));
+    issue(sim, take_over(0, crew, barn, StructureType::Headquarters));  // not a depot
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(stock_of(sim, Resource::Materials) == 100);
+    CHECK(sim.world().find_structure(cottage)->converted == StructureType::Count);
+    CHECK(sim.world().find_structure(barn)->converted == StructureType::Count);
+
+    issue(sim, take_over(0, crew, barn, StructureType::AmmoDepot));
+    for (int i = 0; i < 3; ++i) sim.step();
+    const Structure* b = sim.world().find_structure(barn);
+    CHECK(b->converted == StructureType::AmmoDepot && b->owner == 0 && !b->built);
+    CHECK(stock_of(sim, Resource::Materials) == 100 - kConversionCost[static_cast<size_t>(Resource::Materials)]);
+    CHECK(sim.world().nearest_owned(0, StructureType::AmmoDepot, b->center) == nullptr);  // not until it's done
+    for (Tick i = 0; i < kConversionWork / 4; ++i) sim.step();
+    CHECK(!b->built && b->build_progress > 0);  // at work on it
+    for (Tick i = 0; i < kConversionWork / 4 + 100; ++i) sim.step();  // two of them: half the time, and the walk
+    CHECK(b->built && sim.world().nearest_owned(0, StructureType::AmmoDepot, at(0, 0)) == b);
+    CHECK(b->hp == structure_type(StructureType::House).max_hp);  // the building was standing all along
+    CHECK(!sim.world().can_convert(*b, 0) && !sim.world().can_convert(*b, 1));
+
+    // A depot keeps a lookout: with the rear troops gone, its yard is still in view.
+    issue(sim, make_move(0, crew, 4, 20));
+    for (int i = 0; i < 400; ++i) sim.step();
+    CHECK(sim.world().visible(0, {21, 15}));
+
+    // An ammunition truck loads up there, not back at the base.
+    const EntityId truck = sim.world_for_setup().spawn_unit(0, UnitTypeId::AmmoTruck, at(28, 16));
+    sim.world_for_setup().unit_for_setup(truck)->carrying = 0;
+    issue(sim, use_ability(0, {truck}, AbilityId::Refill, 0, 0));
+    for (int i = 0; i < 1500 && sim.world().find_unit(truck)->carrying == 0; ++i) sim.step();
+    CHECK(sim.world().find_unit(truck)->carrying > 0);
+    CHECK((sim.world().find_unit(truck)->pos - b->center).length() < Fixed::from_int(4));
+
+    // No shelter: nobody goes in, and it stays ours standing empty.
+    const EntityId rifle = sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(19, 8));
+    issue(sim, garrison(0, {rifle}, barn));
+    for (int i = 0; i < 100; ++i) sim.step();
+    CHECK(sim.world().find_unit(rifle)->inside == 0 && sim.world().find_structure(barn)->owner == 0);
+}
+
+// Held by the enemy it can't be taken over; our own men inside come out; a
+// fuel depot in a barn burns like any other.
+void test_taking_over_rules() {
+    Simulation held = farm_sim();
+    const std::vector<EntityId> crew = farm_crew(held);
+    const EntityId enemy = held.world_for_setup().spawn_unit(1, UnitTypeId::Rifleman, at(19, 9));
+    issue(held, garrison(1, {enemy}, barn_of(held)));
+    for (int i = 0; i < 100; ++i) held.step();
+    CHECK(held.world().find_unit(enemy)->inside == barn_of(held));
+    issue(held, take_over(0, crew, barn_of(held), StructureType::Warehouse));
+    for (int i = 0; i < 5; ++i) held.step();
+    CHECK(held.world().find_structure(barn_of(held))->converted == StructureType::Count);
+    CHECK(stock_of(held, Resource::Materials) == 100);
+
+    Simulation ours = farm_sim();
+    const std::vector<EntityId> hands = farm_crew(ours);
+    const EntityId rifle = ours.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(19, 9));
+    issue(ours, garrison(0, {rifle}, barn_of(ours)));
+    for (int i = 0; i < 100; ++i) ours.step();
+    CHECK(ours.world().find_unit(rifle)->inside == barn_of(ours));
+    ours.world_for_setup().set_stock(0, {});
+    issue(ours, take_over(0, hands, barn_of(ours), StructureType::FuelDepot));  // can't afford it
+    for (int i = 0; i < 5; ++i) ours.step();
+    CHECK(ours.world().find_structure(barn_of(ours))->converted == StructureType::Count);
+    ours.world_for_setup().set_stock(0, {0, 0, 100, 0, 100});
+    issue(ours, take_over(0, hands, barn_of(ours), StructureType::FuelDepot));
+    for (int i = 0; i < 5; ++i) ours.step();
+    CHECK(ours.world().find_unit(rifle)->inside == 0);
+    for (Tick i = 0; i < kConversionWork; ++i) ours.step();
+    CHECK(ours.world().find_structure(barn_of(ours))->built);
+    ours.world_for_setup().structure_for_setup(barn_of(ours))->hp = 0;
+    ours.step();
+    CHECK(stock_of(ours, Resource::Fuel) == 100 - 100 * kFuelDepotLossPercent / 100);
+}
+
 // Rear troops and trucks with nothing to do are idle; on the supply run or at work they aren't.
 void test_idle_hands() {
     Simulation sim = logistics_sim({});
@@ -3205,6 +3337,9 @@ int main() {
     test_trucks_haul_what_they_are_told();
     test_trucks_assigned_to_a_depot();
     test_idle_hands();
+    test_demo_map_has_barns();
+    test_take_over_a_village_building();
+    test_taking_over_rules();
     test_rear_troops_unload_faster();
     test_no_trains_without_the_station();
     test_fuel_depot_burns();

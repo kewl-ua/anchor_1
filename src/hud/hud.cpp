@@ -287,7 +287,7 @@ Logistics logistics_of(const engine::World& world, engine::PlayerId player) {
     }
     for (const engine::Structure& s : world.structures()) {
         if (s.owner != player || !s.built) continue;
-        if (const auto cargo = engine::depot_cargo(s.type)) l.depot[static_cast<size_t>(*cargo)] = true;
+        if (const auto cargo = engine::depot_cargo(engine::role_of(s))) l.depot[static_cast<size_t>(*cargo)] = true;
     }
     return l;
 }
@@ -576,7 +576,7 @@ namespace {
 
 // A depot's card: the trucks bringing its freight here.
 void draw_depot_trucks(const engine::World& world, const engine::Structure& s, float y, Rectangle area) {
-    const std::optional<engine::Resource> cargo = engine::depot_cargo(s.type);
+    const std::optional<engine::Resource> cargo = engine::depot_cargo(engine::role_of(s));
     if (!cargo || !s.built) return;
     int here = 0;
     for (const engine::Unit& u : world.units()) {
@@ -601,10 +601,12 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
         DrawRectangleRec({area.x, y, area.width, 5}, {0, 0, 0, 170});
         DrawRectangleRec({area.x, y, area.width * done, 5}, {230, 200, 60, 255});
     }
-    draw_text(def.name, area.x, area.y, kFontSize, theme::player_color(s.owner));
+    const engine::StructureType role = engine::role_of(s);
     const char* hp = TextFormat("HP %d / %d", s.hp, def.max_hp);
     const float hp_x = area.x + area.width - 90 - 10 - static_cast<float>(MeasureText(hp, kCardFontSize));
     draw_text(hp, hp_x, area.y + 3, kCardFontSize, theme::kText);
+    const char* name = role == s.type ? def.name : TextFormat("%s (village building)", engine::structure_type(role).name);
+    draw_text(name, area.x, area.y, fitting_font(name, kFontSize, hp_x - area.x - 12), theme::player_color(s.owner));
     const float frac = static_cast<float>(s.hp) / static_cast<float>(def.max_hp);
     DrawRectangleRec({area.x + area.width - 90, area.y + 7, 90, 6}, {0, 0, 0, 170});
     DrawRectangleRec({area.x + area.width - 90, area.y + 7, 90 * frac, 6}, {200, 200, 190, 255});
@@ -613,9 +615,12 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
     const float line3 = line2 + kCardFontSize + 6;
     const float line4 = line3 + kCardFontSize + 6;
     if (!s.built) {
-        const float done = static_cast<float>(s.build_progress) / static_cast<float>(def.build_time);
-        draw_text(TextFormat("Under construction: %d%%", static_cast<int>(done * 100)), area.x, line2, kCardFontSize,
-                  theme::kWarning);
+        const bool converting = role != s.type;
+        const engine::Tick work = converting ? engine::kConversionWork : def.build_time;
+        const float done = static_cast<float>(s.build_progress) / static_cast<float>(std::max<engine::Tick>(1, work));
+        draw_text(TextFormat("%s: %d%%", converting ? "Being turned into a depot" : "Under construction",
+                             static_cast<int>(done * 100)),
+                  area.x, line2, kCardFontSize, theme::kWarning);
         draw_text("RMB with rear troops to help", area.x, line3, kCardFontSize, theme::kTextDim);
         DrawRectangleRec({area.x, line4 + 4, area.width, 6}, {0, 0, 0, 170});
         DrawRectangleRec({area.x, line4 + 4, area.width * done, 6}, {230, 200, 60, 255});
@@ -627,7 +632,7 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
                           cargo[static_cast<size_t>(engine::Resource::Ammo)],
                           cargo[static_cast<size_t>(engine::Resource::Fuel)]);
     };
-    switch (s.type) {
+    switch (role) {
         case engine::StructureType::Station:
             draw_text(TextFormat("Next train in %ds: +%d men, %s", seconds_until(world, s.next_train),
                                  engine::kTrainCargo[static_cast<size_t>(engine::Resource::Personnel)],

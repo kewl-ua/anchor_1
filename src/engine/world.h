@@ -383,6 +383,9 @@ public:
     // Economy.
     const Stock& stock(PlayerId player) const { return stock_[player % kMaxPlayers]; }
     void set_stock(PlayerId player, const Stock& stock) { stock_[player % kMaxPlayers] = stock; }
+    // Whether `player`'s rear troops may turn this building into a depot: a
+    // spacious village building, not a depot already, not held by the enemy.
+    bool can_convert(const Structure& s, PlayerId player) const;
     // A player's railway station (the first one), if it still stands.
     const Structure* station_of(PlayerId player) const;
     // The nearest finished building of this type of `owner`'s.

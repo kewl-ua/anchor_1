@@ -172,7 +172,7 @@ void World::build_structures() {
 
 void World::apply_garrison(const Command& cmd) {
     const Structure* s = find_structure(cmd.target_unit);
-    if (!s || !is_shelter(s->type)) return;
+    if (!s || !is_shelter(role_of(*s))) return;
     const TilePos goal = map_.clamp_tile(tile_of(s->center));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
         if (def_of(*u).vehicle || u->inside == s->id) continue;  // only infantry goes in
@@ -227,7 +227,7 @@ void World::leave_structure(Unit& u) {
     FixedVec2 from = u.pos;
     if (Structure* s = find_structure_mut(u.inside)) {
         std::erase(s->garrison, u.id);
-        if (s->garrison.empty() && is_shelter(s->type)) s->owner = kNoOwner;
+        if (s->garrison.empty() && is_shelter(role_of(*s))) s->owner = kNoOwner;
         from = s->center;
     }
     u.inside = 0;
@@ -261,7 +261,7 @@ void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
 // A house comes down on everyone inside; a bridge drops whoever is on it
 // into the river.
 void World::collapse(const Structure& s) {
-    if (s.type == StructureType::FuelDepot) burn_fuel_depot(s);
+    if (role_of(s) == StructureType::FuelDepot) burn_fuel_depot(s);
     if (s.type == StructureType::Airfield) {
         // The aircraft parked on the runway go with it.
         for (Unit& u : units_) {
@@ -1149,7 +1149,7 @@ void World::apply_damage_and_remove_dead() {
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
     for (Structure& s : structures_) {
         std::erase_if(s.garrison, [this](EntityId id) { return find_unit(id) == nullptr; });
-        if (s.garrison.empty() && is_shelter(s.type)) s.owner = kNoOwner;
+        if (s.garrison.empty() && is_shelter(role_of(s))) s.owner = kNoOwner;
     }
 }
 
@@ -1311,6 +1311,7 @@ uint64_t World::checksum() const {
         mix_vec(s.facing);
         mix(s.upgrading ? 1 : 0);
         mix(s.upgrade_work);
+        mix(static_cast<uint8_t>(s.converted));
     }
     for (const auto& [tile, work] : dig_work_) {
         mix(static_cast<uint32_t>(tile));

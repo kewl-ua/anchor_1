@@ -32,7 +32,7 @@ void World::apply_research(const Command& cmd) {
     if (!s || !s->built || s->owner != cmd.player || cmd.upgrade >= kUpgradeCount) return;
     const auto id = static_cast<UpgradeId>(cmd.upgrade);
     const UpgradeDef& def = upgrade_def(id);
-    if (def.building != s->type || s->research != UpgradeId::Count || has_upgrade(cmd.player, id)) return;
+    if (def.building != role_of(*s) || s->research != UpgradeId::Count || has_upgrade(cmd.player, id)) return;
     // Nobody researches the same thing twice at once.
     for (const Structure& other : structures_) {
         if (other.owner == cmd.player && other.research == id) return;
@@ -107,7 +107,7 @@ void World::apply_upgrade(const Command& cmd) {
 
 void World::apply_unload(const Command& cmd) {
     const Structure* s = find_structure(cmd.target_unit);
-    if (!s || s->owner != cmd.player || !is_shelter(s->type)) return;
+    if (!s || s->owner != cmd.player || !is_shelter(role_of(*s))) return;
     const std::vector<EntityId> inside = s->garrison;
     for (EntityId id : inside) {
         if (Unit* u = find_unit_mut(id)) {
