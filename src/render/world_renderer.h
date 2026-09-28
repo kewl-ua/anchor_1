@@ -35,6 +35,8 @@ struct BuildGhost {
 //
 // Units are placeholder shapes for now; sprites will replace draw_soldier()
 // and draw_vehicle() without touching anything else.
+enum class TruckModel : uint8_t;  // which real truck a truck is (see world_renderer.cpp)
+
 class WorldRenderer {
 public:
     // Marker where the player ordered a move (green) or an attack-move (red).
@@ -113,6 +115,7 @@ private:
     void spawn_fire(Vector2 at, float height, int wear, float dt);
     void draw_particles(const engine::TileMap& map) const;
     void draw_wreck(const engine::TileMap& map, const Remains& r) const;
+    void draw_truck_wreck(const engine::TileMap& map, const Remains& r, TruckModel model, bool drowned) const;
     struct StructureSeen {
         Vector2 center;
         engine::StructureType type;
@@ -133,7 +136,7 @@ private:
         int frames = 0;
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
-    enum class SpritePart : int { Hull, Turret };  // a tank's or an IFV's
+    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop };  // a tank's or an IFV's; a truck's and its radar
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};

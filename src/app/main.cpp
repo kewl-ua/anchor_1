@@ -508,11 +508,13 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return look;
     }
 
-    if ((options.scene == "damage" || options.scene == "damage_apcs") && options.mode == Options::Mode::Offline) {
+    if ((options.scene == "damage" || options.scene == "damage_apcs" || options.scene == "damage_trucks") &&
+        options.mode == Options::Mode::Offline) {
         // Offline: T-72B3s and Leopard 2A6s whole, scratched, battered and
         // barely going; two of each knocked out by riflemen (one losing its
         // turret, one not); a T-72B3 firing at the ground ahead: the smoke,
-        // the bursts. "damage_apcs": BMP-1s and BTR-82As, the same.
+        // the bursts. "damage_apcs": BMP-1s and BTR-82As, the same;
+        // "damage_trucks": supply trucks and rocket launchers.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
         const Vector2 b = render::to_vector2(base);
@@ -525,7 +527,9 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const int32_t pct[] = {100, 65, 40, 15};
         for (int row = 0; row < 2; ++row) {
             const bool apcs = options.scene == "damage_apcs";
-            const UnitTypeId type = row == 0 ? (apcs ? UnitTypeId::Bmp1 : UnitTypeId::Tank) : (apcs ? UnitTypeId::Btr82a : UnitTypeId::Leopard2A6);
+            const bool trucks = options.scene == "damage_trucks";
+            const UnitTypeId type = row == 0 ? (apcs ? UnitTypeId::Bmp1 : trucks ? UnitTypeId::Truck : UnitTypeId::Tank)
+                                             : (apcs ? UnitTypeId::Btr82a : trucks ? UnitTypeId::Mlrs : UnitTypeId::Leopard2A6);
             for (int i = 0; i < 4; ++i) {
                 const engine::EntityId id = w.spawn_unit(me, type, ahead(10.0f + 2.5f * static_cast<float>(row), -5.0f + 2.2f * static_cast<float>(i)));
                 engine::Unit* u = w.unit_for_setup(id);
@@ -605,6 +609,49 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         row(democratic, -1.5f, me);
         row(authoritarian, 1.5f, me);
         return render::to_vector2(ahead(19.0f, 0.0f));
+    }
+
+    if (options.scene == "vehicles" && options.mode == Options::Mode::Offline) {
+        // Offline: the trucks and wheeled vehicles of both axes on a flat field
+        // well ahead of the base, three-quarters on: the Democratic axis's
+        // (ours), the Authoritarian one's (theirs), then the launchers,
+        // direction finders and radars of both set up; a supply truck loaded.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(30.0f, 0.0f), 14);
+        using engine::UnitTypeId;
+        const UnitTypeId jobs[] = {UnitTypeId::Truck, UnitTypeId::FuelTanker, UnitTypeId::AmmoTruck, UnitTypeId::Mlrs,
+                                   UnitTypeId::FieldHq, UnitTypeId::DfStation, UnitTypeId::AirRadar};
+        auto row = [&](std::span<const UnitTypeId> types, float side, engine::PlayerId owner, bool set_up) {
+            for (size_t i = 0; i < types.size(); ++i) {
+                const engine::EntityId id = w.spawn_unit(owner, types[i], ahead(24.0f + 2.0f * static_cast<float>(i), side));
+                engine::Unit* u = w.unit_for_setup(id);
+                u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
+                u->hull = u->facing;
+                u->deployed = set_up;
+                if (types[i] == UnitTypeId::Truck) {
+                    u->carrying = 20;
+                    u->carrying_type = engine::Resource::Materials;
+                }
+            }
+        };
+        row(jobs, -2.0f, 0, false);
+        row(jobs, 0.5f, 1, false);
+        const UnitTypeId set[] = {UnitTypeId::Mlrs, UnitTypeId::DfStation, UnitTypeId::AirRadar};
+        row(set, 3.0f, 0, true);
+        for (size_t i = 0; i < std::size(set); ++i) {  // theirs, set up, beside ours
+            const engine::EntityId id = w.spawn_unit(1, set[i], ahead(32.0f + 2.0f * static_cast<float>(i), 3.0f));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->facing = render::to_fixed_vec2({0.0f, -fwd});
+            u->hull = u->facing;
+            u->deployed = true;
+        }
+        return render::to_vector2(ahead(30.0f, 0.5f));
     }
 
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {

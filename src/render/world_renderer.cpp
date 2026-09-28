@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -359,6 +360,15 @@ float track_half(engine::UnitTypeId type);  // how far each track runs from the 
 Vector2 armor_size(engine::VehicleModel m);           // its hull's length and half its width, tiles
 int armor_variant(engine::VehicleModel model, int era, int wear, int sink);
 constexpr float kTankWreckLifetime = 150.0f;  // a burnt-out tank stays a while on the field
+// The trucks, in pixel art (below): which one a unit is, by its job and its
+// side; its sprite sheets; what it carries; whether a radar turns on it and
+// where; where its engine is (along, up).
+std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId owner);
+int truck_variant(TruckModel model, int wear, int sink, int load);
+int truck_load(const engine::Unit& u);
+bool truck_turns_top(TruckModel m);
+Vector2 truck_top_ring_of(TruckModel m);
+Vector2 truck_engine_of(TruckModel m);
 
 float WorldRenderer::fx_random() {
     fx_rng_ ^= fx_rng_ << 13;
@@ -687,32 +697,36 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     shots_seen_ = std::move(shots);
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
-        if (!engine::is_armor(def) || u.inside || !shows(world, u)) continue;
+        const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
+        if ((!engine::is_armor(def) && !truck) || u.inside || !shows(world, u)) continue;
         const int wear = wear_of(u.hp, def.max_hp);
         if (wear < 2) continue;
-        Vector2 h = to_vector2(u.hull);
+        Vector2 h = to_vector2(truck ? u.facing : u.hull);  // a truck's body goes the way it faces
         const float l = std::hypot(h.x, h.y);
         h = l > 0.0f ? Vector2{h.x / l, h.y / l} : Vector2{1.0f, 0.0f};
-        const Vector2 e = armor_engine(def.model);
+        const Vector2 e = truck ? truck_engine_of(*truck) : armor_engine(def.model);
         spawn_fire({to_vector2(u.pos).x + h.x * e.x, to_vector2(u.pos).y + h.y * e.x}, e.y, wear, dt);
     }
-    for (const Remains& r : remains_) {  // burnt-out tanks and IFVs smoulder, burning for the first half minute
-        if (!engine::is_armor(engine::unit_type(r.type)) || r.age > 100.0f) continue;
+    for (const Remains& r : remains_) {  // burnt-out tanks, IFVs, trucks smoulder, burning for the first half minute
+        const std::optional<TruckModel> truck = truck_model(r.type, r.owner);
+        if ((!engine::is_armor(engine::unit_type(r.type)) && !truck) || r.age > 100.0f) continue;
         if (map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))})) ==
             engine::Terrain::Water ||
             r.sunk) {
             continue;  // drowned, or gone under in a bog
         }
-        const Vector2 e = armor_engine(engine::unit_type(r.type).model);
+        const Vector2 e = truck ? truck_engine_of(*truck) : armor_engine(engine::unit_type(r.type).model);
+        const Vector2 along = truck ? r.facing : r.hull;
         const float ease = r.age < 30.0f ? 1.0f : 0.4f;
-        if (fx_random() < ease) spawn_fire({r.ground.x + r.hull.x * e.x, r.ground.y + r.hull.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
+        if (fx_random() < ease) spawn_fire({r.ground.x + along.x * e.x, r.ground.y + along.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
     }
     // Tracked vehicles leave their tracks in the ground as they go, wheeled
-    // IFVs their tyres' (not on concrete, a bridge or the water); they fade
+    // ones their tyres' (not on concrete, a bridge or the water); they fade
     // over two minutes.
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
-        const bool marks = engine::is_armor(def) || u.type == engine::UnitTypeId::Spg || u.type == engine::UnitTypeId::Shilka;
+        const bool marks = engine::is_armor(def) || u.type == engine::UnitTypeId::Spg || u.type == engine::UnitTypeId::Shilka ||
+                           truck_model(u.type, u.owner).has_value();
         if (!marks || u.inside || !shows(world, u)) continue;
         const Vector2 p = to_vector2(u.pos);
         const auto it = track_last_.find(u.id);
@@ -786,7 +800,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     std::erase_if(pings_, [](const Ping& p) { return p.age >= kPingLifetime; });
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
     std::erase_if(remains_, [](const Remains& r) {
-        const float life = engine::is_armor(engine::unit_type(r.type)) ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
+        const bool whole = engine::is_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner).has_value();
+        const float life = whole ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
         return r.age >= life;
     });
 }
@@ -3211,7 +3226,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     collect_trains(world, alpha, cars);
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
     for (const Remains& r : remains_) {
-        if (engine::is_armor(engine::unit_type(r.type)) && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
+        const bool whole = engine::is_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner).has_value();
+        if (whole && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
     }
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
@@ -4124,7 +4140,7 @@ void WorldRenderer::draw_spoil_gullies(const engine::World& world, Rectangle vie
 
 void WorldRenderer::draw_remains(const engine::TileMap& map) const {
     for (const Remains& r : remains_) {
-        if (engine::is_armor(engine::unit_type(r.type))) continue;  // drawn whole, with the others (draw_wreck)
+        if (engine::is_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner)) continue;  // drawn whole, with the others (draw_wreck)
         const float lifetime = r.vehicle ? kWreckLifetime : kBodyLifetime;
         const float fade = std::clamp((lifetime - r.age) / 3.0f, 0.0f, 1.0f);  // fade out over the last 3 s
         const Vector2 p = on_terrain(map, r.ground);
@@ -4840,6 +4856,25 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         return;
     }
 
+    if (const std::optional<TruckModel> truck = truck_model(type, u.owner)) {
+        const int wear = wear_of(u.hp, type_def.max_hp);
+        const SpriteSheet* body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, truck_load(u)), u.owner);
+        if (!body) body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, 0), u.owner);
+        if (body) {
+            const int frame = u.deployed ? 1 : 0;  // set up: masts raised, jacks down, the launcher up
+            draw_sprite(*body, fr.o, fr.f, frame);
+            if (truck_turns_top(*truck)) {
+                if (const SpriteSheet* top = sheet(SpritePart::TruckTop, truck_variant(*truck, wear, 0, 0), u.owner)) {
+                    // A radar set up turns round and round; packed, it lies along the truck.
+                    const float spin = static_cast<float>(GetTime()) * 1.8f + static_cast<float>(u.id);
+                    const Vector2 dir = u.deployed ? Vector2{std::cos(spin), std::sin(spin)} : fr.f;
+                    const Vector2 ring = truck_top_ring_of(*truck);
+                    draw_sprite(*top, fr.at(ring.x * kVehicleScale, ring.y * kVehicleScale), dir, frame);
+                }
+            }
+            return;
+        }
+    }
     if (type == UnitTypeId::Howitzer) {
         // A D-30: set up, its three trails spread round it, the wheels up,
         // the barrel over its shield rising to fire; packed, the trails
@@ -6441,6 +6476,581 @@ void draw_apc_turret(const Frame& tf, const ApcLook& look, Color team, int kit, 
     if (gun_front) gun();
 }
 
+// --- Trucks in pixel art ----------------------------------------------------------------
+
+// The axes' own trucks and wheeled vehicles, each a real one for its job
+// (the job and its numbers are the same for both sides): the Democratic
+// axis's KrAZ-6322 (the supply truck, BM-21 "Bastion" on it), the HEMTT
+// tanker, the MAN HX with the ammunition, Humvees (the command post's
+// shelter, the Prophet direction finder, the Sentinel radar on its
+// trailer); the Authoritarian axis's KamAZ-5350 (the supply truck, the
+// Zhitel direction finder's box on it), Urals (the tanker, the ammunition,
+// BM-21 Grad, the P-18 radar), the command vehicle on a BTR-80. Drawn as the
+// tanks are; a radar's antenna apart, turning on its own.
+enum class TruckModel : uint8_t {
+    KrazCargo,
+    HemttTanker,
+    ManAmmo,
+    KrazGrad,
+    HmmwvCommand,
+    HmmwvProphet,
+    HmmwvSentinel,
+    KamazCargo,
+    UralTanker,
+    UralAmmo,
+    UralGrad,
+    Btr80Command,
+    KamazZhitel,
+    UralRadar,
+    Count,
+};
+enum class Chassis : uint8_t {
+    Kraz,   // KrAZ-6322: a long square bonnet, a big cab, three axles
+    Ural,   // Ural-4320: a shorter bonnet between round fenders, three axles
+    Kamaz,  // KamAZ-5350: the cab over the engine, three axles
+    ManHx,  // MAN HX: an angular cab over the engine, four axles
+    Hemtt,  // HEMTT: a low cab over the front, the engine behind it, four axles
+    Hmmwv,  // HMMWV: low and wide, four wheels
+    Btr80,  // a BTR-80's hull: the command vehicle
+};
+enum class Body : uint8_t {
+    Open,      // a cargo bed, its load on it
+    Tarp,      // a tarpaulin on hoops over the crates
+    Tank,      // a fuel tank on its cradle, a walkway, a ladder
+    Launcher,  // the rocket launcher: forty tubes on a platform, raised to fire
+    Box,       // a box body: a direction finder's (its masts), a radar's
+    Shelter,   // a Humvee's shelter on its back
+    Trailer,   // a Humvee towing the radar on its trailer
+    None,      // (the BTR-80)
+};
+enum class Top : uint8_t {
+    None,
+    Yagi,      // the P-18's array of rods on its mast
+    Sentinel,  // the Sentinel's flat square face
+};
+
+struct TruckLook {
+    Chassis chassis;
+    Body body;
+    Top top;
+    float length;   // tiles
+    float width;    // half of it, to the wheels' outer edge
+    float wheel_r;  // pixels
+    bool mast;      // a direction finder's mast, raised when set up
+    int whips;      // whip aerials
+    Camo camo;
+    Color paint;
+    Color camo1;
+    Color camo2;
+};
+
+constexpr TruckLook kTruckLooks[] = {
+    {Chassis::Kraz, Body::Open, Top::None, 1.16f, 0.2f, 3.4f, false, 0, Camo::None, kUkrainianGreen, kUkrainianGreen, kUkrainianGreen},
+    {Chassis::Hemtt, Body::Tank, Top::None, 1.24f, 0.21f, 3.5f, false, 0, Camo::ThreeTone, kNatoGreen, kNatoBrown, kNatoBlack},
+    {Chassis::ManHx, Body::Tarp, Top::None, 1.2f, 0.21f, 3.3f, false, 0, Camo::ThreeTone, kNatoGreen, kNatoBrown, kNatoBlack},
+    {Chassis::Kraz, Body::Launcher, Top::None, 1.16f, 0.2f, 3.4f, false, 0, Camo::None, kUkrainianGreen, kUkrainianGreen, kUkrainianGreen},
+    {Chassis::Hmmwv, Body::Shelter, Top::None, 0.72f, 0.2f, 2.4f, false, 2, Camo::ThreeTone, kNatoGreen, kNatoBrown, kNatoBlack},
+    {Chassis::Hmmwv, Body::Shelter, Top::None, 0.72f, 0.2f, 2.4f, true, 1, Camo::ThreeTone, kNatoGreen, kNatoBrown, kNatoBlack},
+    {Chassis::Hmmwv, Body::Trailer, Top::Sentinel, 0.72f, 0.2f, 2.4f, false, 1, Camo::ThreeTone, kNatoGreen, kNatoBrown, kNatoBlack},
+    {Chassis::Kamaz, Body::Open, Top::None, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Ural, Body::Tank, Top::None, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Ural, Body::Tarp, Top::None, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Ural, Body::Launcher, Top::None, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Btr80, Body::None, Top::None, 1.1f, 0.23f, 3.0f, false, 4, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Kamaz, Body::Box, Top::None, 1.1f, 0.2f, 3.3f, true, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Ural, Body::Box, Top::Yagi, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+};
+static_assert(std::size(kTruckLooks) == static_cast<size_t>(TruckModel::Count));
+
+const TruckLook& truck_look_of(TruckModel m) { return kTruckLooks[static_cast<size_t>(m)]; }
+
+// Which truck a unit is, by its job and its side; none for the rest.
+std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId owner) {
+    const bool ours = engine::axis_of(owner) == engine::Axis::Democratic;
+    switch (type) {
+        case engine::UnitTypeId::Truck: return ours ? TruckModel::KrazCargo : TruckModel::KamazCargo;
+        case engine::UnitTypeId::FuelTanker: return ours ? TruckModel::HemttTanker : TruckModel::UralTanker;
+        case engine::UnitTypeId::AmmoTruck: return ours ? TruckModel::ManAmmo : TruckModel::UralAmmo;
+        case engine::UnitTypeId::Mlrs: return ours ? TruckModel::KrazGrad : TruckModel::UralGrad;
+        case engine::UnitTypeId::FieldHq: return ours ? TruckModel::HmmwvCommand : TruckModel::Btr80Command;
+        case engine::UnitTypeId::DfStation: return ours ? TruckModel::HmmwvProphet : TruckModel::KamazZhitel;
+        case engine::UnitTypeId::AirRadar: return ours ? TruckModel::HmmwvSentinel : TruckModel::UralRadar;
+        default: return std::nullopt;
+    }
+}
+
+// A truck's sprite sheets by its wear, how far it's sunk, its load (0: none, else the resource + 1).
+int truck_variant(TruckModel model, int wear, int sink, int load) {
+    return ((static_cast<int>(model) * 6 + wear) * 5 + sink) * 6 + load;
+}
+
+// Where a truck's parts are: its axles, its cab (along, its back and its
+// front; its roof), the bonnet in front of it (0: the cab over the engine),
+// the bed's floor and front.
+struct ChassisDims {
+    std::array<float, 4> axles;
+    int n;
+    float cab0;
+    float cab1;
+    float cab_z;
+    float bonnet;
+    float bonnet_z;
+    float floor;
+    float bed1;
+};
+ChassisDims chassis_of(const TruckLook& l) {
+    const float h = l.length * 0.5f;
+    switch (l.chassis) {
+        case Chassis::Kraz: return {{h * 0.72f, -h * 0.42f, -h * 0.76f, 0.0f}, 3, h - 0.56f, h - 0.3f, 14.5f, 0.3f, 10.0f, 8.0f, h - 0.58f};
+        case Chassis::Ural: return {{h * 0.7f, -h * 0.36f, -h * 0.76f, 0.0f}, 3, h - 0.46f, h - 0.24f, 13.5f, 0.24f, 9.5f, 7.6f, h - 0.48f};
+        case Chassis::Kamaz: return {{h * 0.74f, -h * 0.38f, -h * 0.74f, 0.0f}, 3, h - 0.26f, h, 14.0f, 0.0f, 0.0f, 8.0f, h - 0.29f};
+        case Chassis::ManHx: return {{h * 0.78f, h * 0.44f, -h * 0.44f, -h * 0.76f}, 4, h - 0.28f, h, 15.0f, 0.0f, 0.0f, 8.4f, h - 0.31f};
+        case Chassis::Hemtt: return {{h * 0.78f, h * 0.46f, -h * 0.42f, -h * 0.76f}, 4, h - 0.24f, h, 12.5f, 0.0f, 0.0f, 8.4f, h - 0.44f};
+        case Chassis::Hmmwv: return {{h * 0.62f, -h * 0.62f, 0.0f, 0.0f}, 2, h - 0.5f, h - 0.24f, 10.0f, 0.24f, 6.8f, 6.6f, h - 0.52f};
+        case Chassis::Btr80: return {{}, 0, 0.0f, 0.0f, 11.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    return {};
+}
+
+// The BTR-80 the command vehicle is: the BTR-82A's hull in its paint.
+ApcLook btr80_of(const TruckLook& l) {
+    ApcLook btr = apc_look_of(engine::VehicleModel::Btr82a);
+    btr.paint = l.paint;
+    btr.camo = l.camo;
+    return btr;
+}
+
+// How high a truck stands (its cab's roof, the top of its box), where its
+// engine is (along, up), where its radar turns (along, up).
+float truck_height(const TruckLook& l) {
+    const ChassisDims ch = chassis_of(l);
+    return l.body == Body::Box ? std::max(ch.cab_z, ch.floor + 7.5f) : ch.cab_z;
+}
+Vector2 truck_engine(const TruckLook& l) {
+    const ChassisDims ch = chassis_of(l);
+    const float h = l.length * 0.5f;
+    if (l.chassis == Chassis::Btr80) return {-h * 0.7f * kVehicleScale, 12.0f * kVehicleScale};
+    return {(h - 0.12f) * kVehicleScale, (ch.bonnet > 0.0f ? ch.bonnet_z : ch.cab_z * 0.6f) * kVehicleScale};
+}
+Vector2 truck_top_ring(const TruckLook& l) {
+    const float h = l.length * 0.5f;
+    return l.top == Top::Sentinel ? Vector2{-h - 0.22f, 0.0f} : Vector2{-h + 0.26f, 0.0f};
+}
+float truck_top_z(const TruckLook& l) { return l.top == Top::Sentinel ? 5.0f : chassis_of(l).floor + 7.5f; }
+
+// The rocket launcher: forty tubes in a pack pointing ahead over the cab,
+// hinged at its back; raised to fire (frame 1). Their mouths at the ends.
+void grad_pack(const Frame& fr, const TruckLook& look, const ChassisDims& ch, int frame, int wear) {
+    const float h = look.length * 0.5f;
+    const float back = -h + 0.1f;
+    const float front = ch.bed1 + 0.02f;
+    const float z0 = ch.floor + 1.8f;
+    const float rise = frame == 1 ? 6.5f : 0.0f;
+    const float tall = 3.2f;
+    const float hw = 0.12f;
+    const Color paint = wear >= 4 ? look.paint : shade(look.paint, 0.92f);
+    auto z = [&](float a) { return z0 + rise * (a - back) / (front - back); };
+    auto facing = [&](float na, float nc) {
+        const Vector2 g = fr.ground_of(na, nc);
+        return g.x + g.y > 0.02f;
+    };
+    if (under(fr, z0 + tall)) return;
+    block(fr, back + 0.02f, back + 0.16f, -0.05f, 0.05f, ch.floor + 0.4f, z0 + 0.3f, {48, 50, 44, 255});  // its pivot
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    auto quad = [&](Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, Color color) { fill_quad(p0, p1, p2, p3, color); };
+    // The end facing us with the tubes' mouths.
+    auto mouths = [&](float a) {
+        const float zb = z(a);
+        quad(fr.at(a, -hw, zb), fr.at(a, hw, zb), fr.at(a, hw, zb + tall), fr.at(a, -hw, zb + tall), {40, 42, 36, 255});
+        for (int row = 0; row < 3; ++row) {
+            for (int k = 0; k < 6; ++k) {
+                const float c = -hw + 0.02f + (2.0f * hw - 0.04f) * static_cast<float>(k) / 5.0f;
+                disc(fr.at(a, c, zb + 0.6f + 1.0f * static_cast<float>(row)), 0.55f, {18, 18, 16, 255});
+            }
+        }
+    };
+    if (facing(-1.0f, 0.0f)) mouths(back);
+    if (facing(1.0f, 0.0f)) mouths(front);
+    const float sc = near * hw;
+    quad(fr.at(back, sc, z(back)), fr.at(front, sc, z(front)), fr.at(front, sc, z(front) + tall), fr.at(back, sc, z(back) + tall),
+         shade(paint, 0.78f));
+    for (int row = 1; row < 3; ++row) {  // the rows of tubes along its side
+        const float dz = tall * static_cast<float>(row) / 3.0f;
+        DrawLineV(fr.at(back, sc, z(back) + dz), fr.at(front, sc, z(front) + dz), lit(shade(paint, 0.6f)));
+    }
+    quad(fr.at(back, -hw, z(back) + tall), fr.at(front, -hw, z(front) + tall), fr.at(front, hw, z(front) + tall),
+         fr.at(back, hw, z(back) + tall), shade(paint, 1.05f));
+    for (int k = 1; k < 6; ++k) {  // the tubes along its top
+        const float c = -hw + 2.0f * hw * static_cast<float>(k) / 6.0f;
+        DrawLineV(fr.at(back, c, z(back) + tall), fr.at(front, c, z(front) + tall), lit(shade(paint, 0.75f)));
+    }
+    scorch(fr, back, front, -hw, hw, z0 + tall, wear, 0x5A1u);
+}
+
+// A truck's body: the far wheels, the frame; its bed or body, its cab, its
+// bonnet, whatever is nearer drawn over; the near wheels. The cab's
+// windscreen and side window (cracked when battered, black burnt out), the
+// grille, the bumper, the side's colour on the door; the bed by the job:
+// its load, the tarpaulin, the tank, the launcher, a box with its masts
+// (raised when set up, frame 1), a Humvee's shelter, the radar's trailer.
+// Whip aerials to add after, a pixel thin, in `whips`. Burnt out, the tyres
+// gone to the rims, the tarpaulin burnt off its hoops, the glass gone.
+struct Whip {
+    Vector2 foot;
+    int length;
+};
+
+void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color team, int wear, int load, std::vector<Whip>& whips) {
+    if (look.chassis == Chassis::Btr80) {  // its hull, its mast folded along the roof, its aerials
+        const ApcLook btr = btr80_of(look);
+        draw_apc_hull(fr, btr, 0, 0, team, wear);
+        const float h = btr.length * 0.5f;
+        if (!under(fr, btr.deck + 1.0f)) {
+            block(fr, -h + 0.16f, h - 0.34f, -0.05f, -0.02f, btr.deck, btr.deck + 1.0f, shade(look.paint, 0.8f));
+        }
+        if (wear < 3) {
+            for (const Vector2 p : {Vector2{-h + 0.14f, 0.15f}, Vector2{-h + 0.14f, -0.15f}, Vector2{h - 0.38f, 0.14f}, Vector2{h - 0.38f, -0.14f}}) {
+                whips.push_back({fr.at(p.x, p.y, btr.deck), 16});
+            }
+        }
+        return;
+    }
+    const ChassisDims ch = chassis_of(look);
+    const float h = look.length * 0.5f;
+    const float w = look.width;
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    const Color paint = look.paint;
+    const bool burnt = wear >= 4;
+    const bool humvee = look.chassis == Chassis::Hmmwv;
+    const Color glass = burnt ? Color{28, 26, 24, 255} : wear >= 2 ? Color{56, 72, 80, 255} : Color{70, 96, 110, 255};
+    const Color dark{44, 44, 40, 255};
+    const uint32_t seed = static_cast<uint32_t>(look.length * 1000.0f) + static_cast<uint32_t>(look.body) * 77u;
+    auto facing = [&](float na, float nc) {
+        const Vector2 g = fr.ground_of(na, nc);
+        return g.x + g.y > 0.02f;
+    };
+    const bool front_near = facing(1.0f, 0.0f);
+    const float tyre_c = w - 0.05f;
+
+    // The far wheels, the frame.
+    for (int i = 0; i < ch.n; ++i) tyre(fr, ch.axles[static_cast<size_t>(i)], -near * tyre_c, look.wheel_r, paint, burnt);
+    block(fr, -h + 0.03f, h - 0.06f, -0.1f, 0.1f, look.wheel_r * 0.8f, look.wheel_r * 0.8f + 1.8f, dark);
+
+    const float low = humvee ? 2.8f : 4.2f;  // the bottom of the cab and the bonnet
+    auto cab = [&] {
+        const float slope = ch.bonnet > 0.0f ? 0.01f : 0.025f;
+        block(fr, ch.cab0, ch.cab1, -w + 0.02f, w - 0.02f, low, ch.cab_z, paint, slope, 0.0f, 0.015f);
+        if (under(fr, ch.cab_z)) return;
+        camouflage(fr, look, ch.cab0 + 0.03f, ch.cab1 - 0.04f, -w + 0.05f, w - 0.06f, ch.cab_z, 0x33u + seed, 2);
+        scorch(fr, ch.cab0 + 0.02f, ch.cab1 - 0.03f, -w + 0.05f, w - 0.06f, ch.cab_z, wear, 0x71u + seed);
+        // The windscreen in two panes on the front, the side window, the door.
+        auto front = [&](float c, float z) { return fr.at(ch.cab1 - slope * (z - low) / (ch.cab_z - low), c, z); };
+        const float g0 = ch.cab_z - (humvee ? 3.2f : 4.4f);
+        const float g1 = ch.cab_z - 0.9f;
+        if (front_near) {
+            for (const float s : {-1.0f, 1.0f}) {
+                const float c0 = s * 0.01f;
+                const float c1 = s * (w - 0.06f);
+                fill_quad(front(c0, g0), front(c1, g0), front(c1, g1), front(c0, g1), glass);
+                if (wear >= 2 && !burnt) DrawLineV(front(c0 + s * 0.02f, g0 + 0.5f), front(c1 - s * 0.02f, g1 - 0.4f), lit({120, 140, 150, 255}));
+            }
+        }
+        const float sc = near * (w - 0.02f - 0.015f * 0.5f);
+        fill_quad(fr.at(ch.cab0 + 0.04f, sc, g0), fr.at(ch.cab1 - 0.05f, sc, g0), fr.at(ch.cab1 - 0.05f, sc, g1), fr.at(ch.cab0 + 0.04f, sc, g1), glass);
+        DrawLineV(fr.at(ch.cab0 + 0.03f, sc, low + 0.6f), fr.at(ch.cab0 + 0.03f, sc, g1), lit(shade(paint, 0.6f)));
+        if (wear < 4) {  // the side's colour on the door
+            const float d0 = ch.cab0 + 0.05f;
+            const float d1 = ch.cab1 - 0.06f;
+            fill_quad(fr.at(d0, sc, low + 1.2f), fr.at(d1, sc, low + 1.2f), fr.at(d1, sc, low + 2.6f), fr.at(d0, sc, low + 2.6f), team);
+        }
+        if (ch.bonnet <= 0.0f) {  // a cab over the engine: its bumper, its lights
+            block(fr, ch.cab1 - 0.02f, ch.cab1 + 0.012f, -w + 0.01f, w - 0.01f, 2.8f, low + 0.2f, {50, 50, 46, 255});
+            if (front_near) {
+                for (const float c : {-w + 0.05f, w - 0.05f}) disc(front(c, low + 1.2f), 0.9f, burnt ? Color{30, 28, 26, 255} : Color{210, 206, 170, 255});
+            }
+        }
+        if (look.chassis == Chassis::Hemtt) {  // the engine behind the cab, its louvres
+            block(fr, ch.cab0 - 0.18f, ch.cab0, -w + 0.04f, w - 0.04f, low, ch.cab_z + 0.6f, shade(paint, 0.95f), 0.0f, 0.02f, 0.02f);
+            for (int k = 0; k < 4 && !under(fr, ch.cab_z); ++k) {
+                const float z = low + 2.0f + 1.8f * static_cast<float>(k);
+                DrawLineV(fr.at(ch.cab0 - 0.16f, near * (w - 0.04f), z), fr.at(ch.cab0 - 0.02f, near * (w - 0.04f), z), lit(shade(paint, 0.6f)));
+            }
+        }
+    };
+    auto bonnet = [&] {
+        if (ch.bonnet <= 0.0f) return;
+        const float b0 = ch.cab1 - 0.01f;
+        const float b1 = ch.cab1 + ch.bonnet;
+        const float bw = humvee ? w - 0.02f : w - 0.06f;
+        block(fr, b0, b1, -bw, bw, low, ch.bonnet_z, paint, humvee ? 0.06f : 0.03f, 0.0f, humvee ? 0.02f : 0.01f);
+        if (!under(fr, ch.bonnet_z)) {
+            camouflage(fr, look, b0 + 0.02f, b1 - 0.05f, -bw + 0.03f, bw - 0.04f, ch.bonnet_z, 0x93u + seed, 2);
+            scorch(fr, b0 + 0.02f, b1 - 0.04f, -bw + 0.03f, bw - 0.04f, ch.bonnet_z, wear, 0x47u + seed);
+        }
+        if (!humvee) {  // the fenders over the front wheels: a Ural's round ones, a KrAZ's square
+            const float ra = look.wheel_r / 32.0f * 1.35f;
+            const float a = ch.axles[0];
+            const float taper = look.chassis == Chassis::Ural ? 0.3f : 0.0f;
+            for (const float s : {-1.0f, 1.0f}) {
+                const Vector2 base[4] = {{a + ra, s * (w + 0.005f)}, {a + ra, s * (w - 0.09f)}, {a - ra, s * (w - 0.09f)}, {a - ra, s * (w + 0.005f)}};
+                Vector2 top[4];
+                for (int i = 0; i < 4; ++i) top[i] = {a + (base[i].x - a) * (1.0f - taper), base[i].y};
+                solid(fr, base, top, 4, look.wheel_r * 2.0f - 0.2f, look.wheel_r * 2.0f + 1.0f, shade(paint, 0.92f));
+            }
+        }
+        if (front_near && !under(fr, ch.bonnet_z - 0.8f)) {  // the grille, the lights
+            const float gw = bw - 0.03f;
+            auto at = [&](float c, float z) { return fr.at(b1 + 0.004f - (humvee ? 0.06f : 0.03f) * (z - low) / (ch.bonnet_z - low), c, z); };
+            fill_quad(at(-gw, low + 0.8f), at(gw, low + 0.8f), at(gw, ch.bonnet_z - 0.8f), at(-gw, ch.bonnet_z - 0.8f), {36, 36, 32, 255});
+            for (int k = 1; k < 6; ++k) {
+                const float c = -gw + 2.0f * gw * static_cast<float>(k) / 6.0f;
+                DrawLineV(at(c, low + 1.0f), at(c, ch.bonnet_z - 1.0f), lit(shade(paint, 0.8f)));
+            }
+            for (const float c : {-bw + 0.02f, bw - 0.02f}) disc(at(c, low + 1.4f), 0.9f, burnt ? Color{30, 28, 26, 255} : Color{210, 206, 170, 255});
+        }
+        block(fr, b1 - 0.02f, b1 + 0.012f, -w + 0.01f, w - 0.01f, 2.8f, low + 0.2f, {50, 50, 46, 255});  // the bumper
+    };
+    auto trailer = [&] {  // the radar's trailer behind a Humvee: its drawbar, its wheels
+        if (look.body != Body::Trailer) return;
+        const float t0 = -h - 0.38f;
+        const float t1 = -h - 0.06f;
+        DrawLineEx(fr.at(t1, 0.0f, 3.2f), fr.at(-h + 0.02f, 0.0f, 3.2f), 1.4f, lit(dark));
+        tyre(fr, (t0 + t1) * 0.5f, -near * (w - 0.06f), 2.0f, paint, burnt);
+        block(fr, t0, t1, -w + 0.05f, w - 0.05f, 2.8f, 5.0f, shade(paint, 0.9f));
+        tyre(fr, (t0 + t1) * 0.5f, near * (w - 0.06f), 2.0f, paint, burnt);
+    };
+    auto bed = [&] {
+        const float b0 = -h + 0.02f;
+        const float b1 = ch.bed1;
+        switch (look.body) {
+            case Body::Open: {
+                block(fr, b0, b1, -w + 0.01f, w - 0.01f, ch.floor - 1.0f, ch.floor + 2.4f, paint);
+                block(fr, b0 + 0.02f, b1 - 0.02f, -w + 0.03f, w - 0.03f, ch.floor - 0.6f, ch.floor + 2.25f, shade(paint, 0.55f));  // inside
+                if (!under(fr, ch.floor + 1.6f)) {
+                    for (const float z : {ch.floor - 0.1f, ch.floor + 1.0f}) {  // the boards
+                        DrawLineV(fr.at(b0 + 0.01f, near * (w - 0.01f), z), fr.at(b1 - 0.01f, near * (w - 0.01f), z), lit(shade(paint, 0.7f)));
+                    }
+                }
+                if (load > 0 && !burnt) {  // the load: sacks, timber, crates, drums
+                    const auto r = static_cast<engine::Resource>(load - 1);
+                    const Color c = cargo_color(r);
+                    block(fr, b0 + 0.05f, b1 - 0.05f, -w + 0.05f, w - 0.05f, ch.floor, ch.floor + 4.6f, c, 0.01f, 0.01f, 0.02f);
+                    if (!under(fr, ch.floor + 4.6f)) {
+                        for (int k = 1; k < 4; ++k) {
+                            const float a = b0 + 0.05f + (b1 - b0 - 0.1f) * static_cast<float>(k) / 4.0f;
+                            DrawLineV(fr.at(a, -w + 0.06f, ch.floor + 4.6f), fr.at(a, w - 0.06f, ch.floor + 4.6f), lit(shade(c, 0.7f)));
+                        }
+                    }
+                }
+                break;
+            }
+            case Body::Tarp: {
+                block(fr, b0, b1, -w + 0.01f, w - 0.01f, ch.floor - 1.0f, ch.floor + 1.4f, paint);
+                const float top = ch.floor + 6.4f;
+                if (!burnt) {
+                    const Color tarp = mix(paint, {128, 122, 86, 255}, 0.35f);
+                    block(fr, b0 + 0.01f, b1 - 0.01f, -w + 0.015f, w - 0.015f, ch.floor + 1.4f, top, tarp, 0.01f, 0.01f, 0.05f);
+                    if (!under(fr, top)) {
+                        for (int k = 1; k < 5; ++k) {  // its hoops showing through
+                            const float a = b0 + (b1 - b0) * static_cast<float>(k) / 5.0f;
+                            DrawLineV(fr.at(a, -w + 0.07f, top), fr.at(a, w - 0.07f, top), lit(shade(tarp, 0.78f)));
+                            DrawLineV(fr.at(a, near * (w - 0.015f), ch.floor + 1.6f), fr.at(a, near * (w - 0.06f), top - 0.2f), lit(shade(tarp, 0.8f)));
+                        }
+                        if (wear >= 3) {  // torn
+                            for (int k = 0; k < 3; ++k) patch(fr, b0 + 0.1f + 0.14f * static_cast<float>(k), 0.03f * static_cast<float>(k - 1), 0.04f, 0.035f, top, {30, 28, 24, 255}, seed + static_cast<uint32_t>(k));
+                        }
+                    }
+                } else if (!under(fr, top)) {  // burnt off its hoops
+                    for (int k = 0; k <= 5; ++k) {
+                        const float a = b0 + 0.01f + (b1 - b0 - 0.02f) * static_cast<float>(k) / 5.0f;
+                        const Vector2 l0 = fr.at(a, -w + 0.02f, ch.floor + 1.4f);
+                        const Vector2 l1 = fr.at(a, -w + 0.07f, top);
+                        const Vector2 r1 = fr.at(a, w - 0.07f, top);
+                        const Vector2 r0 = fr.at(a, w - 0.02f, ch.floor + 1.4f);
+                        for (const auto& [p, q] : {std::pair{l0, l1}, std::pair{l1, r1}, std::pair{r1, r0}}) DrawLineV(p, q, lit({34, 32, 28, 255}));
+                    }
+                }
+                break;
+            }
+            case Body::Tank: {
+                block(fr, b0, b1, -w + 0.04f, w - 0.04f, ch.floor - 1.0f, ch.floor + 0.4f, dark);  // the cradle
+                const float zm = ch.floor + 3.2f;
+                const float zt = ch.floor + 6.2f;
+                {
+                    const Vector2 base[4] = {{b1 - 0.015f, w - 0.07f}, {b1 - 0.015f, -w + 0.07f}, {b0 + 0.015f, -w + 0.07f}, {b0 + 0.015f, w - 0.07f}};
+                    const Vector2 top[4] = {{b1, w - 0.02f}, {b1, -w + 0.02f}, {b0, -w + 0.02f}, {b0, w - 0.02f}};
+                    solid(fr, base, top, 4, ch.floor + 0.3f, zm, shade(paint, 0.94f));
+                }
+                {
+                    const Vector2 base[4] = {{b1, w - 0.02f}, {b1, -w + 0.02f}, {b0, -w + 0.02f}, {b0, w - 0.02f}};
+                    const Vector2 top[4] = {{b1 - 0.02f, w - 0.08f}, {b1 - 0.02f, -w + 0.08f}, {b0 + 0.02f, -w + 0.08f}, {b0 + 0.02f, w - 0.08f}};
+                    solid(fr, base, top, 4, zm, zt, paint);
+                }
+                if (!under(fr, zt)) {
+                    camouflage(fr, look, b0 + 0.04f, b1 - 0.04f, -w + 0.1f, w - 0.12f, zt, 0x17u + seed, 3);
+                    scorch(fr, b0 + 0.03f, b1 - 0.03f, -w + 0.1f, w - 0.12f, zt, wear, 0x29u + seed);
+                    // The walkway along its top, the manhole, the ladder at the back.
+                    fill_quad(fr.at(b0 + 0.03f, -0.025f, zt), fr.at(b1 - 0.03f, -0.025f, zt), fr.at(b1 - 0.03f, 0.025f, zt),
+                              fr.at(b0 + 0.03f, 0.025f, zt), shade(paint, 0.7f));
+                    round_solid(fr, (b0 + b1) * 0.5f, 0.0f, 0.04f, 0.04f, zt, zt + 0.8f, shade(paint, 1.05f), 0.1f, 8);
+                    if (facing(-1.0f, 0.0f)) {
+                        for (const float c : {-0.03f, 0.03f}) DrawLineV(fr.at(b0 - 0.005f, c, ch.floor + 0.4f), fr.at(b0 - 0.005f, c, zt), lit(dark));
+                    }
+                    if (wear < 4) {  // its warning band
+                        const float sc = near * (w - 0.021f);
+                        fill_quad(fr.at(b0 + 0.06f, sc, zm - 0.5f), fr.at(b1 - 0.06f, sc, zm - 0.5f), fr.at(b1 - 0.06f, sc, zm + 0.5f),
+                                  fr.at(b0 + 0.06f, sc, zm + 0.5f), shade(paint, 1.45f));
+                    }
+                }
+                break;
+            }
+            case Body::Launcher: {
+                block(fr, b0, b1, -w + 0.02f, w - 0.02f, ch.floor - 1.0f, ch.floor + 0.6f, shade(paint, 0.85f));  // the platform
+                // Its jacks at the back: down on the ground to fire.
+                for (const float c : {-w + 0.03f, w - 0.03f}) {
+                    block(fr, b0 + 0.01f, b0 + 0.05f, c - 0.015f, c + 0.015f, frame == 1 ? 0.0f : 2.4f, ch.floor - 1.0f, dark);
+                }
+                grad_pack(fr, look, ch, frame, wear);
+                break;
+            }
+            case Body::Box: {
+                const float top = ch.floor + 7.5f;
+                block(fr, b0, b1, -w + 0.01f, w - 0.01f, ch.floor - 0.8f, top, shade(paint, 1.02f), 0.0f, 0.0f, 0.005f);
+                if (!under(fr, top)) {
+                    camouflage(fr, look, b0 + 0.04f, b1 - 0.04f, -w + 0.04f, w - 0.05f, top, 0x21u + seed, 3);
+                    scorch(fr, b0 + 0.03f, b1 - 0.03f, -w + 0.04f, w - 0.05f, top, wear, 0x39u + seed);
+                    block(fr, b1 - 0.12f, b1 - 0.03f, -0.08f, 0.08f, top, top + 1.4f, shade(paint, 0.85f));  // the air conditioner
+                    const float sc = near * (w - 0.01f);
+                    fill_quad(fr.at(b1 - 0.2f, sc, top - 3.0f), fr.at(b1 - 0.1f, sc, top - 3.0f), fr.at(b1 - 0.1f, sc, top - 1.2f),
+                              fr.at(b1 - 0.2f, sc, top - 1.2f), glass);  // a window
+                    if (facing(-1.0f, 0.0f)) {  // the door
+                        const Vector2 q[4] = {fr.at(b0 - 0.004f, -0.06f, ch.floor), fr.at(b0 - 0.004f, 0.06f, ch.floor),
+                                              fr.at(b0 - 0.004f, 0.06f, top - 1.0f), fr.at(b0 - 0.004f, -0.06f, top - 1.0f)};
+                        fill_quad(q[0], q[1], q[2], q[3], shade(paint, 0.8f));
+                        for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.55f)));
+                    }
+                    if (look.mast) {  // the direction finder's two masts: raised when set up, else lying along the roof
+                        for (const float a : {b0 + 0.06f, b1 - 0.2f}) {
+                            if (frame == 1 && !burnt) {
+                                const Vector2 foot = fr.at(a, 0.0f, top);
+                                const Vector2 tip{foot.x, foot.y - 26.0f};
+                                DrawLineEx(foot, tip, 1.6f, lit({70, 72, 64, 255}));
+                                DrawLineEx({tip.x - 4.0f, tip.y + 1.0f}, {tip.x + 4.0f, tip.y + 1.0f}, 1.0f, lit({70, 72, 64, 255}));
+                                DrawLineEx({tip.x - 3.0f, tip.y + 5.0f}, {tip.x + 3.0f, tip.y + 5.0f}, 1.0f, lit({70, 72, 64, 255}));
+                            } else {
+                                block(fr, a - 0.02f, a + 0.14f, -0.02f, 0.02f, top, top + 0.8f, {70, 72, 64, 255});
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            case Body::Shelter: {
+                const float top = ch.floor + 5.2f;
+                block(fr, b0, b1, -w + 0.03f, w - 0.03f, ch.floor - 0.6f, top, shade(paint, 1.03f), 0.0f, 0.0f, 0.005f);
+                if (!under(fr, top)) {
+                    camouflage(fr, look, b0 + 0.03f, b1 - 0.03f, -w + 0.05f, w - 0.06f, top, 0x51u + seed, 2);
+                    scorch(fr, b0 + 0.02f, b1 - 0.02f, -w + 0.05f, w - 0.06f, top, wear, 0x63u + seed);
+                    if (facing(-1.0f, 0.0f)) {
+                        const Vector2 q[4] = {fr.at(b0 - 0.004f, -0.07f, ch.floor), fr.at(b0 - 0.004f, 0.07f, ch.floor),
+                                              fr.at(b0 - 0.004f, 0.07f, top - 0.8f), fr.at(b0 - 0.004f, -0.07f, top - 0.8f)};
+                        fill_quad(q[0], q[1], q[2], q[3], shade(paint, 0.8f));
+                        for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.55f)));
+                    }
+                    if (look.mast && frame == 1 && !burnt) {  // the direction finder's mast, up, its loop at the top
+                        const Vector2 foot = fr.at(b1 - 0.04f, 0.0f, top);
+                        const Vector2 tip{foot.x, foot.y - 30.0f};
+                        DrawLineEx(foot, tip, 1.6f, lit({70, 72, 64, 255}));
+                        DrawEllipseLines(static_cast<int>(tip.x), static_cast<int>(tip.y - 3.0f), 3.0f, 3.5f, lit({70, 72, 64, 255}));
+                    } else if (look.mast) {
+                        block(fr, b0 + 0.04f, b1 - 0.02f, 0.03f, 0.06f, top, top + 0.8f, {70, 72, 64, 255});
+                    }
+                }
+                break;
+            }
+            case Body::Trailer: {  // a Humvee's open back
+                block(fr, b0, b1, -w + 0.02f, w - 0.02f, ch.floor - 1.0f, ch.floor + 1.2f, paint);
+                block(fr, b0 + 0.02f, b1 - 0.02f, -w + 0.04f, w - 0.04f, ch.floor - 0.6f, ch.floor + 1.1f, shade(paint, 0.55f));
+                break;
+            }
+            case Body::None: break;
+        }
+        // Whip aerials: on a shelter's back corners, a box's.
+        if (look.whips > 0 && wear < 3) {
+            const float top = look.body == Body::Shelter ? ch.floor + 5.2f : ch.cab_z;
+            for (int k = 0; k < look.whips; ++k) {
+                const float c = (k % 2 == 0 ? 1.0f : -1.0f) * (w - 0.05f);
+                const float a = look.body == Body::Shelter ? b0 + 0.04f : ch.cab0 + 0.04f;
+                whips.push_back({fr.at(a, c, top), 14});
+            }
+        }
+    };
+    // Back to front as seen: whatever is nearer drawn over.
+    if (front_near) {
+        trailer();
+        bed();
+        cab();
+        bonnet();
+    } else {
+        bonnet();
+        cab();
+        bed();
+        trailer();
+    }
+    for (int i = 0; i < ch.n; ++i) tyre(fr, ch.axles[static_cast<size_t>(i)], near * tyre_c, look.wheel_r, paint, burnt);
+}
+
+// A radar's antenna, turning on its own: the P-18's array of rods on its
+// mast (lowered on the roof when packed), the Sentinel's flat square face
+// (lying flat when packed); frame 1 set up.
+void draw_truck_top(const Frame& tf, const TruckLook& look, int frame, int wear) {
+    const float z0 = truck_top_z(look);
+    const Color metal{70, 72, 64, 255};
+    if (under(tf, z0 + 1.0f)) return;
+    switch (look.top) {
+        case Top::Yagi: {
+            const float up = frame == 1 ? 10.0f : 1.2f;
+            if (frame == 1) DrawLineEx(tf.at(0.0f, 0.0f, z0), tf.at(0.0f, 0.0f, z0 + up), 1.6f, lit(metal));
+            DrawLineEx(tf.at(0.0f, -0.26f, z0 + up), tf.at(0.0f, 0.26f, z0 + up), 1.4f, lit(metal));
+            const float rod = frame == 1 ? 3.0f : 0.6f;
+            for (int k = 0; k < 8; ++k) {
+                const float c = -0.24f + 0.48f * static_cast<float>(k) / 7.0f;
+                for (const float a : {-0.03f, 0.04f}) DrawLineV(tf.at(a, c, z0 + up - rod), tf.at(a, c, z0 + up + rod), lit(shade(metal, 1.3f)));
+            }
+            break;
+        }
+        case Top::Sentinel: {
+            round_solid(tf, 0.0f, 0.0f, 0.05f, 0.05f, z0, z0 + 1.0f, shade(look.paint, 0.8f), 0.0f, 8);
+            const bool front = tf.f.x + tf.f.y > 0.0f;
+            const Color face = wear >= 4 ? Color{40, 38, 34, 255} : front ? Color{150, 156, 146, 255} : shade(look.paint, 0.9f);
+            Vector2 q[4];
+            if (frame == 1) {
+                q[0] = tf.at(0.03f, -0.13f, z0 + 1.4f);
+                q[1] = tf.at(0.03f, 0.13f, z0 + 1.4f);
+                q[2] = tf.at(-0.03f, 0.13f, z0 + 9.5f);
+                q[3] = tf.at(-0.03f, -0.13f, z0 + 9.5f);
+            } else {
+                q[0] = tf.at(0.12f, -0.13f, z0 + 1.2f);
+                q[1] = tf.at(0.12f, 0.13f, z0 + 1.2f);
+                q[2] = tf.at(-0.12f, 0.13f, z0 + 1.2f);
+                q[3] = tf.at(-0.12f, -0.13f, z0 + 1.2f);
+            }
+            fill_quad(q[0], q[1], q[2], q[3], face);
+            for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(face, 0.55f)));
+            for (int k = 1; k < 4; ++k) DrawLineV(lerp(q[0], q[3], static_cast<float>(k) / 4.0f), lerp(q[1], q[2], static_cast<float>(k) / 4.0f), lit(shade(face, 0.8f)));
+            break;
+        }
+        case Top::None: break;
+    }
+}
+
+int truck_load(const engine::Unit& u) {
+    return u.type == engine::UnitTypeId::Truck && u.carrying > 0 ? static_cast<int>(u.carrying_type) + 1 : 0;
+}
+bool truck_turns_top(TruckModel m) { return truck_look_of(m).top != Top::None; }
+Vector2 truck_top_ring_of(TruckModel m) { return truck_top_ring(truck_look_of(m)); }
+Vector2 truck_engine_of(TruckModel m) { return truck_engine(truck_look_of(m)); }
+
 // Makes a drawn frame pixel art: every colour to the nearest of the
 // palette (ramps of the paint, the side's colour, steel, rubber, glass),
 // a line a pixel darker where one part meets another below or to the right,
@@ -6573,6 +7183,101 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         world_kit_[p] = (world.has_upgrade(player, engine::UpgradeId::AddOnArmor) ? 1 : 0) |
                         (world.has_upgrade(player, engine::UpgradeId::Atgm) ? 2 : 0);
     }
+    constexpr int kW = 128;
+    constexpr int kH = 96;
+    constexpr int kDirs = 32;
+    const Vector2 origin{64.0f, 62.0f};
+    if (bake_target_.id == 0) {
+        bake_target_ = LoadRenderTexture(kW * kDirs, kH);
+        SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
+    }
+    // The colours a vehicle's sprites are made of: ramps of its paint and its
+    // camouflage's, of its side's colour; wood, steel, rubber, glass, soot, rust; `more`.
+    auto palette_of = [](Color paint, Camo camo, Color camo1, Color camo2, Color team, std::initializer_list<Color> more) {
+        std::vector<Color> palette;
+        for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
+        if (camo != Camo::None) {
+            for (const Color c : {camo1, camo2}) {
+                for (const float k : {0.55f, 0.8f, 1.05f, 1.3f}) palette.push_back(shade(c, k));
+            }
+        }
+        palette.push_back({112, 84, 54, 255});  // wood
+        palette.push_back({150, 116, 76, 255});
+        for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
+        for (const Color c : {Color{28, 28, 26, 255}, Color{44, 44, 40, 255}, Color{62, 64, 58, 255}, Color{92, 94, 84, 255},
+                              Color{124, 126, 112, 255}, Color{70, 96, 110, 255}, Color{210, 206, 170, 255},
+                              Color{28, 26, 24, 255}, Color{64, 44, 32, 255}, Color{96, 62, 40, 255}}) {  // and soot, rust
+            palette.push_back(c);
+        }
+        for (const Color c : more) palette.push_back(c);
+        return palette;
+    };
+    // One sheet: every direction (and frame) of a part drawn by `draw` into
+    // a frame of its own, made pixel art; the whip aerials `draw` gives added
+    // after, a pixel thin, no outline.
+    auto bake = [&](SpritePart part, int variant, engine::PlayerId owner, int frames, const std::vector<Color>& palette,
+                    const std::string& name, const auto& draw) {
+        const float light = g_light;
+        g_light = 1.0f;
+        Image atlas = GenImageColor(kW * kDirs, kH * frames, {0, 0, 0, 0});
+        for (int frame = 0; frame < frames; ++frame) {
+            BeginTextureMode(bake_target_);
+            ClearBackground({0, 0, 0, 0});
+            std::vector<Whip> whips;
+            for (int d = 0; d < kDirs; ++d) {
+                const float a = static_cast<float>(d) * 6.2831853f / kDirs;
+                const Vector2 f{std::cos(a), std::sin(a)};
+                constexpr float kScale = kVehicleScale;
+                const Vector2 F = iso_offset(f);
+                const Vector2 S = iso_offset({-f.y, f.x});
+                const Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
+                               {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
+                draw(fr, frame, whips);
+            }
+            EndTextureMode();
+            Image img = LoadImageFromTexture(bake_target_.texture);
+            ImageFlipVertical(&img);
+            ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+            pixelate(img, palette);
+            for (const Whip& whip : whips) {
+                const int x = static_cast<int>(std::lround(whip.foot.x));
+                const int y = static_cast<int>(std::lround(whip.foot.y));
+                ImageDrawLine(&img, x, y, x, y - whip.length, {36, 36, 32, 255});
+            }
+            ImageDraw(&atlas, img, {0, 0, static_cast<float>(kW * kDirs), static_cast<float>(kH)},
+                      {0, static_cast<float>(frame * kH), static_cast<float>(kW * kDirs), static_cast<float>(kH)}, WHITE);
+            UnloadImage(img);
+        }
+        if (const char* dump = dump_dir()) ExportImage(atlas, TextFormat("%s/%s.png", dump, name.c_str()));  // to look at, for development
+        SpriteSheet sheet;
+        sheet.atlas = LoadTextureFromImage(atlas);
+        SetTextureFilter(sheet.atlas, TEXTURE_FILTER_POINT);
+        UnloadImage(atlas);
+        sheet.w = kW;
+        sheet.h = kH;
+        sheet.dirs = kDirs;
+        sheet.frames = frames;
+        sheet.origin = origin;
+        sheets_[{{static_cast<int>(part), variant}, owner}] = sheet;
+        g_light = light;
+    };
+    auto team_of = [](int wear, engine::PlayerId owner) {
+        return wear == 5 ? Color{110, 64, 40, 255} : wear == 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
+    };
+    // Worn: darker, burnt out black and rusty, then rusted over.
+    auto worn = [](auto& look, int wear) {
+        const Color base = look.paint;
+        if (wear == 5) {  // a wreck gone rusty with the weeks
+            look.paint = mix(base, {114, 68, 44, 255}, 0.78f);
+            look.camo = Camo::None;
+        } else if (wear == 4) {  // burnt out: the paint gone black and rusty
+            look.paint = mix(base, {46, 40, 34, 255}, 0.75f);
+            look.camo = Camo::None;
+        } else if (wear == 3) {
+            look.paint = mix(base, {52, 48, 42, 255}, 0.3f);
+        }
+    };
+
     struct Wanted {
         engine::PlayerId owner;
         engine::VehicleModel model;
@@ -6625,119 +7330,98 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         if (model == engine::VehicleModel::Bmp2 && engine::axis_of(owner) == engine::Axis::Democratic) {
             carrier.paint = kUkrainianGreen;  // Ukraine's
         }
-        auto worn = [&](auto& l) {
-            const Color base = l.paint;
-            if (wear == 5) {  // a wreck gone rusty with the weeks
-                l.paint = mix(base, {114, 68, 44, 255}, 0.78f);
-                l.camo = Camo::None;
-            } else if (wear == 4) {  // burnt out: the paint gone black and rusty
-                l.paint = mix(base, {46, 40, 34, 255}, 0.75f);
-                l.camo = Camo::None;
-            } else if (wear == 3) {
-                l.paint = mix(base, {52, 48, 42, 255}, 0.3f);
-            }
-        };
-        worn(look);
-        worn(carrier);
-        const Color paint = apc ? carrier.paint : look.paint;
-        const Camo camo = apc ? carrier.camo : look.camo;
-        const Color camo1 = apc ? carrier.camo1 : look.camo1;
-        const Color camo2 = apc ? carrier.camo2 : look.camo2;
+        worn(look, wear);
+        worn(carrier, wear);
         const Dims dims = dims_of(model);
-        constexpr int kW = 128;
-        constexpr int kH = 96;
-        constexpr int kDirs = 32;
-        const Vector2 origin{64.0f, 62.0f};
-        if (bake_target_.id == 0) {
-            bake_target_ = LoadRenderTexture(kW * kDirs, kH);
-            SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
+        const Color team = team_of(wear, owner);
+        const std::vector<Color> palette = apc ? palette_of(carrier.paint, carrier.camo, carrier.camo1, carrier.camo2, team, {})
+                                               : palette_of(look.paint, look.camo, look.camo1, look.camo2, team, {});
+        const float sunk = sink == 1   ? 5.0f
+                           : sink == 3 ? dims.deck - 0.5f
+                           : sink == 4 ? dims.turret_z + dims.turret_h * 0.35f
+                           : sink == 2 ? dims.turret_z + dims.turret_h * 0.75f
+                                       : 0.0f;
+        const int w = std::min(wear, 4);
+        bake(SpritePart::Hull, variant, owner, 2, palette,
+             TextFormat("sheet_%d_%d_%d_%d_%d_%d", static_cast<int>(SpritePart::Hull), static_cast<int>(model), era, wear, sink, static_cast<int>(owner)),
+             [&](Frame fr, int frame, std::vector<Whip>&) {
+                 fr.sink = sunk;
+                 if (apc) {
+                     draw_apc_hull(fr, carrier, frame, era, team, w);
+                 } else {
+                     draw_tank_hull(fr, look, frame, era, team, w);
+                 }
+             });
+        bake(SpritePart::Turret, variant, owner, 1, palette,
+             TextFormat("sheet_%d_%d_%d_%d_%d_%d", static_cast<int>(SpritePart::Turret), static_cast<int>(model), era, wear, sink, static_cast<int>(owner)),
+             [&](Frame fr, int, std::vector<Whip>& whips) {
+                 fr.sink = sunk;
+                 if (apc) {
+                     draw_apc_turret(fr, carrier, team, era, w);
+                 } else {
+                     draw_tank_turret(fr, look, team, era, w);
+                 }
+                 // The whip aerial: short, shot away when battered.
+                 const Vector2 af = apc ? apc_aerial_foot(carrier) : aerial_foot(look);
+                 if (wear < 3 || sink == 2) whips.push_back({fr.at(af.x, af.y, dims.turret_z + dims.turret_h), 11});
+             });
+    }
+
+    // Trucks: every wear up front, the load they carry as they get it.
+    struct TruckWanted {
+        engine::PlayerId owner;
+        TruckModel model;
+        int wear;
+        int sink;  // 0, or 2: drowned, only the top of it showing
+        int load;  // 0 empty, else what it carries + 1
+    };
+    std::vector<TruckWanted> trucks;
+    for (const engine::Unit& u : world.units()) {
+        const std::optional<TruckModel> model = truck_model(u.type, u.owner);
+        if (!model) continue;
+        for (int wear = 0; wear <= 5; ++wear) trucks.push_back({u.owner, *model, wear, 0, 0});
+        if (const int load = truck_load(u); load > 0) {
+            const int now = wear_of(u.hp, engine::unit_type(u.type).max_hp);
+            for (int wear = now; wear <= std::min(now + 1, 3); ++wear) trucks.push_back({u.owner, *model, wear, 0, load});
         }
-        const Color team = wear == 5 ? Color{110, 64, 40, 255} : wear == 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
-        std::vector<Color> palette;
-        for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
-        if (camo != Camo::None) {
-            for (const Color c : {camo1, camo2}) {
-                for (const float k : {0.55f, 0.8f, 1.05f, 1.3f}) palette.push_back(shade(c, k));
-            }
+    }
+    for (const Remains& r : remains_) {
+        const std::optional<TruckModel> model = truck_model(r.type, r.owner);
+        if (!model) continue;
+        if (terrain_under(r.ground) == engine::Terrain::Water) {
+            trucks.push_back({r.owner, *model, 1, 2, 0});
+            continue;
         }
-        palette.push_back({112, 84, 54, 255});  // wood
-        palette.push_back({150, 116, 76, 255});
-        for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
-        for (const Color c : {Color{28, 28, 26, 255}, Color{44, 44, 40, 255}, Color{62, 64, 58, 255}, Color{92, 94, 84, 255},
-                              Color{124, 126, 112, 255}, Color{70, 96, 110, 255}, Color{210, 206, 170, 255},
-                              Color{28, 26, 24, 255}, Color{64, 44, 32, 255}, Color{96, 62, 40, 255}}) {  // and soot, rust
-            palette.push_back(c);
+        trucks.push_back({r.owner, *model, 4, 0, 0});
+        trucks.push_back({r.owner, *model, 5, 0, 0});
+    }
+    for (const auto& [owner, model, wear, sink, load] : trucks) {
+        const int variant = truck_variant(model, wear, sink, load);
+        if (sheets_.count({{static_cast<int>(SpritePart::TruckBody), variant}, owner})) continue;
+        TruckLook look = truck_look_of(model);
+        worn(look, wear);
+        const Color team = team_of(wear, owner);
+        const Color tarp = mix(look.paint, {128, 122, 86, 255}, 0.35f);
+        const std::vector<Color> palette =
+            palette_of(look.paint, look.camo, look.camo1, look.camo2, team,
+                       {shade(tarp, 0.7f), tarp, shade(tarp, 1.25f), cargo_color(engine::Resource::Food), cargo_color(engine::Resource::Ammo),
+                        cargo_color(engine::Resource::Fuel), cargo_color(engine::Resource::Materials), Color{150, 156, 146, 255}});
+        const float sunk = sink == 2 ? truck_height(look) - 2.5f : 0.0f;
+        const int w = std::min(wear, 4);
+        bake(SpritePart::TruckBody, variant, owner, 2, palette,
+             TextFormat("truck_%d_%d_%d_%d_%d", static_cast<int>(model), wear, sink, load, static_cast<int>(owner)),
+             [&](Frame fr, int frame, std::vector<Whip>& whips) {
+                 fr.sink = sunk;
+                 draw_truck_body(fr, look, frame, team, w, load, whips);
+             });
+        if (look.top != Top::None) {
+            bake(SpritePart::TruckTop, variant, owner, 2, palette,
+                 TextFormat("truck_top_%d_%d_%d_%d", static_cast<int>(model), wear, sink, static_cast<int>(owner)),
+                 [&](Frame fr, int frame, std::vector<Whip>&) {
+                     fr.sink = sunk;
+                     draw_truck_top(fr, look, frame, w);
+                 });
         }
-        const float light = g_light;
-        g_light = 1.0f;
-        for (const SpritePart part : {SpritePart::Hull, SpritePart::Turret}) {
-            const int frames = part == SpritePart::Hull ? 2 : 1;
-            Image atlas = GenImageColor(kW * kDirs, kH * frames, {0, 0, 0, 0});
-            for (int frame = 0; frame < frames; ++frame) {
-                BeginTextureMode(bake_target_);
-                ClearBackground({0, 0, 0, 0});
-                std::array<Vector2, kDirs> aerials{};
-                for (int d = 0; d < kDirs; ++d) {
-                    const float a = static_cast<float>(d) * 6.2831853f / kDirs;
-                    const Vector2 f{std::cos(a), std::sin(a)};
-                    constexpr float kScale = kVehicleScale;
-                    const Vector2 F = iso_offset(f);
-                    const Vector2 S = iso_offset({-f.y, f.x});
-                    Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
-                             {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
-                    fr.sink = sink == 1   ? 5.0f
-                              : sink == 3 ? dims.deck - 0.5f
-                              : sink == 4 ? dims.turret_z + dims.turret_h * 0.35f
-                              : sink == 2 ? dims.turret_z + dims.turret_h * 0.75f
-                                          : 0.0f;
-                    if (part == SpritePart::Hull) {
-                        if (apc) {
-                            draw_apc_hull(fr, carrier, frame, era, team, std::min(wear, 4));
-                        } else {
-                            draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
-                        }
-                    } else {
-                        if (apc) {
-                            draw_apc_turret(fr, carrier, team, era, std::min(wear, 4));
-                        } else {
-                            draw_tank_turret(fr, look, team, era, std::min(wear, 4));
-                        }
-                        const Vector2 af = apc ? apc_aerial_foot(carrier) : aerial_foot(look);
-                        aerials[static_cast<size_t>(d)] = fr.at(af.x, af.y, dims.turret_z + dims.turret_h);
-                    }
-                }
-                EndTextureMode();
-                Image img = LoadImageFromTexture(bake_target_.texture);
-                ImageFlipVertical(&img);
-                ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-                pixelate(img, palette);
-                if (part == SpritePart::Turret && (wear < 3 || sink == 2)) {
-                    for (const Vector2 foot : aerials) {  // the whip aerial: a pixel thin, no outline, short (shot away when battered)
-                        const int x = static_cast<int>(std::lround(foot.x));
-                        const int y = static_cast<int>(std::lround(foot.y));
-                        ImageDrawLine(&img, x, y, x, y - 11, {36, 36, 32, 255});
-                    }
-                }
-                ImageDraw(&atlas, img, {0, 0, static_cast<float>(kW * kDirs), static_cast<float>(kH)},
-                          {0, static_cast<float>(frame * kH), static_cast<float>(kW * kDirs), static_cast<float>(kH)}, WHITE);
-                UnloadImage(img);
-            }
-            if (const char* dump = dump_dir()) {  // to look at them, for development
-                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era, wear,
-                                              sink, static_cast<int>(owner)));
-            }
-            SpriteSheet sheet;
-            sheet.atlas = LoadTextureFromImage(atlas);
-            SetTextureFilter(sheet.atlas, TEXTURE_FILTER_POINT);
-            UnloadImage(atlas);
-            sheet.w = kW;
-            sheet.h = kH;
-            sheet.dirs = kDirs;
-            sheet.frames = frames;
-            sheet.origin = origin;
-            sheets_[{{static_cast<int>(part), variant}, owner}] = sheet;
-        }
-        g_light = light;
     }
 }
 
@@ -6884,6 +7568,10 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     };
     const engine::Terrain under =
         map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))}));
+    if (const std::optional<TruckModel> truck = truck_model(r.type, r.owner)) {
+        draw_truck_wreck(map, r, *truck, under == engine::Terrain::Water);
+        return;
+    }
     if (under == engine::Terrain::Water) {
         // Drowned with the bridge under it: the water over it, only the top
         // of its turret and its aerial showing, rings on the water round them.
@@ -7035,6 +7723,75 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         DrawTexturePro(sh.atlas, src, {std::round(at.x), std::round(at.y), w, static_cast<float>(sh.h)}, sh.origin, tilt, tint);
     });
     if (sink) mud_halo(fr, armor_size(def.model), true, r.seed);
+    g_light = light;
+}
+
+// A truck knocked out: burnt black, the tyres gone to the rims, the glass
+// out, the tarpaulin burnt off its hoops; rusting over the weeks; a rim or
+// two lying beside it. Drowned with a bridge: the top of it showing, rings
+// on the water round it.
+void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& r, TruckModel model, bool drowned) const {
+    const TruckLook& look = truck_look_of(model);
+    Vector2 f = r.facing;
+    const float fl = std::hypot(f.x, f.y);
+    f = fl > 0.0f ? Vector2{f.x / fl, f.y / fl} : Vector2{1.0f, 0.0f};
+    const Frame fr = make_frame(map, r.ground, f);
+    const float k = kVehicleScale;
+    if (drowned) {
+        const SpriteSheet* body = sheet(SpritePart::TruckBody, truck_variant(model, 1, 2, 0), r.owner);
+        if (!body) return;
+        const float t = static_cast<float>(GetTime());
+        for (int i = 0; i < 2; ++i) {
+            const float grow = std::fmod(t * 0.4f + static_cast<float>(i) * 0.5f, 1.0f);
+            DrawEllipseLines(static_cast<int>(fr.o.x), static_cast<int>(fr.o.y), 12.0f + 10.0f * grow, 5.0f + 4.0f * grow,
+                             ColorAlpha({190, 214, 226, 255}, 0.55f * (1.0f - grow)));
+        }
+        for (int i = 0; i < 7; ++i) {  // its shape under the water
+            const float a = (static_cast<float>(i) / 6.0f - 0.5f) * look.length * 0.9f * k;
+            DrawCircleV(fr.at(a, 0.0f), 6.0f, {24, 46, 60, 34});
+        }
+        draw_sprite(*body, fr.o, fr.f, 0);
+        return;
+    }
+    const SpriteSheet* burnt = sheet(SpritePart::TruckBody, truck_variant(model, 4, 0, 0), r.owner);
+    const SpriteSheet* rusted = sheet(SpritePart::TruckBody, truck_variant(model, 5, 0, 0), r.owner);
+    if (!burnt) return;
+    const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
+    const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
+    const float light = g_light;
+    g_light = light * (0.4f + 0.6f * fade);
+    {  // a burnt rim or two lying beside it
+        const uint32_t hw = tile_hash(static_cast<int>(r.seed & 0xFFFF), 59);
+        const Color steel = mix({74, 76, 64, 255}, {112, 68, 44, 255}, rust);
+        const float side = (hw & 1u) ? 1.0f : -1.0f;
+        for (int i = 0; i < 1 + static_cast<int>((hw >> 1) % 2); ++i) {
+            const uint32_t hi = tile_hash(static_cast<int>(hw >> 4) + i * 31, i * 7 + 5);
+            const Vector2 p = fr.at((hash_unit(hi) - 0.5f) * look.length * k, (look.width + 0.2f + 0.25f * hash_unit(hi >> 8)) * k * side);
+            const float rx = look.wheel_r * k * 1.1f;
+            const float ry = rx * (0.45f + 0.2f * hash_unit(hi >> 12));
+            DrawEllipse(static_cast<int>(p.x + 1.5f), static_cast<int>(p.y + 1.2f), rx + 1.5f, ry + 1.0f, lit({16, 14, 12, 90}));
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.8f + 1.0f, ry * 0.8f + 0.8f, lit({18, 18, 16, 255}));
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.8f, ry * 0.8f, lit(shade(steel, 0.85f)));
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.5f, ry * 0.5f, lit(shade(steel, 1.3f)));
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.18f, ry * 0.18f, lit({18, 18, 16, 255}));
+        }
+    }
+    draw_sprite(*burnt, fr.o, fr.f, 0);
+    if (rusted && rust > 0.0f) {
+        float a = std::atan2(fr.f.y, fr.f.x);
+        if (a < 0.0f) a += 6.2831853f;
+        const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(rusted->dirs))) % rusted->dirs;
+        DrawTexturePro(rusted->atlas, {static_cast<float>(d * rusted->w), 0.0f, static_cast<float>(rusted->w), static_cast<float>(rusted->h)},
+                       {std::round(fr.o.x - rusted->origin.x), std::round(fr.o.y - rusted->origin.y), static_cast<float>(rusted->w),
+                        static_cast<float>(rusted->h)},
+                       {0.0f, 0.0f}, 0.0f, ColorAlpha(lit(WHITE), rust));
+    }
+    if (truck_turns_top(model)) {
+        if (const SpriteSheet* top = sheet(SpritePart::TruckTop, truck_variant(model, 4, 0, 0), r.owner)) {
+            const Vector2 ring = truck_top_ring_of(model);
+            draw_sprite(*top, fr.at(ring.x * k, ring.y * k), fr.f, 0);
+        }
+    }
     g_light = light;
 }
 
