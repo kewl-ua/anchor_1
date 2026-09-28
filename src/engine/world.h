@@ -413,6 +413,7 @@ struct Unit {
     FixedVec2 ranging_point{};
     uint8_t ranging_shots = 0;
     bool camouflaged = false;  // under nets: hidden like in a forest until it moves
+    TankModel model = TankModel::Standard;  // how a tank is drawn: cosmetic, not in the checksum
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
 
     // A supply truck's assignment: the freight it hauls (Count: whatever

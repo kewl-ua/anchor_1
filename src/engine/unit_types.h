@@ -215,6 +215,28 @@ struct UnitTypeDef {
     Fixed radar_range{};
 };
 
+// Which real tank a tank is drawn as: the alliances' own lines (NATO with
+// Ukraine, Japan, Korea and Israel; BRICS with Iran). Cosmetic for now, until
+// the lines become units of their own; Standard is its side's usual tank.
+enum class TankModel : uint8_t {
+    Standard,
+    T64BV,       // Ukraine
+    T64BM,       // Ukraine: Bulat
+    Leopard1A5,  // Germany
+    Leopard2A6,  // Germany
+    M1A1,        // USA
+    Type10,      // Japan
+    K2,          // Korea: Black Panther
+    Merkava4,    // Israel
+    T62M,        // Russia
+    T72B3,       // Russia
+    T80BVM,      // Russia
+    T90M,        // Russia: Proryv
+    Type99A,     // China
+    Karrar,      // Iran
+    Count,
+};
+
 enum class UnitTypeId : uint8_t {
     Rifleman,
     MachineGunner,

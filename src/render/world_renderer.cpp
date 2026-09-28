@@ -4127,8 +4127,8 @@ void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, f
 }
 
 constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over life size against the tiles
-constexpr float kTankTurretAt = -0.04f;  // a tank's turret ring, along the hull
-constexpr float kTankDeck = 7.5f;        // a tank hull's roof, pixels up
+engine::TankModel model_of(const engine::Unit& u);  // with the tanks' pixel art, below
+float turret_ring_of(engine::TankModel m);
 
 // A vehicle, drawn by hand in its own frame (see Frame): tracks with their
 // road wheels or tyred wheels, the hull with its sloped plates, a turret
@@ -4161,13 +4161,14 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     };
 
     if (type == UnitTypeId::Tank) {
-        const int era = world_era_[u.owner % world_era_.size()];
-        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, era, u.owner);
-        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, era, u.owner);
+        const engine::TankModel model = model_of(u);
+        const int variant = static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()];
+        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, variant, u.owner);
+        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, variant, u.owner);
         if (hull_sheet && turret_sheet) {
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
             draw_sprite(*hull_sheet, fr.o, fr.f, frame);
-            draw_sprite(*turret_sheet, fr.at(kTankTurretAt * kVehicleScale, 0.0f), facing, 0);
+            draw_sprite(*turret_sheet, fr.at(turret_ring_of(model) * kVehicleScale, 0.0f), facing, 0);
             return;
         }
     }
@@ -4418,27 +4419,17 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     for (const float a : axles) wheel(fr, a, near * 0.17f, 3.4f, tyre, hub);
 }
 
-// --- Tanks in pixel art ------------------------------------------------------------
-
-// A T-72B3, drawn a pixel to a world pixel into a texture, then made pixel
-// art (see pixelate): the hull and the turret apart, so the turret turns on
-// its own.
-// The hull: tracks with six big road wheels, the drive sprocket at the back
-// and the idler at the front, rubber side skirts with explosive reactive
-// armour boxes forward, the sloped glacis with its rows of ERA bricks and
-// the splash guard, the engine deck's grilles, two fuel drums across the
-// back, headlights. `frame` moves the track links on.
-// A road wheel standing along the hull at (a, c), `r` pixels high: the
+// A road wheel standing along the hull at (a, c), `r` pixels high (`up` off the ground: a return roller): the
 // rubber tyre, the dished face in shadow at its rim, the hub lit, its cap.
-void road_wheel(const Frame& fr, float a, float c, float r, Color face) {
+void road_wheel(const Frame& fr, float a, float c, float r, Color face, float up = 0.0f) {
     constexpr int kPoints = 14;
     const float ra = r / 32.0f;
-    const Vector2 mid = fr.at(a, c, r);
+    const Vector2 mid = fr.at(a, c, r + up);
     auto ring = [&](float k, Color color) {
         Vector2 prev{};
         for (int i = 0; i <= kPoints; ++i) {
             const float t = static_cast<float>(i) * 6.2831853f / kPoints;
-            const Vector2 p = fr.at(a + std::cos(t) * ra * k, c, r + std::sin(t) * r * k);
+            const Vector2 p = fr.at(a + std::cos(t) * ra * k, c, r + up + std::sin(t) * r * k);
             if (i > 0) fill_triangle(mid, prev, p, color);
             prev = p;
         }
@@ -4450,170 +4441,546 @@ void road_wheel(const Frame& fr, float a, float c, float r, Color face) {
     ring(0.14f, shade(face, 0.5f));
 }
 
-void draw_tank_hull(const Frame& fr, Color paint, int frame, int era) {
-    const Color rubber{30, 30, 27, 255};
-    const Color steel{64, 66, 58, 255};
-    const Color wheel_hub{148, 150, 130, 255};
-    const float near = left_is_near(fr) ? 1.0f : -1.0f;
-    auto side_block = [&](float sgn, float a0, float a1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f) {
-        block(fr, a0, a1, sgn > 0 ? c0 : -c1, sgn > 0 ? c1 : -c0, z0, z1, color, front);
-    };
-    // The far track, the hull, then the near track over it.
-    side_block(-near, -0.5f, 0.48f, 0.18f, 0.29f, 0.0f, 5.5f, rubber, 0.03f);
-    block(fr, -0.48f, 0.36f, -0.2f, 0.2f, 2.0f, kTankDeck, paint);                       // the hull
-    block(fr, 0.36f, 0.53f, -0.2f, 0.2f, 2.0f, kTankDeck, shade(paint, 1.08f), 0.17f);    // the glacis
-    // Reactive armor on the glacis: Kontakt-1's bricks in two rows, Kontakt-5's
-    // and Relikt's big flat plates; the splash guard across it.
-    for (int row = 0; row < (era == 1 ? 2 : 0); ++row) {
-        const float a = 0.39f + 0.07f * static_cast<float>(row);
-        const float z = kTankDeck - 1.4f - 2.2f * static_cast<float>(row);
-        for (int k = 0; k < 5; ++k) {
-            const float c = -0.16f + 0.08f * static_cast<float>(k);
-            const Color brick = shade(paint, 0.95f + 0.1f * static_cast<float>((k + row) % 2));
-            fill_quad(fr.at(a, c, z + 0.8f), fr.at(a, c + 0.065f, z + 0.8f), fr.at(a + 0.05f, c + 0.065f, z - 0.8f),
-                      fr.at(a + 0.05f, c, z - 0.8f), brick);
-            DrawLineV(fr.at(a, c, z + 0.8f), fr.at(a, c + 0.065f, z + 0.8f), lit(shade(brick, 1.4f)));  // its top edge in the light
-            DrawLineV(fr.at(a + 0.05f, c, z - 0.8f), fr.at(a + 0.05f, c + 0.065f, z - 0.8f), lit(shade(brick, 0.5f)));
+// --- Tanks in pixel art ------------------------------------------------------------
+
+// The real tanks of both alliances, each drawn from what sets it apart: its
+// size, its running gear, its skirts, its back, the shape of its turret, its
+// gun, its reactive armor, its paint. Drawn a pixel to a world pixel into a
+// texture, then made pixel art (see pixelate): the hull and the turret apart,
+// so the turret turns on its own.
+enum class TurretShape : uint8_t {
+    Dome,     // the T-62's smooth frying pan
+    Cast,     // the T-64's, T-72's, T-80's rounded cast turret
+    Welded,   // the T-90M's angular welded one, a box on its back
+    Wedge,    // Leopard 2A6, K2, Type 99A: an arrowhead of armor in front
+    Flat,     // the Abrams': wide and low, faceted, a long bustle with its rack
+    Modular,  // the Type 10's: boxy, bolted-on modules
+    Leo1,     // the Leopard 1A5's, with its wedged add-on front
+    Merkava,  // the Merkava's: long and low, a sharp nose, far back on the hull, chains under its bustle
+};
+enum class Skirt : uint8_t { None, Rubber, Full };  // fenders only; a rubber skirt over the upper run; armored, the full length
+enum class Rear : uint8_t { Drums, Turbine, Plain };  // fuel drums and a log; a gas turbine's grilles; stowage
+enum class EraKind : uint8_t {
+    Soviet,    // Kontakt-1, then Kontakt-5, then Relikt, as researched
+    SovietK1,  // Kontakt-1 only (a T-64BV, a T-62M)
+    Nozh,      // the Ukrainian Nozh, then Duplet
+    Tusk,      // the Abrams' TUSK kit
+    Fy,        // the Chinese FY series
+    None,      // composite armor, nothing bolted on
+};
+enum class Camo : uint8_t { None, ThreeTone, TwoTone, Digital };
+
+struct TankLook {
+    float length;  // the hull, tiles
+    float width;   // half of it, to the tracks' outer edge
+    float deck;    // the hull's roof, pixels up
+    float glacis;  // tiles of the sloped front plate
+    int wheels;
+    float wheel_r;  // pixels
+    bool rollers;   // return rollers above the road wheels
+    bool gap;       // a wider gap after the first road wheel (the T-55/62's)
+    Skirt skirt;
+    Rear rear;
+    TurretShape turret;
+    float turret_at;  // the turret ring, along the hull
+    float turret_r;   // the turret's size, tiles
+    float turret_h;   // pixels
+    float bustle;     // its rear bustle, tiles
+    float gun;        // how far the gun reaches from the ring, tiles
+    float gun_w;      // pixels
+    float evacuator;  // where along the gun its fume extractor is, 0..1 (below 0: none)
+    bool eyebrows;    // the T-62M's BDD armor over the turret front
+    EraKind era;
+    Camo camo;
+    Color paint;
+    Color camo1;
+    Color camo2;
+};
+
+constexpr Color kRussianOlive{100, 104, 58, 255};
+constexpr Color kUkrainianGreen{86, 100, 56, 255};
+constexpr Color kNatoGreen{80, 94, 62, 255};
+constexpr Color kNatoBrown{106, 86, 60, 255};
+constexpr Color kNatoBlack{42, 42, 36, 255};
+
+constexpr TankLook kT72B3{.length = 1.03f, .width = 0.29f, .deck = 7.5f, .glacis = 0.17f, .wheels = 6, .wheel_r = 3.0f,
+                          .rollers = false, .gap = false, .skirt = Skirt::Rubber, .rear = Rear::Drums, .turret = TurretShape::Cast,
+                          .turret_at = -0.04f, .turret_r = 0.2f, .turret_h = 4.8f, .bustle = 0.0f, .gun = 0.86f, .gun_w = 1.8f,
+                          .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Soviet, .camo = Camo::None,
+                          .paint = kRussianOlive, .camo1 = kRussianOlive, .camo2 = kRussianOlive};
+
+constexpr TankLook kTankLooks[] = {
+    kT72B3,  // Standard: stands for its side's usual tank, see look_of
+    // T-64BV: small and low, six small road wheels with return rollers, Kontakt-1.
+    {.length = 0.95f, .width = 0.28f, .deck = 7.0f, .glacis = 0.16f, .wheels = 6, .wheel_r = 2.2f, .rollers = true,
+     .gap = false, .skirt = Skirt::Rubber, .rear = Rear::Drums, .turret = TurretShape::Cast, .turret_at = -0.02f,
+     .turret_r = 0.19f, .turret_h = 4.6f, .bustle = 0.0f, .gun = 0.84f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false,
+     .era = EraKind::SovietK1, .camo = Camo::None, .paint = kUkrainianGreen, .camo1 = kUkrainianGreen, .camo2 = kUkrainianGreen},
+    // T-64BM Bulat: the T-64 with Nozh.
+    {.length = 0.96f, .width = 0.28f, .deck = 7.0f, .glacis = 0.16f, .wheels = 6, .wheel_r = 2.2f, .rollers = true,
+     .gap = false, .skirt = Skirt::Rubber, .rear = Rear::Drums, .turret = TurretShape::Cast, .turret_at = -0.02f,
+     .turret_r = 0.2f, .turret_h = 4.8f, .bustle = 0.0f, .gun = 0.85f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false,
+     .era = EraKind::Nozh, .camo = Camo::None, .paint = kUkrainianGreen, .camo1 = kUkrainianGreen, .camo2 = kUkrainianGreen},
+    // Leopard 1A5: long and high, seven big road wheels under a short skirt, the wedged turret, the 105 mm gun.
+    {.length = 1.0f, .width = 0.3f, .deck = 8.0f, .glacis = 0.2f, .wheels = 7, .wheel_r = 3.0f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Leo1, .turret_at = 0.0f, .turret_r = 0.19f,
+     .turret_h = 5.2f, .bustle = 0.05f, .gun = 0.82f, .gun_w = 1.6f, .evacuator = 0.45f, .eyebrows = false, .era = EraKind::None,
+     .camo = Camo::ThreeTone, .paint = kNatoGreen, .camo1 = kNatoBrown, .camo2 = kNatoBlack},
+    // Leopard 2A6: long and flat, seven road wheels behind a full skirt, the arrowhead turret, the long L/55.
+    {.length = 1.1f, .width = 0.31f, .deck = 8.0f, .glacis = 0.14f, .wheels = 7, .wheel_r = 3.0f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Wedge, .turret_at = -0.02f, .turret_r = 0.2f,
+     .turret_h = 5.4f, .bustle = 0.12f, .gun = 1.0f, .gun_w = 1.7f, .evacuator = 0.4f, .eyebrows = false, .era = EraKind::None,
+     .camo = Camo::ThreeTone, .paint = kNatoGreen, .camo1 = kNatoBrown, .camo2 = kNatoBlack},
+    // M1A1 Abrams: wide and heavy, the flat faceted turret with its long bustle, a gas turbine, desert tan.
+    {.length = 1.1f, .width = 0.32f, .deck = 7.5f, .glacis = 0.12f, .wheels = 7, .wheel_r = 2.9f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Turbine, .turret = TurretShape::Flat, .turret_at = -0.04f, .turret_r = 0.22f,
+     .turret_h = 4.4f, .bustle = 0.14f, .gun = 0.9f, .gun_w = 1.7f, .evacuator = 0.72f, .eyebrows = false, .era = EraKind::Tusk,
+     .camo = Camo::None, .paint = {172, 152, 108, 255}, .camo1 = {172, 152, 108, 255}, .camo2 = {172, 152, 108, 255}},
+    // Type 10: compact, five road wheels, the boxy modular turret.
+    {.length = 0.98f, .width = 0.29f, .deck = 7.5f, .glacis = 0.14f, .wheels = 5, .wheel_r = 3.2f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Modular, .turret_at = -0.02f, .turret_r = 0.2f,
+     .turret_h = 5.0f, .bustle = 0.1f, .gun = 0.9f, .gun_w = 1.6f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::None,
+     .camo = Camo::TwoTone, .paint = {86, 98, 64, 255}, .camo1 = {112, 94, 66, 255}, .camo2 = {112, 94, 66, 255}},
+    // K2 Black Panther: six road wheels behind a full skirt, a sloped arrowhead turret, the L/55.
+    {.length = 1.06f, .width = 0.3f, .deck = 7.6f, .glacis = 0.16f, .wheels = 6, .wheel_r = 3.0f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Wedge, .turret_at = -0.02f, .turret_r = 0.2f,
+     .turret_h = 5.0f, .bustle = 0.12f, .gun = 1.0f, .gun_w = 1.7f, .evacuator = 0.45f, .eyebrows = false, .era = EraKind::None,
+     .camo = Camo::ThreeTone, .paint = {78, 90, 60, 255}, .camo1 = {114, 96, 68, 255}, .camo2 = {40, 40, 34, 255}},
+    // Merkava Mk4: the engine in front, a long glacis, the turret far back, long and sharp, chains under its bustle.
+    {.length = 1.12f, .width = 0.3f, .deck = 8.0f, .glacis = 0.3f, .wheels = 6, .wheel_r = 3.2f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Merkava, .turret_at = -0.14f, .turret_r = 0.19f,
+     .turret_h = 4.6f, .bustle = 0.16f, .gun = 0.98f, .gun_w = 1.7f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::None,
+     .camo = Camo::None, .paint = {148, 144, 120, 255}, .camo1 = {148, 144, 120, 255}, .camo2 = {148, 144, 120, 255}},
+    // T-62M: five big road wheels, the first one apart, bare wheels under fenders, the dome turret with its BDD eyebrows.
+    {.length = 0.95f, .width = 0.28f, .deck = 7.0f, .glacis = 0.18f, .wheels = 5, .wheel_r = 3.5f, .rollers = false, .gap = true,
+     .skirt = Skirt::None, .rear = Rear::Drums, .turret = TurretShape::Dome, .turret_at = 0.02f, .turret_r = 0.2f,
+     .turret_h = 4.4f, .bustle = 0.0f, .gun = 0.8f, .gun_w = 1.8f, .evacuator = 0.62f, .eyebrows = true, .era = EraKind::SovietK1,
+     .camo = Camo::None, .paint = {96, 100, 58, 255}, .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    kT72B3,
+    // T-80BVM: the T-72's size, return rollers, a gas turbine at the back.
+    {.length = 1.04f, .width = 0.29f, .deck = 7.2f, .glacis = 0.17f, .wheels = 6, .wheel_r = 2.9f, .rollers = true, .gap = false,
+     .skirt = Skirt::Rubber, .rear = Rear::Turbine, .turret = TurretShape::Cast, .turret_at = -0.04f, .turret_r = 0.2f,
+     .turret_h = 4.8f, .bustle = 0.0f, .gun = 0.86f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Soviet,
+     .camo = Camo::None, .paint = {98, 104, 60, 255}, .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // T-90M: the angular welded turret with a box on its back.
+    {.length = 1.04f, .width = 0.3f, .deck = 7.5f, .glacis = 0.17f, .wheels = 6, .wheel_r = 3.0f, .rollers = false, .gap = false,
+     .skirt = Skirt::Rubber, .rear = Rear::Plain, .turret = TurretShape::Welded, .turret_at = -0.04f, .turret_r = 0.21f,
+     .turret_h = 5.0f, .bustle = 0.1f, .gun = 0.88f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Soviet,
+     .camo = Camo::None, .paint = {88, 100, 58, 255}, .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // Type 99A: long, six road wheels, an arrowhead turret, digital camouflage.
+    {.length = 1.08f, .width = 0.3f, .deck = 7.6f, .glacis = 0.16f, .wheels = 6, .wheel_r = 3.1f, .rollers = true, .gap = false,
+     .skirt = Skirt::Full, .rear = Rear::Plain, .turret = TurretShape::Wedge, .turret_at = -0.03f, .turret_r = 0.21f,
+     .turret_h = 5.0f, .bustle = 0.1f, .gun = 0.92f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Fy,
+     .camo = Camo::Digital, .paint = {96, 112, 76, 255}, .camo1 = {64, 82, 54, 255}, .camo2 = {134, 144, 106, 255}},
+    // Karrar: Iran's, on the T-72's hull, an angular welded turret, sand.
+    {.length = 1.03f, .width = 0.29f, .deck = 7.5f, .glacis = 0.17f, .wheels = 6, .wheel_r = 3.0f, .rollers = false, .gap = false,
+     .skirt = Skirt::Rubber, .rear = Rear::Drums, .turret = TurretShape::Welded, .turret_at = -0.04f, .turret_r = 0.2f,
+     .turret_h = 5.0f, .bustle = 0.08f, .gun = 0.86f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Soviet,
+     .camo = Camo::None, .paint = {146, 134, 94, 255}, .camo1 = {146, 134, 94, 255}, .camo2 = {146, 134, 94, 255}},
+};
+static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::TankModel::Count));
+
+// The model a tank is drawn as: its own, or its side's usual one (NATO's
+// T-64BV for the first player, BRICS's T-72B3 for the second).
+engine::TankModel model_of(const engine::Unit& u) {
+    if (u.model != engine::TankModel::Standard) return u.model;
+    return u.owner % 2 == 0 ? engine::TankModel::T64BV : engine::TankModel::T72B3;
+}
+const TankLook& look_of(engine::TankModel m) { return kTankLooks[static_cast<size_t>(m)]; }
+float turret_ring_of(engine::TankModel m) { return look_of(m).turret_at; }
+
+// A polygon solid with its top drawn in towards its middle by `taper`.
+void poly_solid(const Frame& fr, const Vector2* pts, int n, float z0, float z1, Color color, float taper = 0.0f) {
+    Vector2 mid{0.0f, 0.0f};
+    for (int i = 0; i < n; ++i) mid = {mid.x + pts[i].x / static_cast<float>(n), mid.y + pts[i].y / static_cast<float>(n)};
+    Vector2 top[16];
+    for (int i = 0; i < n && i < 16; ++i) top[i] = {pts[i].x + (mid.x - pts[i].x) * taper, pts[i].y + (mid.y - pts[i].y) * taper};
+    solid(fr, pts, top, std::min(n, 16), z0, z1, color);
+}
+
+// The paint's pattern on a top at height z: NATO's three colours, two, the Chinese digital squares.
+void camouflage(const Frame& fr, const TankLook& look, float a0, float a1, float c0, float c1, float z, uint32_t seed, int n) {
+    if (look.camo == Camo::None) return;
+    for (int i = 0; i < n; ++i) {
+        const uint32_t hi = tile_hash(static_cast<int>(seed & 0xFFFF) + i * 13, i * 7 + 3);
+        const float a = a0 + (a1 - a0) * hash_unit(hi);
+        const float c = c0 + (c1 - c0) * hash_unit(hi >> 16);
+        if (look.camo == Camo::Digital) {
+            const float s = 0.025f + 0.015f * static_cast<float>(i % 2);
+            fill_quad(fr.at(a, c, z), fr.at(a + s, c, z), fr.at(a + s, c + s, z), fr.at(a, c + s, z), i % 2 == 0 ? look.camo1 : look.camo2);
+        } else {
+            const Color color = look.camo == Camo::ThreeTone && i % 3 == 2 ? look.camo2 : look.camo1;
+            patch(fr, a, c, 0.065f, 0.045f, z, color, hi);
         }
     }
-    if (era >= 2) {
-        for (int k = 0; k < 3; ++k) {
-            const float c = -0.19f + 0.128f * static_cast<float>(k);
+}
+
+// The hull: the tracks with their road wheels (and return rollers, and the
+// sprocket and idler), the skirt or the fenders, the hull and its sloped
+// glacis, what's on its back, the reactive armor its side has on it, the
+// side's stripe. `frame` moves the track links on.
+void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, Color team) {
+    const float a0 = -look.length * 0.5f;
+    const float a1 = look.length * 0.5f;
+    const float w = look.width;
+    const float hw = w - 0.09f;  // the hull's side, inside the tracks
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    const Color paint = look.paint;
+    const Color rubber{30, 30, 27, 255};
+    const Color steel{64, 66, 58, 255};
+    const bool soviet = look.era == EraKind::Soviet || look.era == EraKind::SovietK1 || look.era == EraKind::Nozh;
+    const int k1 = look.era == EraKind::SovietK1 ? std::min(era, 1) : era;  // what this one takes of the line
+    auto side_block = [&](float sgn, float b0, float b1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f) {
+        block(fr, b0, b1, sgn > 0 ? c0 : -c1, sgn > 0 ? c1 : -c0, z0, z1, color, front);
+    };
+    // The far track and skirt, the hull, then the near ones over it.
+    side_block(-near, a0 - 0.01f, a1 - 0.03f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
+    if (look.skirt == Skirt::Full) side_block(-near, a0 + 0.02f, a1 - 0.08f, hw, w + 0.01f, 3.0f, look.deck - 0.4f, shade(paint, 0.85f));
+    block(fr, a0, a1 - look.glacis, -hw, hw, 2.0f, look.deck, paint);
+    block(fr, a1 - look.glacis, a1, -hw, hw, 2.0f, look.deck, shade(paint, 1.08f), look.glacis * 0.92f);
+    camouflage(fr, look, a0 + 0.05f, a1 - look.glacis - 0.05f, -hw + 0.03f, hw - 0.06f, look.deck, 0x51u + static_cast<uint32_t>(look.length * 100.0f), 5);
+
+    // Reactive armor on the glacis: bricks (Kontakt-1), plates (Kontakt-5, Relikt, FY), Nozh's angled rows.
+    const float g0 = a1 - look.glacis;
+    auto glacis_at = [&](float t, float c) { return fr.at(g0 + look.glacis * t, c, look.deck - (look.deck - 2.0f) * t * 0.9f); };
+    const bool bricks = (look.era == EraKind::Soviet || look.era == EraKind::SovietK1) && k1 == 1;
+    const bool plates = (look.era == EraKind::Soviet && era >= 2) || (look.era == EraKind::Fy && era >= 1);
+    if (bricks) {
+        for (int row = 0; row < 2; ++row) {
+            for (int k = 0; k < 5; ++k) {
+                const float c = -hw + 0.03f + (2.0f * hw - 0.06f) * static_cast<float>(k) / 5.0f;
+                const float t = 0.2f + 0.38f * static_cast<float>(row);
+                const Color brick = shade(paint, 0.95f + 0.1f * static_cast<float>((k + row) % 2));
+                const Vector2 q[4] = {glacis_at(t, c), glacis_at(t, c + 0.065f), glacis_at(t + 0.28f, c + 0.065f), glacis_at(t + 0.28f, c)};
+                fill_quad(q[0], q[1], q[2], q[3], brick);
+                DrawLineV(q[0], q[1], lit(shade(brick, 1.4f)));
+                DrawLineV(q[3], q[2], lit(shade(brick, 0.5f)));
+            }
+        }
+    }
+    if (plates || (look.era == EraKind::Nozh && era >= 1)) {
+        const int n = look.era == EraKind::Nozh ? 4 : 3;
+        for (int k = 0; k < n; ++k) {
+            const float c = -hw + (2.0f * hw) * static_cast<float>(k) / static_cast<float>(n);
+            const float cw = 2.0f * hw / static_cast<float>(n) - 0.01f;
             const Color slab = shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2) + (era == 3 ? 0.06f : 0.0f));
-            const Vector2 q[4] = {fr.at(0.37f, c, kTankDeck + 0.6f), fr.at(0.37f, c + 0.122f, kTankDeck + 0.6f),
-                                  fr.at(0.5f, c + 0.122f, kTankDeck - 3.4f), fr.at(0.5f, c, kTankDeck - 3.4f)};
+            const Vector2 q[4] = {glacis_at(0.05f, c), glacis_at(0.05f, c + cw), glacis_at(0.85f, c + cw), glacis_at(0.85f, c)};
             fill_quad(q[0], q[1], q[2], q[3], slab);
             DrawLineV(q[0], q[1], lit(shade(slab, 1.4f)));
             DrawLineV(q[3], q[2], lit(shade(slab, 0.5f)));
             DrawLineV(q[1], q[2], lit(shade(slab, 0.6f)));
+            if (look.era == EraKind::Nozh) DrawLineV(lerp(q[0], q[3], 0.5f), lerp(q[1], q[2], 0.2f), lit(shade(slab, 0.55f)));
         }
     }
-    DrawLineV(fr.at(0.36f, -0.2f, kTankDeck), fr.at(0.44f, 0.0f, kTankDeck - 1.5f), lit(shade(paint, 0.7f)));
-    DrawLineV(fr.at(0.44f, 0.0f, kTankDeck - 1.5f), fr.at(0.36f, 0.2f, kTankDeck), lit(shade(paint, 0.7f)));
-    // The engine deck: grilles, the exhaust; the fuel drums lying across the back.
-    for (int k = 0; k < 4; ++k) {
-        const float a = -0.42f + 0.05f * static_cast<float>(k);
-        DrawLineV(fr.at(a, -0.15f, kTankDeck), fr.at(a, 0.15f, kTankDeck), lit(shade(paint, 0.62f)));
+    if (soviet) {  // the splash guard across the glacis
+        DrawLineV(fr.at(g0, -hw, look.deck), glacis_at(0.5f, 0.0f), lit(shade(paint, 0.7f)));
+        DrawLineV(glacis_at(0.5f, 0.0f), fr.at(g0, hw, look.deck), lit(shade(paint, 0.7f)));
     }
-    for (const float c : {-0.1f, 0.1f}) {
-        block(fr, -0.52f, -0.44f, c - 0.075f, c + 0.075f, kTankDeck - 1.0f, kTankDeck + 3.0f, {88, 88, 70, 255}, 0.015f, 0.015f);
-        DrawLineV(fr.at(-0.48f, c - 0.07f, kTankDeck + 3.0f), fr.at(-0.48f, c + 0.07f, kTankDeck + 3.0f), lit({60, 60, 50, 255}));
+    disc(fr.at(g0 - 0.06f, 0.0f, look.deck), 1.4f, shade(paint, 0.62f));  // the driver's hatch
+    for (const float c : {-hw + 0.03f, hw - 0.03f}) disc(glacis_at(0.55f, c), 1.0f, {210, 206, 170, 255});  // headlights
+
+    // Its back: fuel drums and the unditching log; a gas turbine's grilles; stowage.
+    switch (look.rear) {
+        case Rear::Drums: {
+            for (int k = 0; k < 4; ++k) {
+                const float a = a0 + 0.08f + 0.05f * static_cast<float>(k);
+                DrawLineV(fr.at(a, -hw + 0.05f, look.deck), fr.at(a, hw - 0.05f, look.deck), lit(shade(paint, 0.62f)));
+            }
+            for (const float c : {-0.1f, 0.1f}) {
+                block(fr, a0 - 0.02f, a0 + 0.06f, c - 0.075f, c + 0.075f, look.deck - 1.0f, look.deck + 3.0f, {88, 88, 70, 255}, 0.015f, 0.015f);
+            }
+            block(fr, a0 - 0.02f, a0 + 0.03f, -hw + 0.01f, hw - 0.01f, look.deck + 3.0f, look.deck + 5.0f, {112, 84, 54, 255}, 0.01f, 0.01f);
+            break;
+        }
+        case Rear::Turbine: {
+            block(fr, a0 + 0.02f, a0 + 0.22f, -hw + 0.05f, hw - 0.05f, look.deck, look.deck + 0.8f, shade(paint, 0.7f));
+            for (int k = 0; k < 6; ++k) {
+                const float a = a0 + 0.04f + 0.03f * static_cast<float>(k);
+                DrawLineV(fr.at(a, -hw + 0.06f, look.deck + 0.8f), fr.at(a, hw - 0.06f, look.deck + 0.8f), lit({34, 34, 30, 255}));
+            }
+            const Vector2 bk = fr.ground_of(-1.0f, 0.0f);
+            if (bk.x + bk.y > 0.0f) {  // the exhaust in the back plate
+                fill_quad(fr.at(a0, -hw * 0.6f, 3.0f), fr.at(a0, hw * 0.6f, 3.0f), fr.at(a0, hw * 0.6f, 6.0f), fr.at(a0, -hw * 0.6f, 6.0f),
+                          {30, 30, 28, 255});
+            }
+            break;
+        }
+        case Rear::Plain: {
+            for (int k = 0; k < 3; ++k) {
+                const float a = a0 + 0.06f + 0.05f * static_cast<float>(k);
+                DrawLineV(fr.at(a, -hw + 0.05f, look.deck), fr.at(a, hw - 0.05f, look.deck), lit(shade(paint, 0.66f)));
+            }
+            block(fr, a0 - 0.02f, a0 + 0.04f, -hw + 0.03f, hw - 0.03f, look.deck - 2.0f, look.deck + 1.0f, shade(paint, 0.85f));
+            break;
+        }
     }
-    for (const float c : {-0.17f, 0.17f}) disc(fr.at(0.46f, c, kTankDeck - 0.5f), 1.0f, {210, 206, 170, 255});  // headlights
-    disc(fr.at(0.3f, 0.0f, kTankDeck), 1.6f, shade(paint, 0.62f));  // the driver's hatch
-    // The unditching log across the back.
-    block(fr, -0.5f, -0.45f, -0.19f, 0.19f, kTankDeck + 3.0f, kTankDeck + 5.0f, {112, 84, 54, 255}, 0.01f, 0.01f);
-    // Stowage boxes on the fenders.
-    for (const float sgn : {-1.0f, 1.0f}) {
-        block(fr, -0.36f, -0.08f, sgn > 0 ? 0.2f : -0.29f, sgn > 0 ? 0.29f : -0.2f, 5.5f, 8.5f, shade(paint, 0.92f));
+    // Fenders and their stowage boxes, where there's no skirt.
+    if (look.skirt == Skirt::None) {
+        for (const float sgn : {-1.0f, 1.0f}) {
+            side_block(sgn, a0, a1 - 0.06f, hw, w + 0.01f, 5.5f, 6.2f, shade(paint, 0.82f));
+            side_block(sgn, a0 + 0.1f, a0 + 0.36f, hw + 0.01f, w, 6.2f, 8.5f, shade(paint, 0.92f));
+        }
     }
-    // The near track: the sprocket, the idler, six road wheels, the links along the top.
-    const float c = near * 0.29f;
-    side_block(near, -0.5f, 0.48f, 0.18f, 0.29f, 0.0f, 5.5f, rubber, 0.03f);
-    // The links along the ground run, moving as it drives.
-    for (float a = -0.47f + 0.03f * static_cast<float>(frame); a < 0.46f; a += 0.06f) {
+
+    // The near track: the links along the ground run, the sprocket at the
+    // back, the idler at the front, the road wheels, the return rollers.
+    const float c = near * w;
+    side_block(near, a0 - 0.01f, a1 - 0.03f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
+    for (float a = a0 + 0.03f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.06f) {
         DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.4f), lit({58, 58, 52, 255}));
     }
-    road_wheel(fr, -0.45f, c + near * 0.004f, 2.4f, steel);   // the drive sprocket
-    road_wheel(fr, 0.43f, c + near * 0.004f, 2.2f, steel);    // the idler
-    for (int i = 0; i < 6; ++i) road_wheel(fr, -0.345f + 0.132f * static_cast<float>(i), c + near * 0.008f, 3.0f, {74, 76, 64, 255});
-    for (float a = -0.46f + 0.04f * static_cast<float>(frame); a < 0.46f; a += 0.08f) {
-        DrawLineV(fr.at(a, near * 0.19f, 5.5f), fr.at(a, near * 0.29f, 5.5f), lit({26, 26, 24, 255}));
+    road_wheel(fr, a0 + 0.05f, c + near * 0.004f, 2.4f, steel);
+    road_wheel(fr, a1 - 0.07f, c + near * 0.004f, 2.2f, steel);
+    const float span = look.length - 0.3f;
+    const float slots = static_cast<float>(look.wheels - 1) + (look.gap ? 0.6f : 0.0f);
+    for (int i = 0; i < look.wheels; ++i) {
+        const float t = (static_cast<float>(i) + (look.gap && i > 0 ? 0.6f : 0.0f)) / slots;
+        road_wheel(fr, a1 - 0.15f - span * t, c + near * 0.008f, look.wheel_r, {74, 76, 64, 255});
     }
-    // The side skirt over the upper run: plates each standing a little
-    // proud of the next, the ERA boxes forward of them, bolted on.
-    for (int k = 0; k < 5; ++k) {
-        const float a0 = -0.44f + 0.128f * static_cast<float>(k);
-        side_block(near, a0 + 0.004f, a0 + 0.124f, 0.2f, 0.3f + 0.006f * static_cast<float>(k % 2), 4.0f, 6.6f,
-                   shade(paint, 0.84f + 0.05f * static_cast<float>(k % 2)));
+    if (look.rollers && look.skirt != Skirt::Full) {
+        for (int i = 0; i < 3; ++i) road_wheel(fr, a1 - 0.25f - (span - 0.2f) * static_cast<float>(i) / 2.0f, c + near * 0.004f, 1.0f, steel, 3.6f);
     }
-    if (era == 3) {  // Relikt: the skirt covered with its boxes all along
-        for (int k = 0; k < 8; ++k) {
-            const float a = -0.44f + 0.08f * static_cast<float>(k);
-            side_block(near, a, a + 0.074f, 0.2f, 0.315f, 3.6f, 6.9f, shade(paint, 0.94f + 0.08f * static_cast<float>(k % 2)));
-            disc(fr.at(a + 0.02f, near * 0.317f, 6.2f), 0.5f, shade(paint, 1.5f));
+    for (float a = a0 + 0.04f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.08f) {
+        DrawLineV(fr.at(a, near * (hw - 0.02f), 5.5f), fr.at(a, near * w, 5.5f), lit({26, 26, 24, 255}));
+    }
+
+    // The near skirt: rubber plates over the upper run, or the armored skirt
+    // the full length in panels; its reactive armor; the side's stripe.
+    float stripe_z0 = 4.6f;
+    float stripe_z1 = 6.0f;
+    if (look.skirt == Skirt::Rubber) {
+        const float s0 = a0 + 0.06f;
+        const float len = look.length - 0.4f;
+        for (int k = 0; k < 5; ++k) {
+            const float b0 = s0 + len * static_cast<float>(k) / 5.0f;
+            side_block(near, b0 + 0.004f, b0 + len / 5.0f - 0.004f, hw, w + 0.01f + 0.006f * static_cast<float>(k % 2), 4.0f, 6.6f,
+                       shade(paint, 0.84f + 0.05f * static_cast<float>(k % 2)));
+        }
+    } else if (look.skirt == Skirt::Full) {
+        const float s0 = a0 + 0.02f;
+        const float len = look.length - 0.1f;
+        const int panels = 6;
+        for (int k = 0; k < panels; ++k) {
+            const float b0 = s0 + len * static_cast<float>(k) / static_cast<float>(panels);
+            side_block(near, b0 + 0.003f, b0 + len / static_cast<float>(panels) - 0.003f, hw, w + 0.012f, 3.0f, look.deck - 0.4f,
+                       shade(paint, 0.86f + 0.05f * static_cast<float>(k % 2)));
+        }
+        stripe_z0 = 4.0f;
+        stripe_z1 = 5.6f;
+        if (look.era == EraKind::Tusk && era >= 1) {  // TUSK: reactive tiles over the skirt, in a grid
+            for (int k = 0; k < 10; ++k) {
+                for (int row = 0; row < 2; ++row) {
+                    const float b = a0 + 0.1f + (look.length - 0.3f) * static_cast<float>(k) / 10.0f;
+                    side_block(near, b, b + (look.length - 0.3f) / 10.0f - 0.006f, hw, w + 0.024f, 3.4f + 2.2f * static_cast<float>(row),
+                               5.4f + 2.2f * static_cast<float>(row), shade(paint, 0.92f + 0.08f * static_cast<float>((k + row) % 2)));
+                }
+            }
         }
     }
-    for (int k = 0; k < (era >= 1 ? 3 : 0); ++k) {
-        const float a = 0.2f + 0.085f * static_cast<float>(k);
-        side_block(near, a, a + 0.078f, 0.2f, 0.32f, 3.4f, 7.2f, shade(paint, 0.96f + 0.08f * static_cast<float>(k % 2)));
-        disc(fr.at(a + 0.02f, near * 0.322f, 6.4f), 0.5f, shade(paint, 1.5f));  // the bolts
-        disc(fr.at(a + 0.058f, near * 0.322f, 4.2f), 0.5f, shade(paint, 0.5f));
+    const bool skirt_boxes = (look.era == EraKind::Soviet || look.era == EraKind::SovietK1) && k1 >= 1 && look.skirt == Skirt::Rubber;
+    const bool covered = (look.era == EraKind::Soviet && era == 3) || (look.era == EraKind::Nozh && era >= 1);
+    if (covered) {  // Relikt or Nozh the length of the skirt
+        const int n = 8;
+        for (int k = 0; k < n; ++k) {
+            const float b = a0 + 0.06f + (look.length - 0.4f) * static_cast<float>(k) / static_cast<float>(n);
+            side_block(near, b, b + (look.length - 0.4f) / static_cast<float>(n) - 0.006f, hw, w + 0.025f, 3.6f, 6.9f,
+                       shade(paint, 0.94f + 0.08f * static_cast<float>(k % 2)));
+            disc(fr.at(b + 0.02f, near * (w + 0.027f), 6.2f), 0.5f, shade(paint, 1.5f));
+        }
     }
+    if (skirt_boxes || covered || (look.era == EraKind::Fy && era >= 2)) {
+        for (int k = 0; k < 3; ++k) {
+            const float b = a1 - 0.32f + 0.085f * static_cast<float>(k);
+            side_block(near, b, b + 0.078f, hw, w + 0.03f, 3.4f, 7.2f, shade(paint, 0.96f + 0.08f * static_cast<float>(k % 2)));
+            disc(fr.at(b + 0.02f, near * (w + 0.032f), 6.4f), 0.5f, shade(paint, 1.5f));
+            disc(fr.at(b + 0.058f, near * (w + 0.032f), 4.2f), 0.5f, shade(paint, 0.5f));
+        }
+    }
+    const float sc = near * (w + (covered ? 0.03f : look.skirt == Skirt::None ? -0.08f : 0.016f));
+    fill_quad(fr.at(a0 + 0.2f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z1),
+              fr.at(a0 + 0.2f, sc, stripe_z1), team);
 }
 
-// The side's identification stripe along the near skirt.
-void draw_tank_marking(const Frame& fr, Color team) {
-    const float near = left_is_near(fr) ? 1.0f : -1.0f;
-    const float c = near * 0.305f;
-    fill_quad(fr.at(-0.3f, c, 4.6f), fr.at(0.0f, c, 4.6f), fr.at(0.0f, c, 6.0f), fr.at(-0.3f, c, 6.0f), team);
-}
+// The turret: its body by its shape, the side's band round it, the reactive
+// armor its side has on it, sights, cupolas and machine guns, smoke
+// grenade launchers, stowage; the gun with its sleeve, fume extractor and
+// muzzle. The whip aerial is added after, a pixel thin (see bake_sprites).
+Vector2 aerial_foot(const TankLook& look) { return {-look.turret_r * 0.6f, -look.turret_r * 0.45f}; }
 
-// The turret: a round cast turret with Kontakt-5 wedges in a chevron on its
-// front, the side's band round it, smoke grenade launchers either side, the
-// commander's cupola with its machine gun, the gunner's sight, a stowage
-// basket at the back, a whip aerial; the 125 mm gun with its thermal
-// sleeve, fume extractor and muzzle.
-void draw_tank_turret(const Frame& tf, Color paint, Color team, int era) {
-    const float z0 = kTankDeck;
+void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era) {
+    const float z0 = look.deck;
+    const float r = look.turret_r;
+    const float h = look.turret_h;
+    const float b = look.bustle;
+    const Color paint = look.paint;
     const bool gun_front = tf.f.x + tf.f.y > 0.0f;
+    const float gun_z = z0 + h * 0.66f;
+    const bool western = look.turret == TurretShape::Wedge || look.turret == TurretShape::Flat ||
+                         look.turret == TurretShape::Modular || look.turret == TurretShape::Leo1;
     auto gun = [&] {
+        const float g0 = r * 0.8f;
         const Color tube = shade(paint, 0.6f);
-        barrel(tf, 0.16f, 0.86f, 0.0f, z0 + 3.6f, 0.0f, 1.8f, tube);
-        for (const float a : {0.34f, 0.64f}) {
-            DrawLineEx(tf.at(a - 0.025f, 0.0f, z0 + 3.6f), tf.at(a + 0.025f, 0.0f, z0 + 3.6f), 2.6f, lit(shade(paint, 0.5f)));
+        barrel(tf, g0, look.gun, 0.0f, gun_z, 0.0f, look.gun_w, tube);
+        for (const float k : {0.3f, 0.6f, 0.82f}) {  // the thermal sleeve's bands
+            const float a = g0 + (look.gun - g0) * k;
+            DrawLineEx(tf.at(a - 0.015f, 0.0f, gun_z), tf.at(a + 0.015f, 0.0f, gun_z), look.gun_w + 0.8f, lit(shade(paint, 0.48f)));
         }
-        DrawLineEx(tf.at(0.47f, 0.0f, z0 + 3.6f), tf.at(0.54f, 0.0f, z0 + 3.6f), 3.2f, lit(shade(paint, 0.72f)));  // the fume extractor
+        if (look.evacuator >= 0.0f) {
+            const float a = g0 + (look.gun - g0) * look.evacuator;
+            DrawLineEx(tf.at(a - 0.035f, 0.0f, gun_z), tf.at(a + 0.035f, 0.0f, gun_z), look.gun_w + 1.4f, lit(shade(paint, 0.72f)));
+        }
     };
     if (!gun_front) gun();
-    block(tf, -0.25f, -0.17f, -0.13f, 0.13f, z0 + 1.5f, z0 + 4.0f, shade(paint, 0.78f));  // the stowage basket
-    // The cast turret in broad faces: its lower band, the side's band, the sloped roof.
-    round_solid(tf, 0.0f, 0.0f, 0.2f, 0.175f, z0, z0 + 1.6f, shade(paint, 0.95f), 0.0f, 10);
-    round_solid(tf, 0.0f, 0.0f, 0.2f, 0.175f, z0 + 1.6f, z0 + 3.2f, team, 0.01f, 10);
-    round_solid(tf, 0.0f, 0.0f, 0.197f, 0.172f, z0 + 3.2f, z0 + 4.8f, shade(paint, 1.06f), 0.3f, 10);
-    for (const float sgn : {-1.0f, 1.0f}) {
-        // A stowage box on each side, towards the back; the smoke grenade launchers forward.
-        block(tf, -0.17f, -0.05f, sgn > 0 ? 0.15f : -0.2f, sgn > 0 ? 0.2f : -0.15f, z0 + 1.0f, z0 + 3.6f, shade(paint, 0.9f));
-        for (int k = 0; k < 3; ++k) disc(tf.at(0.02f - 0.03f * static_cast<float>(k), sgn * 0.19f, z0 + 3.2f), 0.9f, {50, 52, 44, 255});
-        if (era < 2) continue;
-        // Kontakt-5 wedges on the front either side of the gun (Relikt's the
-        // same, and more down the sides): the bricks under the cover in
-        // chevrons, a lit ridge and a dark groove.
-        const Vector2 base[4] = {{0.2f, sgn * 0.035f}, {0.13f, sgn * 0.17f}, {0.02f, sgn * 0.19f}, {0.06f, sgn * 0.035f}};
-        const Vector2 top[4] = {{0.17f, sgn * 0.035f}, {0.1f, sgn * 0.15f}, {0.03f, sgn * 0.16f}, {0.06f, sgn * 0.035f}};
-        if (sgn > 0.0f) {
-            solid(tf, base, top, 4, z0 + 1.2f, z0 + 4.6f, shade(paint, 1.04f));
-        } else {
-            const Vector2 base_r[4] = {base[3], base[2], base[1], base[0]};
-            const Vector2 top_r[4] = {top[3], top[2], top[1], top[0]};
-            solid(tf, base_r, top_r, 4, z0 + 1.2f, z0 + 4.6f, shade(paint, 1.04f));
+    const Color low = shade(paint, 0.95f);
+    const Color roof = shade(paint, 1.06f);
+    auto layers = [&](const Vector2* pts, int n, float taper) {
+        poly_solid(tf, pts, n, z0, z0 + h * 0.35f, low);
+        poly_solid(tf, pts, n, z0 + h * 0.35f, z0 + h * 0.6f, team);
+        poly_solid(tf, pts, n, z0 + h * 0.6f, z0 + h, roof, taper);
+    };
+    switch (look.turret) {
+        case TurretShape::Dome: {
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.92f, z0, z0 + h * 0.35f, low, 0.0f, 12);
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.92f, z0 + h * 0.35f, z0 + h * 0.6f, team, 0.02f, 12);
+            round_solid(tf, 0.0f, 0.0f, r * 0.98f, r * 0.9f, z0 + h * 0.6f, z0 + h, roof, 0.45f, 12);
+            if (look.eyebrows) {  // BDD armor over the front, either side of the gun
+                for (const float sgn : {-1.0f, 1.0f}) {
+                    const Vector2 p[4] = {{r * 0.95f, sgn * r * 0.2f}, {r * 0.55f, sgn * r * 0.85f}, {r * 0.35f, sgn * r * 0.8f}, {r * 0.7f, sgn * r * 0.15f}};
+                    poly_solid(tf, p, 4, z0 + h * 0.2f, z0 + h * 0.75f, shade(paint, 1.02f), 0.1f);
+                }
+            }
+            break;
         }
-        for (int k = 0; k < 3; ++k) {
-            const float d = 0.035f * static_cast<float>(k);
-            DrawLineV(tf.at(0.17f - d, sgn * 0.04f, z0 + 4.6f), tf.at(0.11f - d, sgn * 0.16f, z0 + 4.6f), lit(shade(paint, 1.45f)));
-            DrawLineV(tf.at(0.155f - d, sgn * 0.04f, z0 + 4.6f), tf.at(0.095f - d, sgn * 0.16f, z0 + 4.6f), lit(shade(paint, 0.55f)));
+        case TurretShape::Cast: {
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.875f, z0, z0 + h * 0.34f, low, 0.0f, 10);
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.875f, z0 + h * 0.34f, z0 + h * 0.66f, team, 0.01f, 10);
+            round_solid(tf, 0.0f, 0.0f, r * 0.985f, r * 0.86f, z0 + h * 0.66f, z0 + h, roof, 0.3f, 10);
+            break;
         }
-        if (era == 3) {
-            block(tf, -0.1f, 0.02f, sgn > 0 ? 0.16f : -0.215f, sgn > 0 ? 0.215f : -0.16f, z0 + 1.4f, z0 + 4.4f, shade(paint, 1.02f));
-            DrawLineV(tf.at(-0.04f, sgn * 0.215f, z0 + 1.4f), tf.at(-0.04f, sgn * 0.215f, z0 + 4.4f), lit(shade(paint, 0.55f)));
+        case TurretShape::Welded: {
+            const Vector2 p[8] = {{r, r * 0.45f}, {r * 0.6f, r}, {-r * 0.75f, r * 0.95f}, {-r, r * 0.6f},
+                                  {-r, -r * 0.6f}, {-r * 0.75f, -r * 0.95f}, {r * 0.6f, -r}, {r, -r * 0.45f}};
+            layers(p, 8, 0.12f);
+            block(tf, -r - b, -r + 0.01f, -r * 0.7f, r * 0.7f, z0 + h * 0.2f, z0 + h * 0.85f, shade(paint, 0.9f));  // the box on its back
+            break;
+        }
+        case TurretShape::Wedge: {
+            const Vector2 p[7] = {{r * 1.35f, 0.0f}, {r * 0.55f, r * 0.95f}, {-r, r * 0.95f}, {-r - b, r * 0.75f},
+                                  {-r - b, -r * 0.75f}, {-r, -r * 0.95f}, {r * 0.55f, -r * 0.95f}};
+            layers(p, 7, 0.08f);
+            DrawLineV(tf.at(r * 0.55f, -r * 0.9f, z0 + h), tf.at(r * 0.55f, r * 0.9f, z0 + h), lit(shade(paint, 0.62f)));  // the wedge's seam
+            break;
+        }
+        case TurretShape::Flat: {
+            const Vector2 p[8] = {{r * 1.05f, r * 0.35f}, {r * 0.75f, r}, {-r * 0.8f, r}, {-r - b, r * 0.85f},
+                                  {-r - b, -r * 0.85f}, {-r * 0.8f, -r}, {r * 0.75f, -r}, {r * 1.05f, -r * 0.35f}};
+            layers(p, 8, 0.06f);
+            for (int k = 0; k < 4; ++k) {  // the bustle rack
+                const float a = -r - b + 0.02f + (b + 0.1f) * static_cast<float>(k) / 3.0f;
+                DrawLineV(tf.at(a, -r * 0.8f, z0 + h + 1.5f), tf.at(a, r * 0.8f, z0 + h + 1.5f), lit(shade(paint, 0.55f)));
+            }
+            DrawLineV(tf.at(-r - b + 0.02f, -r * 0.8f, z0 + h + 1.5f), tf.at(-r * 0.6f, -r * 0.8f, z0 + h + 1.5f), lit(shade(paint, 0.55f)));
+            DrawLineV(tf.at(-r - b + 0.02f, r * 0.8f, z0 + h + 1.5f), tf.at(-r * 0.6f, r * 0.8f, z0 + h + 1.5f), lit(shade(paint, 0.55f)));
+            break;
+        }
+        case TurretShape::Modular: {
+            const Vector2 p[6] = {{r, r * 0.82f}, {-r * 0.9f, r * 0.92f}, {-r - b, r * 0.7f}, {-r - b, -r * 0.7f},
+                                  {-r * 0.9f, -r * 0.92f}, {r, -r * 0.82f}};
+            layers(p, 6, 0.08f);
+            for (const float k : {0.45f, -0.1f}) {  // the modules' seams
+                DrawLineV(tf.at(r * k, -r * 0.85f, z0 + h), tf.at(r * k, r * 0.85f, z0 + h), lit(shade(paint, 0.62f)));
+            }
+            break;
+        }
+        case TurretShape::Merkava: {
+            const Vector2 p[7] = {{r * 1.7f, 0.0f}, {r * 0.4f, r * 0.95f}, {-r, r * 0.95f}, {-r - b, r * 0.8f},
+                                  {-r - b, -r * 0.8f}, {-r, -r * 0.95f}, {r * 0.4f, -r * 0.95f}};
+            layers(p, 7, 0.1f);
+            for (int k = 0; k < 7; ++k) {  // the chains hanging under the bustle, a ball at the end of each
+                const float c = -r * 0.75f + r * 1.5f * static_cast<float>(k) / 6.0f;
+                const Vector2 top = tf.at(-r - b + 0.01f, c, z0 + 0.5f);
+                DrawLineV(top, {top.x, top.y + 3.0f}, lit({52, 52, 46, 255}));
+                disc({top.x, top.y + 3.5f}, 0.8f, {60, 60, 52, 255});
+            }
+            break;
+        }
+        case TurretShape::Leo1: {
+            const Vector2 p[8] = {{r * 1.1f, r * 0.3f}, {r * 0.7f, r * 0.95f}, {-r * 0.6f, r * 0.95f}, {-r - b, r * 0.6f},
+                                  {-r - b, -r * 0.6f}, {-r * 0.6f, -r * 0.95f}, {r * 0.7f, -r * 0.95f}, {r * 1.1f, -r * 0.3f}};
+            layers(p, 8, 0.1f);
+            break;
         }
     }
-    if (era == 1) {
+    camouflage(tf, look, -r * 0.8f, r * 0.6f, -r * 0.7f, r * 0.6f, z0 + h, 0x77u + static_cast<uint32_t>(r * 1000.0f), 3);
+
+    // Reactive armor on the turret, by its kind and how far its side has got.
+    const int k1 = look.era == EraKind::SovietK1 ? std::min(era, 1) : era;
+    for (const float sgn : {-1.0f, 1.0f}) {
+        // Smoke grenade launchers forward on either side; a stowage box towards the back.
+        for (int k = 0; k < 3; ++k) disc(tf.at(r * 0.1f - 0.03f * static_cast<float>(k), sgn * r * 0.95f, z0 + h * 0.66f), 0.9f, {50, 52, 44, 255});
+        if (!western) block(tf, -r * 0.85f, -r * 0.25f, sgn > 0 ? r * 0.75f : -r, sgn > 0 ? r : -r * 0.75f, z0 + 1.0f, z0 + h * 0.75f, shade(paint, 0.9f));
+        const bool wedges = (look.era == EraKind::Soviet && era >= 2);
+        if (wedges) {  // Kontakt-5's (and Relikt's) wedges, their bricks in chevrons
+            const Vector2 base[4] = {{r, sgn * 0.035f}, {r * 0.65f, sgn * r * 0.85f}, {r * 0.1f, sgn * r * 0.95f}, {r * 0.3f, sgn * 0.035f}};
+            const Vector2 top[4] = {{r * 0.85f, sgn * 0.035f}, {r * 0.5f, sgn * r * 0.75f}, {r * 0.15f, sgn * r * 0.8f}, {r * 0.3f, sgn * 0.035f}};
+            solid(tf, base, top, 4, z0 + h * 0.25f, z0 + h * 0.96f, shade(paint, 1.04f));
+            for (int k = 0; k < 3; ++k) {
+                const float d = 0.035f * static_cast<float>(k);
+                DrawLineV(tf.at(r * 0.85f - d, sgn * 0.04f, z0 + h * 0.96f), tf.at(r * 0.55f - d, sgn * r * 0.8f, z0 + h * 0.96f), lit(shade(paint, 1.45f)));
+                DrawLineV(tf.at(r * 0.78f - d, sgn * 0.04f, z0 + h * 0.96f), tf.at(r * 0.48f - d, sgn * r * 0.8f, z0 + h * 0.96f), lit(shade(paint, 0.55f)));
+            }
+            if (era == 3) {  // Relikt: modules down the sides as well
+                block(tf, -r * 0.5f, r * 0.1f, sgn > 0 ? r * 0.8f : -r * 1.08f, sgn > 0 ? r * 1.08f : -r * 0.8f, z0 + h * 0.3f, z0 + h * 0.92f, shade(paint, 1.02f));
+            }
+        }
+        if (look.era == EraKind::Nozh && era >= 1) {  // Nozh: flat angled modules across the front and down the sides (Duplet thicker)
+            const float t = era >= 2 ? 0.05f : 0.035f;
+            const Vector2 p[4] = {{r * 1.02f, sgn * 0.035f}, {r * 0.6f, sgn * r * 0.98f}, {r * 0.6f - t, sgn * (r * 0.98f - t)}, {r * 1.02f - t, sgn * 0.035f}};
+            poly_solid(tf, p, 4, z0 + h * 0.2f, z0 + h * 0.9f, shade(paint, 1.03f));
+            block(tf, -r * 0.6f, r * 0.55f, sgn > 0 ? r * 0.85f : -r * 1.05f, sgn > 0 ? r * 1.05f : -r * 0.85f, z0 + h * 0.25f, z0 + h * 0.85f, shade(paint, 0.98f));
+        }
+        if (look.era == EraKind::Fy && era >= 1) {  // FY: two rows of boxes on the wedge's faces
+            for (int row = 0; row < 2; ++row) {
+                for (int k = 0; k < 3; ++k) {
+                    const float t = 0.15f + 0.25f * static_cast<float>(k);
+                    const float a = r * 1.35f - (r * 0.8f) * t;
+                    const float c = sgn * r * 0.95f * t;
+                    block(tf, a - 0.02f, a + 0.02f, c - 0.02f, c + 0.02f, z0 + h * (0.3f + 0.3f * static_cast<float>(row)),
+                          z0 + h * (0.55f + 0.3f * static_cast<float>(row)), shade(paint, 1.02f + 0.06f * static_cast<float>(k % 2)));
+                }
+            }
+        }
+    }
+    if ((look.era == EraKind::Soviet || look.era == EraKind::SovietK1) && k1 == 1) {
         // Kontakt-1: rows of small boxes round the front of the turret roof.
         for (int k = 0; k < 9; ++k) {
             const float t = -1.25f + 2.5f * static_cast<float>(k) / 8.0f;
             if (std::fabs(t) < 0.18f) continue;  // the gun
-            const float a = std::cos(t) * 0.15f;
-            const float c = std::sin(t) * 0.14f;
-            block(tf, a - 0.025f, a + 0.025f, c - 0.022f, c + 0.022f, z0 + 3.4f, z0 + 5.4f, shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2)));
+            const float a = std::cos(t) * r * 0.75f;
+            const float c = std::sin(t) * r * 0.7f;
+            block(tf, a - 0.025f, a + 0.025f, c - 0.022f, c + 0.022f, z0 + h * 0.7f, z0 + h * 1.12f, shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2)));
         }
     }
-    round_solid(tf, -0.06f, 0.07f, 0.05f, 0.05f, z0 + 4.8f, z0 + 6.3f, shade(paint, 0.94f), 0.2f, 10);  // the cupola
-    DrawLineEx(tf.at(-0.06f, 0.07f, z0 + 7.0f), tf.at(0.07f, 0.07f, z0 + 7.3f), 1.0f, lit({34, 34, 32, 255}));  // its NSVT
-    block(tf, 0.0f, 0.07f, -0.11f, -0.05f, z0 + 4.8f, z0 + 6.8f, shade(paint, 0.88f));  // the gunner's sight
-    fill_quad(tf.at(0.07f, -0.105f, z0 + 5.3f), tf.at(0.07f, -0.055f, z0 + 5.3f), tf.at(0.07f, -0.055f, z0 + 6.4f),
-              tf.at(0.07f, -0.105f, z0 + 6.4f), {70, 96, 110, 255});
-    disc(tf.at(-0.13f, -0.09f, z0 + 4.8f), 1.0f, shade(paint, 0.6f));  // the aerial's base (the whip is added after, a pixel thin)
+    // Hatches, sights, machine guns.
+    if (western) {
+        block(tf, -r * 0.35f, -r * 0.05f, r * 0.3f, r * 0.62f, z0 + h, z0 + h + 1.2f, shade(paint, 0.9f));  // the commander's hatch
+        const Vector2 post = tf.at(-r * 0.1f, -r * 0.45f, z0 + h);
+        DrawLineV(post, {post.x, post.y - 2.5f}, lit(shade(paint, 0.6f)));  // the commander's sight on its post
+        block(tf, -r * 0.2f, 0.0f, -r * 0.58f, -r * 0.32f, z0 + h + 2.2f, z0 + h + 4.2f, shade(paint, 0.85f));
+        block(tf, r * 0.25f, r * 0.55f, -r * 0.8f, -r * 0.5f, z0 + h, z0 + h + 1.6f, shade(paint, 0.85f));  // the gunner's sight
+        if (look.turret == TurretShape::Flat) {  // the loader's machine gun (and TUSK's shield)
+            DrawLineEx(tf.at(-r * 0.3f, -r * 0.6f, z0 + h + 2.5f), tf.at(r * 0.1f, -r * 0.6f, z0 + h + 2.8f), 1.0f, lit({34, 34, 32, 255}));
+            if (era >= 1) block(tf, 0.0f, 0.02f, -r * 0.8f, -r * 0.4f, z0 + h, z0 + h + 3.5f, shade(paint, 0.85f));
+        }
+    } else {
+        round_solid(tf, -r * 0.3f, r * 0.35f, 0.05f, 0.05f, z0 + h, z0 + h + 1.5f, shade(paint, 0.94f), 0.2f, 10);  // the cupola
+        DrawLineEx(tf.at(-r * 0.3f, r * 0.35f, z0 + h + 2.2f), tf.at(r * 0.35f, r * 0.35f, z0 + h + 2.5f), 1.0f, lit({34, 34, 32, 255}));  // its MG
+        block(tf, 0.0f, r * 0.35f, -r * 0.55f, -r * 0.25f, z0 + h, z0 + h + 2.0f, shade(paint, 0.88f));  // the gunner's sight
+        fill_quad(tf.at(r * 0.35f, -r * 0.52f, z0 + h + 0.5f), tf.at(r * 0.35f, -r * 0.28f, z0 + h + 0.5f),
+                  tf.at(r * 0.35f, -r * 0.28f, z0 + h + 1.6f), tf.at(r * 0.35f, -r * 0.52f, z0 + h + 1.6f), {70, 96, 110, 255});
+    }
+    const Vector2 af = aerial_foot(look);
+    disc(tf.at(af.x, af.y, z0 + h), 1.0f, shade(paint, 0.6f));  // the aerial's base
     if (gun_front) gun();
 }
 
@@ -4699,27 +5066,42 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         if (std::find(owners.begin(), owners.end(), u.owner) == owners.end()) owners.push_back(u.owner);
     }
     for (size_t p = 0; p < world_era_.size(); ++p) world_era_[p] = world.era_level(static_cast<engine::PlayerId>(p));
-    std::vector<std::pair<engine::PlayerId, int>> wanted;  // (owner, reactive armor)
-    for (const engine::PlayerId owner : owners) {
-        wanted.emplace_back(owner, world_era_[owner % world_era_.size()]);
-        if (dump_dir()) {  // every kind, to look at
-            for (int era = 0; era <= 3; ++era) wanted.emplace_back(owner, era);
+    struct Wanted {
+        engine::PlayerId owner;
+        engine::TankModel model;
+        int era;  // reactive armor
+    };
+    std::vector<Wanted> wanted;
+    for (const engine::Unit& u : world.units()) {
+        if (u.type != engine::UnitTypeId::Tank) continue;
+        const Wanted w{u.owner, model_of(u), world_era_[u.owner % world_era_.size()]};
+        if (dump_dir()) {  // every kind of armor, to look at
+            for (int era = 0; era <= 3; ++era) wanted.push_back({w.owner, w.model, era});
+        } else {
+            wanted.push_back(w);
         }
     }
-    for (const auto& [owner, era] : wanted) {
-        if (sheets_.count({{static_cast<int>(SpritePart::TankHull), era}, owner})) continue;
-        constexpr int kW = 112;
-        constexpr int kH = 84;
+    for (const auto& [owner, model, era] : wanted) {
+        const int variant = static_cast<int>(model) * 4 + era;
+        if (sheets_.count({{static_cast<int>(SpritePart::TankHull), variant}, owner})) continue;
+        const TankLook& look = look_of(model);
+        constexpr int kW = 128;
+        constexpr int kH = 96;
         constexpr int kDirs = 32;
-        const Vector2 origin{56.0f, 56.0f};
+        const Vector2 origin{64.0f, 62.0f};
         if (bake_target_.id == 0) {
             bake_target_ = LoadRenderTexture(kW, kH);
             SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
         }
         const Color team = theme::player_color(owner);
-        const Color paint{100, 104, 58, 255};
+        const Color paint = look.paint;
         std::vector<Color> palette;
         for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
+        if (look.camo != Camo::None) {
+            for (const Color c : {look.camo1, look.camo2}) {
+                for (const float k : {0.55f, 0.8f, 1.05f, 1.3f}) palette.push_back(shade(c, k));
+            }
+        }
         palette.push_back({112, 84, 54, 255});  // wood
         palette.push_back({150, 116, 76, 255});
         for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
@@ -4743,10 +5125,9 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     BeginTextureMode(bake_target_);
                     ClearBackground({0, 0, 0, 0});
                     if (part == SpritePart::TankHull) {
-                        draw_tank_hull(fr, paint, frame, era);
-                        draw_tank_marking(fr, team);
+                        draw_tank_hull(fr, look, frame, era, team);
                     } else {
-                        draw_tank_turret(fr, paint, team, era);
+                        draw_tank_turret(fr, look, team, era);
                     }
                     EndTextureMode();
                     Image img = LoadImageFromTexture(bake_target_.texture);
@@ -4755,7 +5136,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     pixelate(img, palette);
                     if (part == SpritePart::TankTurret) {
                         // The whip aerial: a pixel thin, no outline, short.
-                        const Vector2 foot = fr.at(-0.13f, -0.09f, kTankDeck + 4.8f);
+                        const Vector2 af = aerial_foot(look);
+                        const Vector2 foot = fr.at(af.x, af.y, look.deck + look.turret_h);
                         const int x = static_cast<int>(std::lround(foot.x));
                         const int y = static_cast<int>(std::lround(foot.y));
                         ImageDrawLine(&img, x, y, x, y - 11, {36, 36, 32, 255});
@@ -4766,7 +5148,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                 }
             }
             if (const char* dump = dump_dir()) {  // to look at them, for development
-                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d.png", dump, static_cast<int>(part), era, static_cast<int>(owner)));
+                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era,
+                                              static_cast<int>(owner)));
             }
             SpriteSheet sheet;
             sheet.atlas = LoadTextureFromImage(atlas);
@@ -4777,7 +5160,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             sheet.dirs = kDirs;
             sheet.frames = frames;
             sheet.origin = origin;
-            sheets_[{{static_cast<int>(part), era}, owner}] = sheet;
+            sheets_[{{static_cast<int>(part), variant}, owner}] = sheet;
         }
         g_light = light;
     }

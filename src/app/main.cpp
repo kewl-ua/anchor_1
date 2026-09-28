@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -397,6 +398,36 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         if (tank) skill(tank, engine::AbilityId::IndirectFire, ahead(21.0f, 0.0f));
         game.select_units({howitzer});
         return render::to_vector2(ahead(15.0f, 0.0f));
+    }
+
+    if (options.scene == "tanks" && options.mode == Options::Mode::Offline) {
+        // Offline: every tank of both alliances ahead of the base, three-quarters
+        // on: NATO's in the front row, BRICS's behind.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        using engine::TankModel;
+        const TankModel nato[] = {TankModel::T64BV, TankModel::T64BM, TankModel::Leopard1A5, TankModel::Leopard2A6,
+                                  TankModel::M1A1, TankModel::Type10, TankModel::K2, TankModel::Merkava4};
+        const TankModel brics[] = {TankModel::T62M, TankModel::T72B3, TankModel::T80BVM, TankModel::T90M, TankModel::Type99A,
+                                   TankModel::Karrar};
+        auto row = [&](std::span<const TankModel> models, float d) {
+            for (size_t i = 0; i < models.size(); ++i) {
+                const engine::EntityId id =
+                    w.spawn_unit(me, engine::UnitTypeId::Tank, ahead(d, -7.0f + 2.0f * static_cast<float>(i)));
+                engine::Unit* u = w.unit_for_setup(id);
+                u->model = models[i];
+                u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
+                u->hull = u->facing;
+            }
+        };
+        row(nato, 10.0f);
+        row(brics, 13.0f);
+        return render::to_vector2(ahead(11.5f, 0.0f));
     }
 
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {
