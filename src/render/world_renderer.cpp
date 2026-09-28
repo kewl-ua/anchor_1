@@ -358,6 +358,7 @@ bool drawn_as_armor(const engine::UnitTypeDef& def) {
 }
 bool has_gun_look(engine::VehicleModel m);       // a towed howitzer
 bool has_plane_look(engine::VehicleModel m);     // an aircraft
+float gun_barrel_of(engine::VehicleModel m);     // a towed gun's barrel, tiles
 // A towed gun's or an aircraft's sprite sheets by its wear.
 int small_variant(engine::VehicleModel m, int wear) { return static_cast<int>(m) * 6 + wear; }
 // A towed gun, an aircraft: a sprite of its own, its wreck too.
@@ -372,6 +373,7 @@ float track_half(engine::UnitTypeId type);  // how far each track runs from the 
 Vector2 armor_size(engine::VehicleModel m);           // its hull's length and half its width, tiles
 int armor_variant(engine::VehicleModel model, int era, int wear, int sink);
 constexpr float kTankWreckLifetime = 150.0f;  // a burnt-out tank stays a while on the field
+constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over life size against the tiles
 // The trucks, in pixel art (below): which one a unit is, by its job and its
 // side; its sprite sheets; what it carries; whether a radar turns on it and
 // where; where its engine is (along, up).
@@ -445,9 +447,33 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
         const Vector2 m = armor_muzzle(def.model);
         reach = m.x;
         height = m.y;
+    } else if (has_gun_look(def.model)) {
+        reach = gun_barrel_of(def.model) * kVehicleScale * 0.8f;
+        height = 14.0f;
+    } else if (def.aircraft) {
+        reach = 0.3f;
+        height = kFlightLift;
     }
     const bool big = def.vehicle || def.weapon.indirect;
     const Vector2 muzzle{g.x + f.x * reach, g.y + f.y * reach};
+    // The flash: a gun's big and white-hot, a rifle's a spark.
+    const bool gun = drawn_as_armor(def) || def.weapon.indirect;
+    spawn_flash(muzzle, height, gun ? 6.0f + 4.0f * to_float(def.weapon.splash_radius) : def.vehicle ? 3.0f : 1.6f, {255, 236, 170, 255});
+    if (u.type == engine::UnitTypeId::Mlrs) {  // a rocket's back-blast rolling out behind the launcher
+        for (int i = 0; i < 4; ++i) {
+            Particle p{};
+            p.kind = Particle::Kind::Smoke;
+            p.ground = {g.x - f.x * 0.4f, g.y - f.y * 0.4f};
+            p.z = 10.0f;
+            p.vel = {-f.x * (1.0f + fx_random()) + (fx_random() - 0.5f) * 0.6f, -f.y * (1.0f + fx_random()) + (fx_random() - 0.5f) * 0.6f};
+            p.vz = 4.0f + 6.0f * fx_random();
+            p.life = 1.4f + 0.8f * fx_random();
+            p.size = 3.0f + 2.0f * fx_random();
+            p.grow = 8.0f;
+            p.color = {196, 190, 180, 170};
+            particles_.push_back(p);
+        }
+    }
     const int puffs = big ? 5 : 1;
     for (int i = 0; i < puffs; ++i) {
         Particle p{};
@@ -479,6 +505,221 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
         particles_.push_back(p);
     }
     (void)world;
+}
+
+// A flash: a muzzle's, a round punching through armor, reactive armor going off.
+void WorldRenderer::spawn_flash(Vector2 at, float z, float size, Color color) {
+    Particle p{};
+    p.kind = Particle::Kind::Flash;
+    p.ground = at;
+    p.z = z;
+    p.life = 0.1f + 0.02f * size;
+    p.size = size;
+    p.color = color;
+    particles_.push_back(p);
+}
+
+// Sparks flying off steel: bullets striking armor, a round going through,
+// welding. They fly out, fall and go out.
+void WorldRenderer::spawn_sparks(Vector2 at, float z, int n, Color color, float speed) {
+    for (int i = 0; i < n; ++i) {
+        const float a = fx_random() * 6.2831853f;
+        const float v = speed * (0.4f + 0.8f * fx_random());
+        Particle p{};
+        p.kind = Particle::Kind::Spark;
+        p.ground = at;
+        p.z = z;
+        p.vel = {std::cos(a) * v, std::sin(a) * v};
+        p.vz = 20.0f + 50.0f * fx_random();
+        p.life = 0.25f + 0.35f * fx_random();
+        p.size = 1.0f;
+        p.color = color;
+        particles_.push_back(p);
+    }
+}
+
+// Whoever fired, beside the smoke: the recoil of a vehicle's gun; an
+// instant hit striking sparks off the vehicle it hit; an autocannon's or a
+// machine gun's spent cases flying out of it.
+void WorldRenderer::fired(const engine::World& world, const engine::Unit& u) {
+    const engine::UnitTypeDef& def = engine::unit_type(u.type);
+    if (def.vehicle) vehicles_seen_[u.id].recoil = 0.0f;
+    const engine::WeaponDef& weapon = engine::weapon_of(u);
+    if (weapon.projectile_speed.raw == 0 && !weapon.indirect) {
+        const engine::Unit* target = world.find_unit(u.engaged);
+        if (target && engine::unit_type(target->type).vehicle && !target->airborne) {
+            spawn_sparks(to_vector2(u.last_shot_at), 6.0f, 3 + static_cast<int>(fx_random() * 3.0f), {255, 214, 120, 255}, 0.7f);
+        }
+    }
+    if (def.vehicle && !def.aircraft && weapon.damage_type == engine::DamageType::Bullet) {
+        Vector2 f = to_vector2(u.facing);
+        const float l = std::hypot(f.x, f.y);
+        f = l > 0.0f ? Vector2{f.x / l, f.y / l} : Vector2{1.0f, 0.0f};
+        Particle p{};
+        p.kind = Particle::Kind::Casing;
+        p.ground = to_vector2(u.pos);
+        p.z = 9.0f;
+        const float side = fx_random() < 0.5f ? 1.0f : -1.0f;
+        p.vel = {-f.y * side * (0.5f + 0.4f * fx_random()), f.x * side * (0.5f + 0.4f * fx_random())};
+        p.vz = 40.0f + 30.0f * fx_random();
+        p.life = 1.4f;
+        p.size = 1.3f;
+        p.color = {206, 164, 72, 255};
+        particles_.push_back(p);
+    }
+}
+
+// Vehicles as they go on: struck (a jolt), topped up by a tanker (its
+// hose) or an ammunition truck (crates handed over), mended at a workshop
+// (welding); their exhaust, puffing on the idle, thicker on the move; the
+// dust their tracks and wheels kick up off the dry ground, the mud in a bog.
+void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
+    const engine::TileMap& map = world.map();
+    auto near = [&](const engine::Unit& v, auto pred) -> const engine::Unit* {
+        const engine::Unit* best = nullptr;
+        float best_d = 2.5f;
+        for (const engine::Unit& o : world.units()) {
+            if (o.id == v.id || o.owner != v.owner || !pred(o)) continue;
+            const float d = std::hypot(to_vector2(o.pos).x - to_vector2(v.pos).x, to_vector2(o.pos).y - to_vector2(v.pos).y);
+            if (d < best_d) {
+                best_d = d;
+                best = &o;
+            }
+        }
+        return best;
+    };
+    auto serve = [&](Service::Kind kind, engine::EntityId from, engine::EntityId to) {
+        for (Service& s : services_) {
+            if (s.kind == kind && s.to == to) {
+                s.from = from;
+                s.age = 0.0f;
+                return;
+            }
+        }
+        services_.push_back({kind, from, to, 0.0f});
+    };
+    for (const engine::Unit& u : world.units()) {
+        const engine::UnitTypeDef& def = engine::unit_type(u.type);
+        if (!def.vehicle) continue;
+        auto [it, fresh] = vehicles_seen_.try_emplace(u.id);
+        VehicleSeen& v = it->second;
+        v.recoil += dt;
+        v.jolt += dt;
+        if (!fresh && !u.inside && shows(world, u)) {
+            if (u.hp < v.hp && !def.aircraft) {  // hit: it jolts
+                v.jolt = 0.0f;
+                const float a = fx_random() * 6.2831853f;
+                v.jolt_dir = {std::cos(a), std::sin(a) * 0.5f};
+            }
+            if (u.fuel > v.fuel) {
+                if (const engine::Unit* tanker = near(u, [](const engine::Unit& o) { return engine::unit_type(o.type).supplies == engine::Resource::Fuel; })) {
+                    serve(Service::Kind::Hose, tanker->id, u.id);
+                }
+            }
+            if (u.rounds > v.rounds) {
+                if (const engine::Unit* truck = near(u, [](const engine::Unit& o) { return engine::unit_type(o.type).supplies == engine::Resource::Ammo; })) {
+                    serve(Service::Kind::Crates, truck->id, u.id);
+                }
+            }
+            if (u.hp > v.hp) {
+                for (const engine::Structure& s : world.structures()) {
+                    if (s.type != engine::StructureType::Workshop || s.owner != u.owner) continue;
+                    const Vector2 c = to_vector2(s.center);
+                    if (std::hypot(c.x - to_vector2(u.pos).x, c.y - to_vector2(u.pos).y) < 4.0f) serve(Service::Kind::Weld, 0, u.id);
+                }
+            }
+        }
+        v.hp = u.hp;
+        v.fuel = u.fuel;
+        v.rounds = u.rounds;
+
+        // Exhaust and dust.
+        if (u.inside || u.airborne || def.aircraft || def.family == engine::Family::Gun || !shows(world, u)) continue;
+        Vector2 f = to_vector2(drawn_as_armor(def) ? u.hull : u.facing);
+        const float l = std::hypot(f.x, f.y);
+        f = l > 0.0f ? Vector2{f.x / l, f.y / l} : Vector2{1.0f, 0.0f};
+        const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
+        const Vector2 e = truck ? truck_engine_of(*truck) : drawn_as_armor(def) ? armor_engine(def.model) : Vector2{-0.4f, 8.0f};
+        const Vector2 pos = to_vector2(u.pos);
+        auto count = [&](float rate) {
+            const float n = rate * dt;
+            int whole = static_cast<int>(n);
+            if (fx_random() < n - static_cast<float>(whole)) ++whole;
+            return whole;
+        };
+        for (int i = count(u.moving ? 3.5f : 1.2f); i > 0; --i) {  // exhaust
+            Particle p{};
+            p.kind = Particle::Kind::Smoke;
+            p.ground = {pos.x + f.x * e.x + (fx_random() - 0.5f) * 0.1f, pos.y + f.y * e.x + (fx_random() - 0.5f) * 0.1f};
+            p.z = e.y;
+            p.vel = {-f.x * 0.2f + (fx_random() - 0.5f) * 0.15f, -f.y * 0.2f + (fx_random() - 0.5f) * 0.15f};
+            p.vz = 8.0f + 6.0f * fx_random();
+            p.life = 0.9f + 0.6f * fx_random();
+            p.size = 1.2f;
+            p.grow = u.moving ? 4.5f : 3.0f;
+            p.color = u.moving ? Color{96, 98, 102, 110} : Color{130, 134, 140, 70};
+            particles_.push_back(p);
+        }
+        if (!u.moving) continue;
+        const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(pos.x)), static_cast<int32_t>(std::floor(pos.y))}));
+        const bool bog = t == engine::Terrain::Swamp;
+        const bool dry = t == engine::Terrain::Grass || t == engine::Terrain::Plowed || t == engine::Terrain::Crops ||
+                         t == engine::Terrain::DirtRoad || t == engine::Terrain::Wheat || t == engine::Terrain::Garden ||
+                         t == engine::Terrain::Crater || t == engine::Terrain::Riverbed || t == engine::Terrain::Slag ||
+                         t == engine::Terrain::Trail;
+        if (!dry && !bog) continue;
+        const float back = drawn_as_armor(def) ? armor_size(def.model).x * 0.5f * kVehicleScale : 0.55f;
+        for (int i = count(bog ? 5.0f : 7.0f); i > 0; --i) {
+            const float side = (fx_random() - 0.5f) * 0.5f;
+            Particle p{};
+            p.ground = {pos.x - f.x * back - f.y * side, pos.y - f.y * back + f.x * side};
+            if (bog) {  // mud flung up off the tracks
+                p.kind = Particle::Kind::Clod;
+                p.z = 2.0f;
+                p.vel = {-f.x * 0.5f + (fx_random() - 0.5f) * 0.4f, -f.y * 0.5f + (fx_random() - 0.5f) * 0.4f};
+                p.vz = 30.0f + 30.0f * fx_random();
+                p.life = 0.9f;
+                p.size = 1.2f + fx_random();
+                p.color = {58, 56, 44, 255};
+            } else {  // dust rolling up behind
+                p.kind = Particle::Kind::Smoke;
+                p.z = 1.5f;
+                p.vel = {-f.x * 0.25f + (fx_random() - 0.5f) * 0.25f, -f.y * 0.25f + (fx_random() - 0.5f) * 0.25f};
+                p.vz = 3.0f + 4.0f * fx_random();
+                p.life = 1.2f + 0.8f * fx_random();
+                p.size = 2.0f + 1.5f * fx_random();
+                p.grow = 6.0f;
+                p.color = t == engine::Terrain::Plowed || t == engine::Terrain::Slag ? Color{118, 100, 78, 120} : Color{160, 144, 110, 105};
+            }
+            particles_.push_back(p);
+        }
+    }
+    std::erase_if(vehicles_seen_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+
+    // Services going on: a tanker's hose drips, a workshop's welding throws sparks.
+    for (Service& s : services_) {
+        s.age += dt;
+        const engine::Unit* to = world.find_unit(s.to);
+        if (!to || !shows(world, *to)) continue;
+        const Vector2 at = to_vector2(to->pos);
+        if (s.kind == Service::Kind::Hose && fx_random() < dt * 5.0f) {  // a drop off the nozzle
+            Particle p{};
+            p.kind = Particle::Kind::Spray;
+            p.ground = at;
+            p.z = 7.0f;
+            p.vel = {(fx_random() - 0.5f) * 0.1f, (fx_random() - 0.5f) * 0.1f};
+            p.life = 1.0f;
+            p.size = 1.0f;
+            p.color = {150, 160, 150, 255};
+            particles_.push_back(p);
+        }
+        if (s.kind == Service::Kind::Weld && fx_random() < dt * 6.0f) {
+            const Vector2 spot{at.x + (fx_random() - 0.5f) * 0.4f, at.y + (fx_random() - 0.5f) * 0.4f};
+            spawn_flash(spot, 5.0f, 2.5f, {200, 226, 255, 255});
+            spawn_sparks(spot, 5.0f, 4, {255, 232, 160, 255}, 0.6f);
+        }
+    }
+    std::erase_if(services_, [&](const Service& s) { return s.age > 1.2f || world.find_unit(s.to) == nullptr; });
 }
 
 // A tank on fire: smoke off its engine deck, grey while it's battered, black
@@ -673,6 +914,57 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     }
     impacts_seen_until_ = world.tick();
 
+    // Rounds, rockets and missiles gone since the last frame: what they hit.
+    // An anti-tank round or missile on a vehicle punches through, a white
+    // flash and a spray of sparks, black smoke (a tank's reactive armor goes
+    // off first, a bigger flash); an autocannon's shells strike sparks. (The
+    // bursts of HE came with the impacts above.)
+    std::unordered_map<uint32_t, ProjectileSeen> flying;
+    for (const engine::Projectile& p : world.projectiles()) flying[p.id] = {to_vector2(p.pos), p.weapon.damage_type, p.at_air};
+    for (const auto& [id, p] : projectiles_seen_) {
+        if (flying.contains(id) || p.at_air || !in_view(world, p.pos)) continue;
+        const engine::Unit* hit = nullptr;
+        float best = 0.8f;
+        for (const engine::Unit& u : world.units()) {
+            if (!engine::unit_type(u.type).vehicle || u.airborne || u.inside) continue;
+            const float d = std::hypot(to_vector2(u.pos).x - p.pos.x, to_vector2(u.pos).y - p.pos.y);
+            if (d < best) {
+                best = d;
+                hit = &u;
+            }
+        }
+        if (p.type == engine::DamageType::AntiTank) {
+            if (!hit) {
+                spawn_burst(world, p.pos, 0.3f);
+                continue;
+            }
+            const engine::UnitTypeDef& def = engine::unit_type(hit->type);
+            if (def.tank && world.era_level(hit->owner) > 0 && def.era_max > 0) {  // the reactive armor goes off
+                spawn_flash(p.pos, 8.0f, 12.0f, {255, 250, 230, 255});
+                spawn_burst(world, p.pos, 0.35f);
+            }
+            spawn_flash(p.pos, 7.0f, 11.0f, {255, 244, 200, 255});
+            spawn_sparks(p.pos, 7.0f, 22, {255, 196, 90, 255}, 1.8f);
+            Particle smoke{};
+            smoke.kind = Particle::Kind::Smoke;
+            smoke.ground = p.pos;
+            smoke.z = 8.0f;
+            smoke.vz = 12.0f;
+            smoke.life = 1.6f;
+            smoke.size = 3.0f;
+            smoke.grow = 6.0f;
+            smoke.color = {40, 38, 36, 210};
+            particles_.push_back(smoke);
+        } else if (p.type == engine::DamageType::Bullet) {
+            if (hit) {
+                spawn_sparks(p.pos, 6.0f, 5, {255, 214, 120, 255}, 0.9f);
+            } else {
+                spawn_burst(world, p.pos, 0.2f);
+            }
+        }
+    }
+    projectiles_seen_ = std::move(flying);
+
     // Units that vanished died (a garrison buried in its house leaves no body
     // to see, and nobody sees who dies in the fog).
     std::unordered_map<engine::EntityId, Remains> alive;
@@ -704,7 +996,10 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (u.last_shot_tick == engine::kNeverFired) continue;
         shots[u.id] = u.last_shot_tick;
         const auto seen = shots_seen_.find(u.id);
-        if (seen != shots_seen_.end() && u.last_shot_tick > seen->second && !u.inside && shows(world, u)) spawn_muzzle(world, u);
+        if (seen != shots_seen_.end() && u.last_shot_tick > seen->second && !u.inside && shows(world, u)) {
+            spawn_muzzle(world, u);
+            fired(world, u);
+        }
     }
     shots_seen_ = std::move(shots);
     for (const engine::Unit& u : world.units()) {
@@ -733,6 +1028,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         const float ease = r.age < 30.0f ? 1.0f : 0.4f;
         if (fx_random() < ease) spawn_fire({r.ground.x + along.x * e.x, r.ground.y + along.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
     }
+    update_vehicles(world, dt);
+
     // Tracked vehicles leave their tracks in the ground as they go, wheeled
     // ones their tyres' (not on concrete, a bridge or the water); they fade
     // over two minutes.
@@ -772,15 +1069,25 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 break;
             case Particle::Kind::Clod:
             case Particle::Kind::Spray:
+            case Particle::Kind::Spark:
                 p.vz -= 170.0f * dt;
-                if (p.z <= 0.0f && p.vz < 0.0f) {  // landed: lies there
+                if (p.z <= 0.0f && p.vz < 0.0f) {  // landed: lies there (a drop, a spark goes)
                     p.z = 0.0f;
                     p.vz = 0.0f;
                     p.vel = {};
-                    if (p.kind == Particle::Kind::Spray) p.age = p.life;
+                    if (p.kind != Particle::Kind::Clod) p.age = p.life;
                 }
                 break;
-            case Particle::Kind::Flame: break;
+            case Particle::Kind::Casing:
+                p.vz -= 200.0f * dt;
+                if (p.z <= 0.0f && p.vz < 0.0f) {  // it bounces, then lies there glinting
+                    p.z = 0.0f;
+                    p.vz = p.vz < -25.0f ? -p.vz * 0.3f : 0.0f;
+                    p.vel = {p.vel.x * 0.4f, p.vel.y * 0.4f};
+                }
+                break;
+            case Particle::Kind::Flame:
+            case Particle::Kind::Flash: break;
         }
     }
     std::erase_if(particles_, [](const Particle& p) { return p.age >= p.life; });
@@ -3304,6 +3611,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     g_light = 1.0f;
     set_grain({});
+    draw_services(world, alpha);
     draw_particles(map);
 
     // Fires: flames flickering over the burning ground.
@@ -4691,10 +4999,10 @@ void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, f
     disc(p1, width * 0.45f, {20, 20, 20, 255});
 }
 
-constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over life size against the tiles
 engine::VehicleModel model_of(const engine::Unit& u);  // with the vehicles' pixel art, below
 Vector2 turret_ring_of(engine::VehicleModel m);  // along and across the hull
 bool raises_gun(engine::VehicleModel m);         // a self-propelled howitzer
+float radar_at_of(engine::VehicleModel m);       // where an AA gun's radar turns, along its turret
 Vector2 ring_at(const Frame& fr, engine::VehicleModel m);  // where on the screen the turret stands
 
 // A vehicle, drawn by hand in its own frame (see Frame): tracks with their
@@ -4749,7 +5057,32 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     // Its hull goes where it drives, its turret turns on its own: tanks, IFVs, SPGs, AA guns.
     const bool hull_leads = drawn_as_armor(engine::unit_type(type));
     const bool gun_leads = engine::unit_type(type).family == engine::Family::Gun;  // no hull apart from the gun
-    const Frame fr = make_frame(map, ground, hull_leads || gun_leads ? hull_dir : facing);
+    Frame fr = make_frame(map, ground, hull_leads || gun_leads ? hull_dir : facing);
+    // Alive: the engine's shudder on the idle, a sway on the move; a jolt
+    // when it's hit; the gun's recoil when it fires rocking it back (a towed
+    // gun thrown back whole).
+    float recoil = 0.0f;
+    if (const auto seen = vehicles_seen_.find(u.id); seen != vehicles_seen_.end()) {
+        const VehicleSeen& v = seen->second;
+        if (v.recoil < 0.25f) recoil = 1.0f - v.recoil / 0.25f;
+        if (v.jolt < 0.3f) {
+            const float k = (1.0f - v.jolt / 0.3f) * 1.8f * std::sin(v.jolt * 70.0f);
+            fr.o = {fr.o.x + v.jolt_dir.x * k, fr.o.y + v.jolt_dir.y * k};
+        }
+    }
+    Vector2 kick{};  // screen pixels: back from where the gun points
+    {
+        const Vector2 d = iso_offset(facing);
+        const float l = std::hypot(d.x, d.y);
+        if (l > 0.0f) kick = {-d.x / l * recoil, -d.y / l * recoil};
+    }
+    if (gun_leads) {
+        fr.o = {fr.o.x + kick.x * 2.0f, fr.o.y + kick.y * 2.0f};
+    } else {
+        const float t = static_cast<float>(GetTime()) + static_cast<float>(u.id % 97) * 0.37f;
+        const bool shudder = u.moving ? std::sin(t * 14.0f) > 0.35f : std::sin(t * 50.0f) > 0.8f;
+        fr.o = {fr.o.x + kick.x, fr.o.y + kick.y - (shudder ? 1.0f : 0.0f)};
+    }
     const Color team = theme::player_color(u.owner);
     const Color olive{98, 104, 70, 255};
     const Color paint = mix(olive, team, 0.3f);
@@ -4789,7 +5122,16 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             if (bog) mud_halo(fr, armor_size(model), false, seed);  // the mud behind and under it
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
             draw_sprite(*hull_sheet, fr.o, fr.f, frame);
-            draw_sprite(*turret_sheet, ring_at(fr, model), facing, raises_gun(model) && u.deployed ? 1 : 0);  // a howitzer's gun raised to fire
+            const Vector2 ring = ring_at(fr, model);
+            draw_sprite(*turret_sheet, {ring.x + kick.x * 1.5f, ring.y + kick.y * 1.5f}, facing, raises_gun(model) && u.deployed ? 1 : 0);  // a howitzer's gun raised to fire
+            if (const SpriteSheet* radar = sheet(SpritePart::Radar, armor_variant(model, era, wear, depth), u.owner)) {
+                // An AA gun's search radar turning round and round on its turret.
+                const Vector2 r = turret_ring_of(model);
+                const Frame tf = fr.turned(facing, r.x * kVehicleScale, r.y * kVehicleScale);
+                const float spin = static_cast<float>(GetTime()) * 2.2f + static_cast<float>(u.id);
+                const Vector2 at = tf.at(radar_at_of(model) * kVehicleScale, 0.0f);
+                draw_sprite(*radar, {at.x + kick.x * 1.5f, at.y + kick.y * 1.5f}, {std::cos(spin), std::sin(spin)}, 0);
+            }
             if (bog) mud_halo(fr, armor_size(model), true, seed);  // and in front of it
             return;
         }
@@ -4885,7 +5227,8 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         if (!body) body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, 0), u.owner);
         if (body) {
             const int frame = u.deployed ? 1 : 0;  // set up: masts raised, jacks down, the launcher up
-            draw_sprite(*body, fr.o, fr.f, frame);
+            const bool rolling = u.moving && static_cast<int>(GetTime() * 10.0) % 2 == 1;
+            draw_sprite(*body, fr.o, fr.f, rolling ? 2 : frame);  // (2: on the move, the wheels turned)
             if (truck_turns_top(*truck)) {
                 if (const SpriteSheet* top = sheet(SpritePart::TruckTop, truck_variant(*truck, wear, 0, 0), u.owner)) {
                     // A radar set up turns round and round; packed, it lies along the truck.
@@ -6045,7 +6388,7 @@ float axle_at(const VehicleLook& look, int i) {
 // A big tyre standing along the hull at (a, c), `r` pixels high: the
 // rubber, its tread's face, the dished rim in the vehicle's paint, the hub;
 // burnt out, the bare rim alone, down on the ground.
-void tyre(const Frame& fr, float a, float c, float r, Color paint, bool burnt, float lift = 0.0f) {
+void tyre(const Frame& fr, float a, float c, float r, Color paint, bool burnt, float lift = 0.0f, float turn = 0.0f) {
     const float rr = (burnt ? r * 0.62f : r) + lift;  // how high its middle is
     if (fr.sink > 0.0f && rr * 2.0f <= fr.sink) return;  // sunk out of sight
     constexpr int kPoints = 16;
@@ -6069,6 +6412,12 @@ void tyre(const Frame& fr, float a, float c, float r, Color paint, bool burnt, f
     }
     ring(0.36f, burnt ? Color{96, 62, 40, 255} : shade(paint, 1.05f));
     ring(0.14f, {30, 30, 28, 255});
+    if (!burnt) {  // the tread's blocks round its edge, turned as it rolls
+        for (int i = 0; i < 8; ++i) {
+            const float t = turn + static_cast<float>(i) * 0.785f;
+            DrawPixelV(fr.at(a + std::cos(t) * ra * 0.92f, c, rr + std::sin(t) * r * 0.92f), lit({62, 62, 56, 255}));
+        }
+    }
 }
 
 // How a hull's shape cuts its box: its lower front plate (tiles back under
@@ -6408,7 +6757,7 @@ void draw_vehicle_hull(const Frame& fr, const VehicleLook& look, int frame, int 
             skirt(5, a0 + 0.04f, look.length - 0.1f, 2.4f, track_top + 1.8f, w + 0.012f, 0x410u, wear - 1, true);
         }
     } else {
-        for (int i = 0; i < look.wheels; ++i) tyre(fr, axle_at(look, i), near * (w - 0.05f), look.wheel_r, paint, burnt);
+        for (int i = 0; i < look.wheels; ++i) tyre(fr, axle_at(look, i), near * (w - 0.05f), look.wheel_r, paint, burnt, 0.0f, 0.39f * static_cast<float>(frame));
     }
 
     // The side's stripe: on the skirt, or on the hull's side.
@@ -6454,7 +6803,61 @@ void draw_vehicle_hull(const Frame& fr, const VehicleLook& look, int frame, int 
 // hangs down. The whip aerial is added after, a pixel thin (see bake_sprites).
 Vector2 vehicle_aerial_foot(const VehicleLook& look) { return {-look.turret_r * 0.55f, look.turret_r * 0.5f}; }
 
-void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, int kit, int wear, int frame = 0) {
+// A radar's dish standing on its post, its face towards `a` (along the turret).
+void radar_dish(const Frame& tf, float a, float c, float z, float rad, float thin, bool burnt) {
+    if (under(tf, z)) return;
+    const Vector2 foot = tf.at(a, c, z - rad - 1.0f);
+    DrawLineEx(foot, tf.at(a, c, z), 1.2f, lit({58, 60, 54, 255}));
+    constexpr int kPoints = 12;
+    Vector2 ring[kPoints];
+    for (int i = 0; i < kPoints; ++i) {
+        const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+        ring[i] = tf.at(a, c + std::cos(t) * rad * 0.016f, z + std::sin(t) * rad * thin);
+    }
+    const Vector2 mid = tf.at(a, c, z);
+    const Color face = burnt ? Color{40, 38, 34, 255} : Color{150, 156, 146, 255};
+    for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], face);
+    for (int i = 0; i < kPoints; ++i) DrawLineV(ring[i], ring[(i + 1) % kPoints], lit(shade(face, 0.55f)));
+}
+
+// A search radar's flat face leaning back on its post (from `foot` up to `z0`): the Tunguska's bar, the Pantsir's panel.
+void radar_panel(const Frame& tf, float a, float half, float foot, float z0, float z1, float lean, bool burnt) {
+    if (under(tf, z1)) return;
+    DrawLineEx(tf.at(a, 0.0f, foot), tf.at(a, 0.0f, z0), 1.2f, lit({58, 60, 54, 255}));
+    const Vector2 q[4] = {tf.at(a, -half, z0), tf.at(a, half, z0), tf.at(a - lean, half, z1), tf.at(a - lean, -half, z1)};
+    const Color face = burnt ? Color{40, 38, 34, 255} : Color{150, 156, 146, 255};
+    fill_quad(q[0], q[1], q[2], q[3], face);
+    for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit({70, 72, 64, 255}));
+}
+
+// An AA gun's search radar, turning on its own: whether it has one, where
+// along its turret it turns, and the radar alone at its post's foot.
+bool has_radar(const VehicleLook& l) {
+    return l.turret == TurretKind::Shilka || l.turret == TurretKind::AaTwin || l.turret == TurretKind::Tunguska || l.turret == TurretKind::Pantsir;
+}
+float radar_at(const VehicleLook& l) {
+    switch (l.turret) {
+        case TurretKind::Shilka: return -l.turret_r * 0.75f;
+        case TurretKind::Tunguska: return -l.turret_r * 0.7f;
+        default: return -l.turret_r * 0.6f;
+    }
+}
+float radar_at_of(engine::VehicleModel m) { return has_vehicle_look(m) ? radar_at(vehicle_look_of(m)) : 0.0f; }
+void draw_aa_radar(const Frame& tf, const VehicleLook& look, int wear) {
+    const float z0 = vehicle_turret_z(look);
+    const float r = look.turret_r;
+    const float h = look.turret_h;
+    const bool burnt = wear >= 4;
+    switch (look.turret) {
+        case TurretKind::Shilka: radar_dish(tf, 0.0f, 0.0f, z0 + h + 4.0f, 3.6f, 0.9f, burnt); break;
+        case TurretKind::AaTwin: radar_dish(tf, 0.0f, 0.0f, z0 + h + 4.2f, 4.0f, 0.55f, burnt); break;
+        case TurretKind::Tunguska: radar_panel(tf, 0.0f, r * 0.7f, z0 + h, z0 + h + 2.0f, z0 + h + 4.0f, 0.05f, burnt); break;
+        case TurretKind::Pantsir: radar_panel(tf, 0.0f, r * 0.8f, z0 + h, z0 + h + 1.0f, z0 + h + 5.0f, 0.12f, burnt); break;
+        default: break;
+    }
+}
+
+void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, int kit, int wear, int frame = 0, bool radar = true) {
     const float z0 = vehicle_turret_z(look);
     const float r = look.turret_r;
     const float h = look.turret_h;
@@ -6554,21 +6957,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
         poly_solid(tf, pts, n, z0 + h * 0.6f, z0 + h, roof, taper);
     };
     // A radar's dish standing on a post, its face towards `a` (along the turret).
-    auto dish = [&](float a, float c, float z, float rad, float thin) {
-        if (under(tf, z)) return;
-        const Vector2 foot = tf.at(a, c, z - rad - 1.0f);
-        DrawLineEx(foot, tf.at(a, c, z), 1.2f, lit(metal));
-        constexpr int kPoints = 12;
-        Vector2 ring[kPoints];
-        for (int i = 0; i < kPoints; ++i) {
-            const float t = static_cast<float>(i) * 6.2831853f / kPoints;
-            ring[i] = tf.at(a, c + std::cos(t) * rad * 0.016f, z + std::sin(t) * rad * thin);
-        }
-        const Vector2 mid = tf.at(a, c, z);
-        const Color face = burnt ? Color{40, 38, 34, 255} : Color{150, 156, 146, 255};
-        for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], face);
-        for (int i = 0; i < kPoints; ++i) DrawLineV(ring[i], ring[(i + 1) % kPoints], lit(shade(face, 0.55f)));
-    };
+    auto dish = [&](float a, float c, float z, float rad, float thin) { radar_dish(tf, a, c, z, rad, thin, burnt); };
     bool sides = true;  // smoke grenade launchers on its sides
     switch (look.turret) {
         case TurretKind::Bmp2:
@@ -6683,7 +7072,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
                                   {-r, -r * 0.8f}, {-r * 0.8f, -r}, {r * 0.6f, -r}, {r * 0.9f, -r * 0.7f}};
             layers(p, 8, 0.08f);
             block(tf, r * 0.55f, r * 0.95f, -r * 0.35f, r * 0.35f, z0 + h * 0.3f, z0 + h * 0.95f, shade(paint, 0.9f));  // the guns' mantlet
-            dish(-r * 0.75f, 0.0f, z0 + h + 4.0f, 3.6f, 0.9f);
+            if (radar) dish(-r * 0.75f, 0.0f, z0 + h + 4.0f, 3.6f, 0.9f);
             sides = false;
             break;
         }
@@ -6691,7 +7080,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
             const Vector2 p[8] = {{r * 0.95f, r * 0.55f},  {r * 0.6f, r * 0.85f},  {-r * 0.8f, r * 0.85f},  {-r, r * 0.6f},
                                   {-r, -r * 0.6f}, {-r * 0.8f, -r * 0.85f}, {r * 0.6f, -r * 0.85f}, {r * 0.95f, -r * 0.55f}};
             layers(p, 8, 0.1f);
-            dish(-r * 0.6f, 0.0f, z0 + h + 4.2f, 4.0f, 0.55f);
+            if (radar) dish(-r * 0.6f, 0.0f, z0 + h + 4.2f, 4.0f, 0.55f);
             round_solid(tf, r * 0.7f, 0.0f, 0.05f, 0.05f, z0 + h * 0.6f, z0 + h + 0.6f, shade(paint, 0.8f), 0.2f, 8);  // the tracking radar
             sides = false;
             break;
@@ -6707,12 +7096,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
                           z0 + h * 0.95f, {84, 94, 62, 255});
                 }
             }
-            if (!under(tf, z0 + h + 3.0f)) {  // the search radar: a flat bar on its post
-                const Vector2 q[4] = {tf.at(-r * 0.7f, -r * 0.7f, z0 + h + 2.0f), tf.at(-r * 0.7f, r * 0.7f, z0 + h + 2.0f),
-                                      tf.at(-r * 0.75f, r * 0.7f, z0 + h + 4.0f), tf.at(-r * 0.75f, -r * 0.7f, z0 + h + 4.0f)};
-                DrawLineEx(tf.at(-r * 0.7f, 0.0f, z0 + h), tf.at(-r * 0.7f, 0.0f, z0 + h + 2.0f), 1.2f, lit(metal));
-                fill_quad(q[0], q[1], q[2], q[3], burnt ? Color{40, 38, 34, 255} : Color{150, 156, 146, 255});
-            }
+            if (radar) radar_panel(tf, -r * 0.7f, r * 0.7f, z0 + h, z0 + h + 2.0f, z0 + h + 4.0f, 0.05f, burnt);  // the search radar: a bar
             dish(r * 0.55f, 0.0f, z0 + h + 1.6f, 2.2f, 0.9f);  // the tracking radar
             sides = false;
             break;
@@ -6727,12 +7111,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
                           z0 + h * 0.95f, {84, 94, 62, 255});
                 }
             }
-            if (!under(tf, z0 + h + 4.0f)) {
-                const Vector2 q[4] = {tf.at(-r * 0.6f, -r * 0.8f, z0 + h + 1.0f), tf.at(-r * 0.6f, r * 0.8f, z0 + h + 1.0f),
-                                      tf.at(-r * 0.72f, r * 0.8f, z0 + h + 5.0f), tf.at(-r * 0.72f, -r * 0.8f, z0 + h + 5.0f)};
-                fill_quad(q[0], q[1], q[2], q[3], burnt ? Color{40, 38, 34, 255} : Color{150, 156, 146, 255});
-                for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit({70, 72, 64, 255}));
-            }
+            if (radar) radar_panel(tf, -r * 0.6f, r * 0.8f, z0 + h, z0 + h + 1.0f, z0 + h + 5.0f, 0.12f, burnt);  // the search radar: a panel
             dish(r * 0.6f, 0.0f, z0 + h + 1.2f, 2.6f, 0.9f);
             sides = false;
             break;
@@ -7312,7 +7691,7 @@ void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color te
         bed();
         trailer();
     }
-    for (int i = 0; i < ch.n; ++i) tyre(fr, ch.axles[static_cast<size_t>(i)], near * tyre_c, look.wheel_r, paint, burnt);
+    for (int i = 0; i < ch.n; ++i) tyre(fr, ch.axles[static_cast<size_t>(i)], near * tyre_c, look.wheel_r, paint, burnt, 0.0f, frame == 2 ? 0.39f : 0.0f);
 }
 
 // A radar's antenna, turning on its own: the P-18's array of rods on its
@@ -7413,6 +7792,7 @@ bool has_gun_look(engine::VehicleModel m) { return m >= engine::VehicleModel::D3
 const GunLook& gun_look_of(engine::VehicleModel m) {
     return kGunLooks[static_cast<size_t>(m) - static_cast<size_t>(engine::VehicleModel::D30)];
 }
+float gun_barrel_of(engine::VehicleModel m) { return has_gun_look(m) ? gun_look_of(m).barrel : 0.6f; }
 
 void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team, int wear) {
     const Color paint = look.paint;
@@ -7869,7 +8249,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
              [&](Frame fr, int frame, std::vector<Whip>& whips) {
                  fr.sink = sunk;
                  if (apc) {
-                     draw_vehicle_turret(fr, carrier, team, era, w, frame);
+                     draw_vehicle_turret(fr, carrier, team, era, w, frame, false);  // (its radar apart, below)
                  } else {
                      draw_tank_turret(fr, look, team, era, w);
                  }
@@ -7877,6 +8257,14 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                  const Vector2 af = apc ? vehicle_aerial_foot(carrier) : aerial_foot(look);
                  if (wear < 3 || sink == 2) whips.push_back({fr.at(af.x, af.y, dims.turret_z + dims.turret_h), 11});
              });
+        if (apc && has_radar(carrier)) {
+            bake(SpritePart::Radar, variant, owner, 1, palette,
+                 TextFormat("radar_%d_%d_%d_%d", static_cast<int>(model), wear, sink, static_cast<int>(owner)),
+                 [&](Frame fr, int, std::vector<Whip>&) {
+                     fr.sink = sunk;
+                     draw_aa_radar(fr, carrier, w);
+                 });
+        }
     }
 
     // Trucks: every wear up front, the load they carry as they get it.
@@ -7954,7 +8342,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                         cargo_color(engine::Resource::Fuel), cargo_color(engine::Resource::Materials), Color{150, 156, 146, 255}});
         const float sunk = sink == 2 ? truck_height(look) - 2.5f : 0.0f;
         const int w = std::min(wear, 4);
-        bake(SpritePart::TruckBody, variant, owner, 2, palette,
+        bake(SpritePart::TruckBody, variant, owner, 3, palette,
              TextFormat("truck_%d_%d_%d_%d_%d", static_cast<int>(model), wear, sink, load, static_cast<int>(owner)),
              [&](Frame fr, int frame, std::vector<Whip>& whips) {
                  fr.sink = sunk;
@@ -8072,6 +8460,50 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
     }
 }
 
+// Service going on between two vehicles: a tanker's hose sagging into a
+// vehicle; an ammunition truck's crates carried over in an arc, one after
+// another. (A workshop's welding is its flashes and sparks.)
+void WorldRenderer::draw_services(const engine::World& world, float alpha) const {
+    const engine::TileMap& map = world.map();
+    for (const Service& s : services_) {
+        if (s.kind == Service::Kind::Weld) continue;
+        const engine::Unit* to = world.find_unit(s.to);
+        const engine::Unit* from = world.find_unit(s.from);
+        if (!to || !from || !shows(world, *to) || !shows(world, *from)) continue;
+        // From the truck's side to the vehicle's back deck (its filler caps, its ammunition hatch).
+        const Vector2 a = unit_ground_pos(*from, alpha);
+        const Vector2 b = unit_ground_pos(*to, alpha);
+        Vector2 back = to_vector2(to->hull);
+        const float bl = std::hypot(back.x, back.y);
+        back = bl > 0.0f ? Vector2{back.x / bl, back.y / bl} : Vector2{1.0f, 0.0f};
+        const Vector2 filler{b.x - back.x * 0.3f, b.y - back.y * 0.3f};
+        const Vector2 d{filler.x - a.x, filler.y - a.y};
+        const float dl = std::max(0.01f, std::hypot(d.x, d.y));
+        const Vector2 p0 = on_terrain(map, {a.x + d.x / dl * 0.3f, a.y + d.y / dl * 0.3f}, 7.0f);
+        const Vector2 p1 = on_terrain(map, filler, 9.0f);
+        const float fade = std::clamp((1.2f - s.age) / 0.3f, 0.0f, 1.0f);
+        if (s.kind == Service::Kind::Hose) {  // black rubber, a glint along it, the nozzle
+            Vector2 prev = p0;
+            for (int i = 1; i <= 14; ++i) {
+                const float t = static_cast<float>(i) / 14.0f;
+                const Vector2 q{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t + 10.0f * 4.0f * t * (1.0f - t)};
+                DrawLineEx(prev, q, 2.2f, ColorAlpha(lit({22, 22, 20, 255}), fade));
+                DrawLineEx({prev.x, prev.y - 0.8f}, {q.x, q.y - 0.8f}, 0.8f, ColorAlpha(lit({120, 118, 104, 255}), fade));
+                prev = q;
+            }
+            DrawRectangleRec({std::round(p1.x - 1.5f), std::round(p1.y - 1.5f), 3.0f, 3.0f}, ColorAlpha(lit({150, 150, 140, 255}), fade));
+            continue;
+        }
+        for (int k = 0; k < 2; ++k) {  // wooden ammunition crates, one after another
+            const float t = std::fmod(static_cast<float>(GetTime()) * 1.2f + static_cast<float>(k) * 0.5f, 1.0f);
+            const Vector2 q{p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t - 10.0f * 4.0f * t * (1.0f - t)};
+            DrawRectangleRec({std::round(q.x - 3.0f), std::round(q.y - 2.0f), 6.0f, 4.0f}, ColorAlpha(lit({30, 28, 22, 255}), fade));
+            DrawRectangleRec({std::round(q.x - 2.0f), std::round(q.y - 1.0f), 4.0f, 2.0f}, ColorAlpha(lit({146, 122, 76, 255}), fade));
+            DrawPixelV({std::round(q.x), std::round(q.y - 1.0f)}, ColorAlpha(lit({90, 74, 46, 255}), fade));
+        }
+    }
+}
+
 // Smoke in soft puffs fading as it spreads, clods of earth dark against the
 // ground, flames going from yellow to red as they rise and die, spray.
 void WorldRenderer::draw_particles(const engine::TileMap& map) const {
@@ -8097,6 +8529,28 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
                 const Color c = t < 0.4f ? mix({255, 236, 150, 255}, {255, 170, 50, 255}, t / 0.4f)
                                          : mix({255, 170, 50, 255}, {200, 60, 30, 255}, (t - 0.4f) / 0.6f);
                 DrawEllipse(static_cast<int>(at.x), static_cast<int>(at.y), p.size * 0.8f, p.size * 1.4f, ColorAlpha(c, 0.9f * (1.0f - t * 0.6f)));
+                break;
+            }
+            case Particle::Kind::Spark: {  // a hot streak along its flight
+                const Vector2 v = iso_offset(p.vel);
+                const Vector2 tail{at.x - v.x * 0.04f, at.y - v.y * 0.04f + p.vz * 0.04f};
+                DrawLineV(tail, at, ColorAlpha(p.color, 1.0f - t));
+                DrawPixelV(at, ColorAlpha({255, 250, 220, 255}, 1.0f - t));
+                break;
+            }
+            case Particle::Kind::Flash: {  // white-hot at the heart, rays out of it, gone at once
+                const float k = 1.0f - t;
+                DrawCircleV(at, p.size * (0.6f + 0.4f * k), ColorAlpha(p.color, 0.75f * k));
+                DrawCircleV(at, p.size * 0.45f * k, ColorAlpha({255, 255, 245, 255}, k));
+                for (int i = 0; i < 4; ++i) {
+                    const float a = static_cast<float>(i) * 1.5708f + 0.4f;
+                    const float len = p.size * 1.7f * k;
+                    DrawLineV(at, {at.x + std::cos(a) * len, at.y + std::sin(a) * len * 0.6f}, ColorAlpha(p.color, 0.8f * k));
+                }
+                break;
+            }
+            case Particle::Kind::Casing: {
+                DrawRectangleRec({std::round(at.x - 1.0f), std::round(at.y - 0.5f), 2.0f, 1.0f}, ColorAlpha(p.color, t > 0.8f ? (1.0f - t) / 0.2f : 1.0f));
                 break;
             }
         }

@@ -41,6 +41,9 @@ struct Options {
     std::optional<engine::Tick> smoke_ticks;
     // `--speed n`: the smoke test's game speed (default 50x; 1 to see smoke and particles as in play).
     std::optional<float> smoke_speed;
+    // `--frames n`: from the tick on, n frames in a row (every other one drawn),
+    // shot.png becoming shot_00.png, shot_01.png...: to see things move.
+    int smoke_frames = 0;
     // `--scene garrison`: instead of attacking, the infantry moves into the
     // nearest house and the tanks shell the next one until it collapses.
     // Also `economy`, `build`, `logistics` (depots by the station, supply
@@ -697,6 +700,74 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(30.0f, 0.2f));
     }
 
+    if (options.scene.starts_with("action") && options.mode == Options::Mode::Offline) {
+        // Offline, to see vehicles at work: a T-72B3 firing AP at a tank with
+        // reactive armor, a BMP-2's 30 mm on a BTR, an RPG at a BMP (the enemy
+        // holding its fire); a tanker filling a dry tank, an ammunition truck
+        // an IFV out of rounds, a workshop mending a battered tank; a column
+        // driving across the field.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(24.0f, 0.0f), 14);
+        using engine::UnitTypeId;
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        w.upgrade_for_setup(enemy, engine::UpgradeId::ReactiveArmor);
+        auto spawn = [&](engine::PlayerId owner, UnitTypeId type, float d, float side) {
+            const engine::EntityId id = w.spawn_unit(owner, type, ahead(d, side));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->facing = render::to_fixed_vec2({0.0f, -fwd});
+            u->hull = u->facing;
+            if (owner == enemy) u->rounds = 0;  // holds its fire
+            return id;
+        };
+        const engine::EntityId gun = spawn(me, UnitTypeId::Tank, 18.0f, -4.0f);
+        const engine::EntityId target = spawn(enemy, UnitTypeId::Tank, 25.0f, -4.0f);
+        w.unit_for_setup(target)->hp = 100000;
+        {  // armor-piercing loaded
+            engine::Command ap{.type = engine::CommandType::Ability, .units = {gun}};
+            ap.ability = static_cast<uint8_t>(engine::AbilityId::SwitchAmmo);
+            game.submit(ap);
+        }
+        game.submit({.type = engine::CommandType::Attack, .units = {gun}, .target_unit = target});
+        const engine::EntityId ifv = spawn(me, UnitTypeId::Ifv, 18.0f, -1.5f);
+        const engine::EntityId btr = spawn(enemy, UnitTypeId::Btr82a, 23.0f, -1.5f);
+        w.unit_for_setup(btr)->hp = 100000;
+        game.submit({.type = engine::CommandType::Attack, .units = {ifv}, .target_unit = btr});
+        const engine::EntityId rpg = spawn(me, UnitTypeId::Grenadier, 19.0f, 1.0f);
+        const engine::EntityId bmp = spawn(enemy, UnitTypeId::Bmp1, 24.0f, 1.0f);
+        w.unit_for_setup(bmp)->hp = 100000;
+        w.unit_for_setup(rpg)->rounds = 40;
+        game.submit({.type = engine::CommandType::Attack, .units = {rpg}, .target_unit = bmp});
+        // The service: a dry tank and its tanker, an IFV without rounds and its truck.
+        const engine::EntityId dry = spawn(me, UnitTypeId::T64BV, 16.0f, 4.0f);
+        w.unit_for_setup(dry)->fuel = engine::Fixed::from_int(5);
+        const engine::EntityId tanker = spawn(me, UnitTypeId::FuelTanker, 16.8f, 5.0f);
+        game.submit({.type = engine::CommandType::Supply, .units = {tanker}, .target_unit = dry});
+        const engine::EntityId empty = spawn(me, UnitTypeId::Bradley, 19.0f, 4.0f);
+        w.unit_for_setup(empty)->rounds = 0;
+        const engine::EntityId truck = spawn(me, UnitTypeId::AmmoTruck, 19.8f, 5.0f);
+        game.submit({.type = engine::CommandType::Supply, .units = {truck}, .target_unit = empty});
+        // The workshop and a battered tank by it.
+        const engine::TilePos shop = engine::tile_of(ahead(23.0f, 6.0f));
+        w.place_structure(engine::StructureType::Workshop, me, shop, 3, 3);
+        const engine::EntityId battered = spawn(me, UnitTypeId::Leopard2A6, 22.3f, 5.3f);
+        w.unit_for_setup(battered)->hp = engine::unit_type(UnitTypeId::Leopard2A6).max_hp / 3;
+        // The column.
+        std::vector<engine::EntityId> column;
+        for (int i = 0; i < 3; ++i) {
+            const UnitTypeId types[] = {UnitTypeId::T64BV, UnitTypeId::Btr4e, UnitTypeId::Truck};
+            column.push_back(spawn(me, types[i], 14.0f + 1.6f * static_cast<float>(i), 8.5f));
+        }
+        const engine::TilePos go = engine::tile_of(ahead(32.0f, 8.5f));
+        game.submit({.type = engine::CommandType::Move, .units = column, .target = engine::tile_center(go)});
+        return render::to_vector2(options.scene == "action_column" ? ahead(20.0f, 8.5f) : ahead(21.0f, 4.5f));  // (action_column: on the column)
+    }
+
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {
         // Offline: one of every kind of unit ahead of the base, to look at:
         // a row of riflemen facing all eight ways, the rest of the infantry,
@@ -1069,6 +1140,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
             long speed = 0;
             if (!parse_int(argv[++i], 1, 100, speed)) return std::nullopt;
             opt.smoke_speed = static_cast<float>(speed);
+        } else if (arg == "--frames" && has_next) {
+            long frames = 0;
+            if (!parse_int(argv[++i], 1, 200, frames)) return std::nullopt;
+            opt.smoke_frames = static_cast<int>(frames);
         } else {
             return std::nullopt;
         }
@@ -1123,6 +1198,8 @@ int main(int argc, char** argv) {
 
     bool smoke_ordered = false;
     std::optional<Vector2> smoke_look;
+    int frames_shot = 0;  // --frames
+    int frame_step = 0;
     while (!WindowShouldClose()) {
         if (session) {
             session->update();
@@ -1135,7 +1212,7 @@ int main(int argc, char** argv) {
 
         if (game) {
             if (smoke && !smoke_ordered) {
-                game->set_tick_limit(smoke_ticks);
+                game->set_tick_limit(options->smoke_frames > 0 ? smoke_ticks + 1000000 : smoke_ticks);
                 game->set_time_scale(options->smoke_speed.value_or(kSmokeTimeScale));
                 smoke_look = start_smoke_scene(*game, *options);
                 if (options->look) smoke_look = options->look;
@@ -1180,6 +1257,18 @@ int main(int argc, char** argv) {
         }
         EndDrawing();
 
+        if (smoke && game && game->world().tick() >= smoke_ticks && options->smoke_frames > 0 && frames_shot < options->smoke_frames) {
+            if (frame_step++ % 2 == 0) {
+                const std::string& path = options->smoke_screenshot;
+                const size_t dot = path.rfind('.');
+                const std::string name = path.substr(0, dot) + TextFormat("_%02d", frames_shot) + path.substr(dot);
+                Image shot = LoadImageFromScreen();
+                ExportImage(shot, name.c_str());
+                UnloadImage(shot);
+                ++frames_shot;
+            }
+            continue;
+        }
         if (smoke && game && game->world().tick() >= smoke_ticks) {
             int alive[2] = {0, 0};
             for (const engine::Unit& u : game->world().units()) ++alive[u.owner % 2];

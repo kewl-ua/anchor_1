@@ -79,10 +79,11 @@ private:
         uint32_t seed = 0;
         bool sunk = false;  // a tank that went under in a bog
     };
-    // Smoke, flames, clods of earth, spray: flying about for a moment. Only
-    // for the eye: nothing in the game depends on them.
+    // Smoke, flames, clods of earth, spray, sparks, a muzzle's flash, spent
+    // cases: flying about for a moment. Only for the eye: nothing in the game
+    // depends on them.
     struct Particle {
-        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray };
+        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing };
         Kind kind;
         Vector2 ground;  // tiles
         float z;         // pixels above the ground
@@ -108,6 +109,39 @@ private:
     std::unordered_map<engine::EntityId, Vector2> track_last_;  // where each left its last mark
     void draw_track_marks(const engine::World& world, Rectangle view) const;
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
+    // Vehicles as last seen: what they had, how long since each fired (its
+    // recoil) and was hit (a jolt, the way it was pushed).
+    struct VehicleSeen {
+        int32_t hp = 0;
+        engine::Fixed fuel{};
+        int32_t rounds = 0;
+        float recoil = 1.0f;
+        float jolt = 1.0f;
+        Vector2 jolt_dir{};
+    };
+    std::unordered_map<engine::EntityId, VehicleSeen> vehicles_seen_;
+    // Shells, rockets and missiles in flight as last seen: where each went off shows what it hit.
+    struct ProjectileSeen {
+        Vector2 pos;
+        engine::DamageType type;
+        bool at_air;
+    };
+    std::unordered_map<uint32_t, ProjectileSeen> projectiles_seen_;
+    // Service at work: a tanker's hose into a vehicle, an ammunition truck's
+    // crates handed over, a workshop welding: going on while `age` is short.
+    struct Service {
+        enum class Kind : uint8_t { Hose, Crates, Weld };
+        Kind kind;
+        engine::EntityId from;  // the tanker, the truck (0: the workshop)
+        engine::EntityId to;
+        float age;
+    };
+    std::vector<Service> services_;
+    void draw_services(const engine::World& world, float alpha) const;
+    void spawn_flash(Vector2 at, float z, float size, Color color);
+    void spawn_sparks(Vector2 at, float z, int n, Color color, float speed);
+    void fired(const engine::World& world, const engine::Unit& u);
+    void update_vehicles(const engine::World& world, float dt);
     uint32_t fx_rng_ = 0x2545F491u;
     float fx_random();  // 0..1
     void spawn_burst(const engine::World& world, Vector2 at, float splash);
@@ -136,7 +170,7 @@ private:
         int frames = 0;
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
-    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop, Gun, Plane };  // a tank's or an IFV's; a truck's and its radar; a towed gun; an aircraft
+    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop, Gun, Plane, Radar };  // a tank's or an IFV's; a truck's and its radar; a towed gun; an aircraft; an AA gun's radar
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};
