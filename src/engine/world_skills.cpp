@@ -33,6 +33,7 @@ void World::apply_research(const Command& cmd) {
     const auto id = static_cast<UpgradeId>(cmd.upgrade);
     const UpgradeDef& def = upgrade_def(id);
     if (def.building != role_of(*s) || s->research != UpgradeId::Count || has_upgrade(cmd.player, id)) return;
+    if (def.needs != UpgradeId::Count && !has_upgrade(cmd.player, def.needs)) return;  // the one before it first
     // Nobody researches the same thing twice at once.
     for (const Structure& other : structures_) {
         if (other.owner == cmd.player && other.research == id) return;

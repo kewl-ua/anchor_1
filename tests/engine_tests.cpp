@@ -4487,6 +4487,66 @@ void test_armor_upgrades() {
     CHECK(far_fcs > far);
 }
 
+// Explosive reactive armor comes in a line, each after the one before:
+// Kontakt-1 against shaped charges only, Kontakt-5 and Relikt against AP
+// rounds as well, Relikt the most.
+void test_reactive_armor_line() {
+    // What a tank takes from the first hit of an enemy tank's AP round, and of an RPG.
+    auto ap_hit = [](int era) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId gun = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+        w.unit_for_setup(gun)->round_type = 1;  // armor-piercing
+        const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(18, 10));
+        w.unit_for_setup(target)->rounds = 0;
+        w.unit_for_setup(target)->hull = {Fixed::from_int(-1), Fixed{}};  // facing it
+        const UpgradeId line[] = {UpgradeId::ReactiveArmor, UpgradeId::Kontakt5, UpgradeId::Relikt};
+        for (int i = 0; i < era; ++i) w.upgrade_for_setup(1, line[i]);
+        issue(sim, attack_order(0, {gun}, target));
+        const int32_t full = unit_type(UnitTypeId::Tank).max_hp;
+        for (int i = 0; i < 3000; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < full) return full - hp_of(sim, target);
+        }
+        return 0;
+    };
+    const int32_t bare = ap_hit(0);
+    CHECK(bare > 0);
+    CHECK(ap_hit(1) == bare);  // Kontakt-1: AP rounds go through it
+    CHECK(ap_hit(2) == bare * kEraLevels[1].kinetic_percent / 100);
+    CHECK(ap_hit(3) == bare * kEraLevels[2].kinetic_percent / 100);
+    const int32_t full = unit_type(UnitTypeId::Tank).max_hp;
+    const int32_t rpg = full - rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9).first[0];
+    CHECK(full - rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, UpgradeId::ReactiveArmor).first[0] ==
+          rpg * kEraLevels[0].shaped_percent / 100);
+    static_assert(kEraLevels[0].shaped_percent > kEraLevels[1].shaped_percent &&
+                  kEraLevels[1].shaped_percent > kEraLevels[2].shaped_percent);
+    static_assert(kEraLevels[1].kinetic_percent > kEraLevels[2].kinetic_percent);
+
+    // Kontakt-5 only after Kontakt-1, Relikt only after Kontakt-5.
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {0, 0, 5000, 5000, 0});
+    const EntityId barracks = w.place_structure(StructureType::ArmorBarracks, 0, {20, 5}, 3, 3);
+    auto research = [&](UpgradeId id) {
+        issue(sim, Command{.type = CommandType::Research, .player = 0, .target_unit = barracks,
+                           .upgrade = static_cast<uint8_t>(id)});
+        for (int i = 0; i < 5; ++i) sim.step();
+        return sim.world().find_structure(barracks)->research;
+    };
+    CHECK(research(UpgradeId::Relikt) == UpgradeId::Count);
+    CHECK(research(UpgradeId::Kontakt5) == UpgradeId::Count);
+    CHECK(research(UpgradeId::ReactiveArmor) == UpgradeId::ReactiveArmor);
+    for (Tick i = 0; i < upgrade_def(UpgradeId::ReactiveArmor).time + 5; ++i) sim.step();
+    CHECK(sim.world().era_level(0) == 1);
+    CHECK(research(UpgradeId::Relikt) == UpgradeId::Count);
+    CHECK(research(UpgradeId::Kontakt5) == UpgradeId::Kontakt5);
+    for (Tick i = 0; i < upgrade_def(UpgradeId::Kontakt5).time + 5; ++i) sim.step();
+    CHECK(research(UpgradeId::Relikt) == UpgradeId::Relikt);
+    for (Tick i = 0; i < upgrade_def(UpgradeId::Relikt).time + 5; ++i) sim.step();
+    CHECK(sim.world().era_level(0) == 3);
+}
+
 // ATGM launchers: an IFV fires a guided missile at an enemy tank 20 tiles
 // off, which drives away across: the missile flies after it and hits. Not
 // researched, the skill does nothing. An ammunition truck brings a new one.
@@ -4635,9 +4695,10 @@ void test_recon_and_engineer_upgrades() {
     CHECK(seen_in_cover(UnitTypeId::Rifleman, close, UnitTypeId::Scout, false));
     CHECK(!seen_in_cover(UnitTypeId::Rifleman, close, UnitTypeId::Scout, false, true));
 
-    auto mine_on_tank = [](bool heavy) {
+    auto mine_on_tank = [](bool heavy, bool era = false) {
         Simulation sim(1, TileMap(40, 20));
         if (heavy) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::HeavyCharges);
+        if (era) sim.world_for_setup().upgrade_for_setup(1, UpgradeId::ReactiveArmor);
         lay_a_mine(sim, 0, true, 15, 10);
         const EntityId tank = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at_half(21, 21));
         issue(sim, make_move(1, {tank}, 25, 10));
@@ -4646,6 +4707,7 @@ void test_recon_and_engineer_upgrades() {
     };
     const int32_t plain = mine_on_tank(false);
     CHECK(plain > 0 && mine_on_tank(true) == plain * kHeavyChargePercent / 100);
+    CHECK(mine_on_tank(false, true) == plain);  // reactive armor is for what hits it, not a mine under it
 
     auto charge_on_bridge = [](bool heavy) {
         Simulation sim(1, village_map());
@@ -5105,6 +5167,8 @@ void test_upgrade_buildings() {
         {UpgradeId::ClusterMunitions, StructureType::ArtilleryBarracks},
         {UpgradeId::IncendiaryShells, StructureType::ArtilleryBarracks},
         {UpgradeId::PhosphorusShells, StructureType::ArtilleryBarracks},
+        {UpgradeId::Kontakt5, StructureType::ArmorBarracks},
+        {UpgradeId::Relikt, StructureType::ArmorBarracks},
     };
     for (const auto& [id, building] : where) CHECK(upgrade_def(id).building == building);
     CHECK(ability_def(AbilityId::Atgm).needs == UpgradeId::Atgm);
@@ -5224,6 +5288,7 @@ int main() {
     test_signals_upgrades();
     test_air_upgrades();
     test_upgrade_buildings();
+    test_reactive_armor_line();
     test_donbas_landmarks();
     test_farmland();
     test_dig_in_the_fields();

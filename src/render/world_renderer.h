@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <span>
@@ -91,10 +92,12 @@ private:
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
     enum class SpritePart : int { TankHull, TankTurret };
-    mutable std::map<std::pair<int, int>, SpriteSheet> sheets_;  // (part, owner)
+    // (part, its variant: a tank's reactive armor), owner.
+    mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};
+    mutable std::array<int, 4> world_era_{};  // each side's reactive armor, as last baked
     void bake_sprites(const engine::World& world) const;
-    const SpriteSheet* sheet(SpritePart part, engine::PlayerId owner) const;
+    const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;
     void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame) const;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;

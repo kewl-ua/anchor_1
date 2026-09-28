@@ -49,6 +49,10 @@ struct WeaponDef {
     // A guided missile: one that is going to hit flies after its target, as
     // long as the launcher is there to guide it.
     bool guided = false;
+    // An armor-piercing shot that goes through by its speed (a tank's AP
+    // round), not a shaped charge (an RPG, a missile): the older kinds of
+    // explosive reactive armor don't stop it.
+    bool kinetic = false;
 };
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.
@@ -60,7 +64,7 @@ enum class UpgradeId : uint8_t {
     TrainCapacity,     // station: trains bring more
     Optics,            // recon barracks: scouts and observation posts see more
     EntrenchingTools,  // infantry barracks: riflemen dig faster
-    ReactiveArmor,     // armor barracks: tanks take less from anti-tank hits
+    ReactiveArmor,     // armor barracks: tanks take less from anti-tank hits (Kontakt-1; see kEraLevels)
     FireControl,       // armor barracks: tank guns keep their aim far out
     Atgm,              // armor barracks: IFVs fire guided anti-tank missiles
     FiringTables,      // artillery barracks: ranging in goes faster
@@ -80,6 +84,8 @@ enum class UpgradeId : uint8_t {
     FastReload,        // armor barracks: tank and IFV guns reload faster
     IncendiaryShells,  // artillery barracks: shells that set the ground on fire
     PhosphorusShells,  // artillery barracks: white phosphorus, a burning smoke screen
+    Kontakt5,          // armor barracks, after Kontakt-1: heavier reactive armor, against AP rounds too
+    Relikt,            // armor barracks, after Kontakt-5: the newest, against tandem charges and AP rounds
     Count,
 };
 inline constexpr size_t kUpgradeCount = static_cast<size_t>(UpgradeId::Count);

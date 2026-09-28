@@ -402,6 +402,13 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             const engine::UpgradeDef& up = engine::upgrade_def(id);
             if (up.building != engine::role_of(*s)) continue;
             const bool done = world.has_upgrade(player_, id);
+            // Of a line of upgrades (Kontakt-1, -5, Relikt), the next one to research, or the last one done.
+            if (up.needs != engine::UpgradeId::Count && !world.has_upgrade(player_, up.needs)) continue;
+            bool superseded = false;
+            for (size_t j = 0; j < engine::kUpgradeCount; ++j) {
+                superseded = superseded || (done && engine::upgrade_def(static_cast<engine::UpgradeId>(j)).needs == id);
+            }
+            if (superseded) continue;
             hud::CommandButton& b = put(kResearchSlots[research++], Action::Research, static_cast<uint8_t>(i), up.label,
                                         TextFormat("%s: %s%s", up.name, up.description, done ? " (done)" : ""),
                                         done ? engine::Stock{} : up.cost);

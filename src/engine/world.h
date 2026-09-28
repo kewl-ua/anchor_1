@@ -97,7 +97,14 @@ inline constexpr int32_t kFarAccuracyPercent = 35;
 inline constexpr int32_t kFlankHitPercent = 200;
 
 // Upgrades (see UpgradeId): how much each one changes.
-inline constexpr int32_t kReactiveArmorPercent = 65;   // of an anti-tank hit a tank takes
+// Explosive reactive armor, by kind: of a shaped charge's (an RPG's, a
+// missile's) hit and of an AP round's a tank takes. Kontakt-1 doesn't stop AP rounds.
+struct EraLevel {
+    int32_t shaped_percent;
+    int32_t kinetic_percent;
+};
+inline constexpr EraLevel kEraLevels[] = {{65, 100}, {55, 75}, {45, 60}};  // Kontakt-1, Kontakt-5, Relikt
+inline constexpr int32_t kReactiveArmorPercent = kEraLevels[0].shaped_percent;
 inline constexpr int32_t kFireControlFarPercent = 65;  // a tank's aim at its full range
 inline constexpr Fixed kAtgmTargetReach = Fixed::from_ratio(3, 2);  // an aim point this close to a vehicle means it
 inline constexpr int32_t kDrilledCrewsPercent = 50;    // of the time to set up or pack up a gun
@@ -539,6 +546,14 @@ public:
     }
     const std::vector<Charge>& charges() const { return charges_; }
     const std::vector<Smoke>& smokes() const { return smokes_; }
+    // Which explosive reactive armor a side's tanks carry: 0 none, 1 Kontakt-1,
+    // 2 Kontakt-5, 3 Relikt.
+    int era_level(PlayerId player) const {
+        return has_upgrade(player, UpgradeId::Relikt)     ? 3
+               : has_upgrade(player, UpgradeId::Kontakt5) ? 2
+               : has_upgrade(player, UpgradeId::ReactiveArmor) ? 1
+                                                                : 0;
+    }
     bool has_upgrade(PlayerId player, UpgradeId id) const {
         return player < kMaxPlayers && ((upgrades_[player] >> static_cast<uint32_t>(id)) & 1u) != 0;
     }

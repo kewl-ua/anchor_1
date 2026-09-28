@@ -86,6 +86,7 @@ struct UpgradeDef {
     StructureType building;  // where it's researched
     Stock cost;
     Tick time;
+    UpgradeId needs = UpgradeId::Count;  // researched first (Count: nothing)
 };
 
 const UpgradeDef& upgrade_def(UpgradeId id);

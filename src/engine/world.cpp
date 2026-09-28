@@ -1425,9 +1425,12 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
     }
     // What our upgrades take off it.
     const UnitTypeDef& vd = def_of(victim);
-    if (victim.type == UnitTypeId::Tank && weapon.damage_type == DamageType::AntiTank &&
-        has_upgrade(victim.owner, UpgradeId::ReactiveArmor)) {
-        amount = amount * kReactiveArmorPercent / 100;
+    if (victim.type == UnitTypeId::Tank && weapon.damage_type == DamageType::AntiTank && !shot.blast) {
+        const int level = era_level(victim.owner);
+        if (level > 0) {
+            const EraLevel& era = kEraLevels[level - 1];
+            amount = amount * (weapon.kinetic ? era.kinetic_percent : era.shaped_percent) / 100;
+        }
     }
     if (!vd.vehicle && !vd.aircraft && weapon.damage_type != DamageType::AntiTank &&
         has_upgrade(victim.owner, UpgradeId::BodyArmor)) {

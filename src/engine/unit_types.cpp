@@ -110,7 +110,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
                        .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
                        .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1),
-                       .effective_range = tiles(15)},
+                       .effective_range = tiles(15), .kinetic = true},
         .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
                       AbilityId::RadioSilence, AbilityId::CallSupply},
         .ability_count = 6,
@@ -764,9 +764,10 @@ constexpr UpgradeDef kUpgrades[] = {
      .building = StructureType::ReconBarracks, .cost = {0, 0, 60, 40, 0}, .time = seconds(45)},
     {.name = "Entrenching tools", .label = "Shovels", .description = "Riflemen dig a third faster",
      .building = StructureType::InfantryBarracks, .cost = {0, 0, 60, 0, 0}, .time = seconds(30)},
-    {.name = "Reactive armor (Kontakt-5)", .label = "ERA",
-     .description = "Tanks take 35% less from anti-tank hits: RPGs, AP rounds, missiles",
-     .building = StructureType::ArmorBarracks, .cost = {0, 0, 150, 100, 0}, .time = seconds(60)},
+    {.name = "Reactive armor Kontakt-1", .label = "K-1",
+     .description = "Boxes of explosive on the turret and the glacis: tanks take 35% less from RPGs and missiles "
+                    "(AP rounds go through it)",
+     .building = StructureType::ArmorBarracks, .cost = {0, 0, 100, 60, 0}, .time = seconds(45)},
     {.name = "Fire control system", .label = "FCS",
      .description = "Tank guns keep their aim far out: 65% of it at 50 tiles instead of 35%",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 120, 60, 0}, .time = seconds(60)},
@@ -816,6 +817,16 @@ constexpr UpgradeDef kUpgrades[] = {
     {.name = "White phosphorus", .label = "WP",
      .description = "A smoke screen for 20 s where it lands (nothing is seen through it), and it burns",
      .building = StructureType::ArtilleryBarracks, .cost = {0, 0, 60, 100, 0}, .time = seconds(60)},
+    {.name = "Reactive armor Kontakt-5", .label = "K-5",
+     .description = "Heavy wedges on the turret, plates on the glacis, boxes on the skirts: 45% less from RPGs and "
+                    "missiles, 25% less from AP rounds",
+     .building = StructureType::ArmorBarracks, .cost = {0, 0, 180, 120, 0}, .time = seconds(60),
+     .needs = UpgradeId::ReactiveArmor},
+    {.name = "Reactive armor Relikt", .label = "Relikt",
+     .description = "The newest, against tandem charges too, the skirts covered: 55% less from RPGs and missiles, "
+                    "40% less from AP rounds",
+     .building = StructureType::ArmorBarracks, .cost = {0, 0, 260, 160, 0}, .time = seconds(75),
+     .needs = UpgradeId::Kontakt5},
 };
 static_assert(std::size(kUpgrades) == kUpgradeCount);
 
