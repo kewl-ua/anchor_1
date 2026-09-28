@@ -22,7 +22,8 @@ namespace render {
 namespace {
 
 constexpr float kPingLifetime = 0.5f;
-constexpr float kBlastLifetime = 1.8f;  // (the longest blast's sheet)
+constexpr float kBlastLifetime = 3.6f;  // (the longest blast's sheet: a crash's mushroom)
+constexpr float kMushroomBlast = 4.5f;  // a Blast this big (tiles) is an aircraft's crash: the mushroom
 constexpr float kWreckLifetime = 25.0f;
 constexpr float kBodyLifetime = 8.0f;
 
@@ -1596,6 +1597,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     for (Particle& p : particles_) {
         if (p.seed == 0) p.seed = ++particle_seed_ * 2654435761u | 1u;
         p.age += dt;
+        if (p.age < 0.0f) continue;  // (not yet: waiting where it will come out)
         p.ground = {p.ground.x + p.vel.x * dt, p.ground.y + p.vel.y * dt};
         p.z += p.vz * dt;
         p.size = std::max(0.3f, p.size + p.grow * dt);
@@ -1697,12 +1699,10 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
         // Crashed: a mushroom of fire rolling up, the blackest smoke boiling over it, bits of it flung about.
         const Vector2 at = r.ground;
-        blasts_.push_back({at, 0.0f, 2.4f, 0.0f});
-        blasts_.push_back({{at.x + d.x * 0.3f, at.y + d.y * 0.3f}, -0.08f, 1.8f, 6.0f});
-        blasts_.push_back({{at.x - d.x * 0.35f, at.y - d.y * 0.35f}, -0.16f, 1.6f, 4.0f});
-        blasts_.push_back({at, -0.3f, 1.7f, 26.0f});
-        blasts_.push_back({at, -0.55f, 1.3f, 46.0f});
-        spawn_flash(at, 10.0f, 28.0f, {255, 244, 200, 255});
+        blasts_.push_back({at, 0.0f, kMushroomBlast + 1.0f, 0.0f});
+        blasts_.push_back({{at.x + d.x * 0.45f, at.y + d.y * 0.45f}, -0.1f, 1.8f, 4.0f});  // the fuel going up along where it hit
+        blasts_.push_back({{at.x - d.x * 0.5f, at.y - d.y * 0.5f}, -0.2f, 1.6f, 3.0f});
+        spawn_flash(at, 10.0f, 30.0f, {255, 244, 200, 255});
         spawn_sparks(at, 8.0f, 50, {255, 190, 90, 255}, 3.2f);
         spawn_burst(world, at, 1.0f, 8);  // the earth thrown up (Burst::Dirt)
         for (int i = 0; i < 18; ++i) {  // bits of it flung out
@@ -1719,17 +1719,19 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             p.color = i % 3 == 0 ? Color{120, 124, 116, 255} : i % 3 == 1 ? Color{40, 36, 32, 255} : Color{160, 160, 150, 255};
             particles_.push_back(p);
         }
-        for (int i = 0; i < 26; ++i) {  // the black smoke: a column, a cap spreading over it
+        for (int i = 0; i < 30; ++i) {  // the black smoke going on up out of its cap as it cools, spreading; a column under it
             const bool cap = i >= 10;
+            const float wait = cap ? 2.6f + 0.6f * fx_random() : 2.2f + 0.8f * fx_random();  // hidden till the mushroom's gone to smoke
             Particle p{};
             p.kind = Particle::Kind::Smoke;
-            p.ground = {at.x + (fx_random() - 0.5f) * (cap ? 0.8f : 0.4f), at.y + (fx_random() - 0.5f) * (cap ? 0.8f : 0.4f)};
-            p.z = cap ? 34.0f + 20.0f * fx_random() : 6.0f + 24.0f * fx_random();
-            p.vel = {(fx_random() - 0.5f) * (cap ? 0.7f : 0.2f), (fx_random() - 0.5f) * (cap ? 0.7f : 0.2f)};
-            p.vz = cap ? 22.0f + 16.0f * fx_random() : 40.0f + 20.0f * fx_random();
-            p.life = 4.5f + 2.0f * fx_random();
-            p.size = cap ? 6.0f + 3.0f * fx_random() : 4.0f + 2.0f * fx_random();
-            p.grow = cap ? 12.0f : 8.0f;
+            p.ground = {at.x + (fx_random() - 0.5f) * (cap ? 1.2f : 0.3f), at.y + (fx_random() - 0.5f) * (cap ? 1.2f : 0.3f)};
+            p.vel = {(fx_random() - 0.5f) * (cap ? 0.5f : 0.1f), (fx_random() - 0.5f) * (cap ? 0.5f : 0.1f)};
+            p.vz = cap ? 10.0f + 8.0f * fx_random() : 14.0f + 10.0f * fx_random();
+            p.z = cap ? 96.0f + 30.0f * fx_random() : 20.0f + 60.0f * fx_random();
+            p.age = -wait;
+            p.life = 5.0f + 2.0f * fx_random();
+            p.size = cap ? 8.0f + 4.0f * fx_random() : 5.0f + 2.0f * fx_random();
+            p.grow = cap ? 10.0f : 6.0f;
             p.color = {14, 12, 12, 240};
             particles_.push_back(p);
         }
@@ -1820,9 +1822,12 @@ enum class Fx : uint8_t {
     Scorch0, Scorch1, Scorch2,
     Smoke0, Smoke1, Smoke2, Smoke3, Smoke4, Smoke5,
     Roof0, Roof1,
+    Mushroom,
     Count
 };
 constexpr int kSmokeFrames = 8;  // a puff's life: dense (0..2), breaking up (3, 4), rings thinning out (5..7)
+constexpr int kMushroomFrames = 34;
+constexpr float kMushroomSeconds = 3.4f;
 constexpr float kSmokeTiers[6] = {4.0f, 6.0f, 9.0f, 13.0f, 18.0f, 26.0f};  // its sizes, pixels round
 constexpr int kStreakTurns = 8;  // blown smoke: its sheets turned every 22.5 degrees
 constexpr float kStreakSizes[3][2] = {{14.0f, 6.0f}, {22.0f, 9.0f}, {32.0f, 13.0f}};  // long, wide
@@ -2272,6 +2277,141 @@ FxSheet bake_roof_fire(float fw, uint32_t seed) {
     });
 }
 
+// An aircraft crashing: a mushroom of fire. A white flash on the ground; a
+// ball of fire boiling up off it on a stem, swelling into a cap of lumps,
+// pale yellow at its top, orange, deep orange under, a band of grey smoke
+// rolling under its rim; a skirt of fire spreading on the ground round its
+// foot. Then it cools as it goes on up: the cap to dark red and to black
+// smoke, the stem first; the fire on the ground last.
+FxSheet bake_mushroom(uint32_t seed) {
+    constexpr int w = 150;
+    constexpr int h = 170;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h - 12)};
+    auto rnd = [&](int i) { return rand01(seed, i); };
+    struct Lump {
+        float x, y, r, wob, heat;  // heat: how hot it burns, where it is in the cloud (1 its top)
+        int part;                  // 0 the stem, 1 the grey under the cap, 2 the cap, 3 the skirt on the ground
+    };
+    // The lumps, as the cloud stands grown, round its cap's middle (for the
+    // cap, the band) or up from the ground (the stem, the skirt): scaled as it grows.
+    std::vector<Lump> lumps;
+    for (int i = 0; i < 9; ++i) {  // the stem, narrowest at its waist
+        const float t = static_cast<float>(i) / 8.0f;
+        const float wide = 0.34f - 0.14f * std::sin(t * 3.14159f);
+        lumps.push_back({(rnd(i) - 0.5f) * 0.22f, -t, wide * (0.8f + 0.3f * rnd(i + 20)), rnd(i + 40) * 6.28f, 0.5f + 0.2f * t, 0});
+    }
+    for (int i = 0; i < 9; ++i) {  // the grey band under the cap's rim
+        const float a = 3.14159f * (0.08f + 0.84f * static_cast<float>(i) / 8.0f);
+        lumps.push_back({-std::cos(a) * 0.8f, 0.3f + 0.05f * std::sin(a), 0.26f + 0.08f * rnd(i + 60), rnd(i + 80) * 6.28f, 0.0f, 1});
+    }
+    for (int i = 0; i < 22; ++i) {  // the cap: a dome of lumps, the ones on top hottest
+        const float a = 3.14159f * rnd(i + 100);
+        const float d = 0.35f + 0.55f * std::sqrt(rnd(i + 120));
+        const float x = -std::cos(a) * d * 0.9f;
+        const float y = -std::sin(a) * d * 0.72f + 0.1f;
+        lumps.push_back({x, y, 0.28f + 0.14f * rnd(i + 140), rnd(i + 160) * 6.28f, 0.55f + 0.45f * (-y + 0.1f) / 0.82f, 2});
+    }
+    lumps.push_back({0.0f, -0.05f, 0.5f, rnd(180) * 6.28f, 0.8f, 2});
+    for (int i = 0; i < 10; ++i) {  // the skirt of fire on the ground
+        const float x = (static_cast<float>(i) / 9.0f - 0.5f) * 2.0f;
+        lumps.push_back({x, -0.05f * rnd(i + 200), 0.22f + 0.1f * rnd(i + 220) - 0.06f * std::fabs(x), rnd(i + 240) * 6.28f, 0.75f, 3});
+    }
+    // Drawn from the bottom up (the stem, the grey, the cap's lower lumps first, its top over them), the skirt last.
+    auto order = [](const Lump& l) { return l.part == 3 ? 10.0f : l.part == 0 ? -10.0f + l.y : l.part == 1 ? -5.0f : -l.y; };
+    std::sort(lumps.begin(), lumps.end(), [&](const Lump& a, const Lump& b) { return order(a) < order(b); });
+    constexpr Color kPale{255, 238, 176, 255};
+    constexpr Color kYellow{255, 206, 96, 255};
+    constexpr Color kOrange{246, 146, 44, 255};
+    constexpr Color kDeep{214, 88, 30, 255};
+    constexpr Color kRed{150, 48, 26, 255};
+    constexpr Color kGreyLit{186, 192, 196, 255};
+    constexpr Color kGrey{140, 148, 154, 255};
+    constexpr Color kSmokeLit{92, 84, 80, 255};
+    constexpr Color kSmoke{56, 50, 48, 255};
+    constexpr Color kBlack{34, 30, 30, 255};
+    return bake_fx(w, h, kMushroomFrames, o, [&](Canvas& c, int f) {
+        const float t = static_cast<float>(f) / static_cast<float>(kMushroomFrames - 1);
+        if (f < 3) {  // the flash, a ball of fire off the ground
+            star_on(c, o.x, o.y - 10.0f, 34.0f - 6.0f * static_cast<float>(f), 1.0f, seed);
+            c.disc(o.x, o.y - 12.0f - 4.0f * static_cast<float>(f), 12.0f + 6.0f * static_cast<float>(f), kYellow);
+            c.disc(o.x, o.y - 12.0f - 4.0f * static_cast<float>(f), 8.0f + 4.0f * static_cast<float>(f), kPale);
+            c.outline({90, 30, 16, 255});
+            return;
+        }
+        auto ease = [](float k) { k = std::clamp(k, 0.0f, 1.0f); return 1.0f - (1.0f - k) * (1.0f - k); };
+        const float grow = ease((t - 0.06f) / 0.45f);
+        const float cap_r = 16.0f + 30.0f * grow;                  // the cap's half width, pixels
+        const float cap_up = 24.0f + 86.0f * ease((t - 0.06f) / 0.8f);  // its middle, up off the ground
+        const float stem_up = std::max(0.0f, cap_up - cap_r * 0.35f);
+        const float skirt = 14.0f + 30.0f * ease((t - 0.04f) / 0.5f);
+        // Cooling: the stem first, the cap after, the fire on the ground last.
+        auto heat_of = [&](const Lump& l) {
+            const float start = l.part == 0 ? 0.38f : l.part == 2 ? 0.5f + 0.2f * l.heat : l.part == 3 ? 0.72f : 0.4f;
+            const float k = std::clamp((t - start) / 0.3f, 0.0f, 1.0f);
+            return l.heat * (1.0f - k) - k * 0.5f;  // below 0: gone to smoke, blacker as it goes
+        };
+        for (const Lump& l : lumps) {
+            float lx = 0.0f;
+            float ly = 0.0f;
+            float lr = 0.0f;
+            switch (l.part) {
+                case 0:
+                    lx = o.x + l.x * cap_r;
+                    ly = o.y - 4.0f + l.y * stem_up;
+                    lr = l.r * cap_r;
+                    break;
+                case 1:
+                case 2:
+                    lx = o.x + l.x * cap_r;
+                    ly = o.y - cap_up + l.y * cap_r;
+                    lr = l.r * cap_r;
+                    break;
+                default:
+                    lx = o.x + l.x * skirt;
+                    ly = o.y - 3.0f + l.y * 10.0f;
+                    lr = l.r * skirt * (t < 0.75f ? 1.0f : 1.0f - (t - 0.75f) * 2.0f);
+                    break;
+            }
+            if (lr < 1.0f) continue;
+            const float hh = heat_of(l);
+            if (l.part == 0 && t > 0.8f && rnd(300 + static_cast<int>(l.y * 50.0f)) < (t - 0.8f) * 4.0f) continue;  // the stem breaking up
+            for (int y = static_cast<int>(ly - lr) - 1; y <= static_cast<int>(ly + lr) + 1; ++y) {
+                for (int x = static_cast<int>(lx - lr) - 1; x <= static_cast<int>(lx + lr) + 1; ++x) {
+                    const float dx = static_cast<float>(x) + 0.5f - lx;
+                    const float dy = static_cast<float>(y) + 0.5f - ly;
+                    const float a = std::atan2(dy, dx);
+                    const float rr = lr * (1.0f + 0.12f * std::sin(3.0f * a + l.wob) + 0.06f * std::sin(5.0f * a + 2.0f * l.wob));
+                    const float d = std::sqrt(dx * dx + dy * dy);
+                    if (d > rr) continue;
+                    const float nx = dx / rr;
+                    const float ny = dy / rr;
+                    const float lit = 0.5f - 0.5f * ny - 0.2f * nx + (fx_noise(seed + static_cast<uint32_t>(f), x, y) - 0.5f) * 0.14f;  // lit on top, to the left
+                    Color col;
+                    if (l.part == 1 && hh > -0.2f) {  // the grey band
+                        col = lit > 0.55f ? kGreyLit : kGrey;
+                    } else if (hh > 0.0f) {
+                        const float v = hh * (0.55f + 0.6f * lit);
+                        col = v > 0.72f ? kPale : v > 0.52f ? kYellow : v > 0.34f ? kOrange : v > 0.18f ? kDeep : kRed;
+                        if (hh < 0.2f && lit < 0.4f) col = kSmoke;  // cooling: smoke coming through it
+                    } else {
+                        col = lit > 0.6f ? kSmokeLit : hh > -0.3f ? kSmoke : kBlack;
+                        if (hh > -0.15f && fx_noise(seed * 3u + static_cast<uint32_t>(f), x, y) < 0.06f) col = kOrange;  // embers in it
+                    }
+                    c.set(x, y, col);
+                }
+            }
+        }
+        if (t < 0.7f) {  // burning bits flung out of it
+            for (int i = 0; i < 14; ++i) {
+                const float a = rnd(400 + i) * 3.14159f + 3.14159f;
+                const float d = cap_r * (1.1f + 0.5f * rnd(420 + i)) * (0.6f + t);
+                c.set(static_cast<int>(o.x + std::cos(a) * d * 1.2f), static_cast<int>(o.y - cap_up * 0.6f + std::sin(a) * d * 0.8f), i % 2 == 0 ? kYellow : kDeep);
+            }
+        }
+        c.outline(t < 0.6f ? Color{96, 34, 18, 255} : Color{30, 26, 24, 255});
+    });
+}
+
 // Every sheet, once there's a window to make textures in.
 void ensure_fx() {
     if (!g_fx.empty()) return;
@@ -2295,6 +2435,7 @@ void ensure_fx() {
         put(Fx::Scorch2, bake_scorch(68.0f, seed + 13u));
         for (int k = 0; k < 6; ++k) put(static_cast<Fx>(static_cast<int>(Fx::Smoke0) + k), bake_smoke(kSmokeTiers[k], seed + 20u + static_cast<uint32_t>(k)));
         put(Fx::Roof0, bake_roof_fire(12.0f, seed + 30u));
+        put(Fx::Mushroom, bake_mushroom(seed + 40u));
         if (v < 2) {
             for (int k = 0; k < 3; ++k) {
                 for (int t = 0; t < kStreakTurns; ++t) {
@@ -13820,6 +13961,13 @@ void WorldRenderer::draw_blasts(const engine::TileMap& map) const {
     for (const Blast* bp : order) {
         const Blast& b = *bp;
         if (b.age < 0.0f) continue;  // not yet
+        if (b.radius >= kMushroomBlast) {  // an aircraft crashing: the mushroom
+            if (b.age >= kMushroomSeconds) continue;
+            const Vector2 p = on_terrain(map, b.ground);
+            const FxSheet& s = fx_sheet(Fx::Mushroom, static_cast<int>(tile_hash(static_cast<int>(b.ground.x * 17.0f), static_cast<int>(b.ground.y * 23.0f)) % 3u));
+            draw_fx(s, static_cast<int>(b.age / kMushroomSeconds * static_cast<float>(s.frames)), {p.x, p.y - b.z});
+            continue;
+        }
         const int size = b.radius < 0.45f ? 0 : b.radius < 1.0f ? 1 : b.radius < 1.8f ? 2 : 3;
         if (b.age >= kBlastSeconds[size]) continue;
         const Vector2 p = on_terrain(map, b.ground);
