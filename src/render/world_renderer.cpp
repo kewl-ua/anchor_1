@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <tuple>
@@ -349,6 +350,151 @@ void WorldRenderer::remember(const engine::World& world) {
     });
 }
 
+// Where on a tank its gun's muzzle and its engine deck are: along the hull
+// from its middle (tiles, drawn size) and up (pixels). With the tanks' pixel art.
+Vector2 tank_muzzle(engine::TankModel m);
+Vector2 tank_engine(engine::TankModel m);
+int wear_of(int32_t hp, int32_t max_hp);
+constexpr float kTankWreckLifetime = 150.0f;  // a burnt-out tank stays a while on the field
+
+float WorldRenderer::fx_random() {
+    fx_rng_ ^= fx_rng_ << 13;
+    fx_rng_ ^= fx_rng_ >> 17;
+    fx_rng_ ^= fx_rng_ << 5;
+    return static_cast<float>(fx_rng_ & 0xFFFFFF) / static_cast<float>(0x1000000);
+}
+
+// A shell or a rocket going off: clods of earth flung up in arcs (spray off
+// the water), dust and smoke rolling up, darker and more of it the bigger it was.
+void WorldRenderer::spawn_burst(const engine::World& world, Vector2 at, float splash) {
+    const engine::TileMap& map = world.map();
+    const engine::TilePos t = map.clamp_tile({static_cast<int32_t>(std::floor(at.x)), static_cast<int32_t>(std::floor(at.y))});
+    const bool water = map.terrain(t) == engine::Terrain::Water;
+    const float big = std::clamp(splash, 0.2f, 2.0f);
+    const int bits = 10 + static_cast<int>(big * 20.0f);
+    for (int i = 0; i < bits; ++i) {
+        const float a = fx_random() * 6.2831853f;
+        const float speed = (0.4f + 1.2f * fx_random()) * (0.5f + big * 0.6f);
+        Particle p{};
+        p.kind = water ? Particle::Kind::Spray : Particle::Kind::Clod;
+        p.ground = at;
+        p.z = 1.0f;
+        p.vel = {std::cos(a) * speed, std::sin(a) * speed};
+        p.vz = (70.0f + 110.0f * fx_random()) * (0.6f + big * 0.5f);
+        p.life = 1.8f + 1.0f * fx_random();
+        p.size = 1.5f + 2.0f * fx_random();
+        p.grow = 0.0f;
+        static constexpr Color kEarth[3] = {{70, 56, 40, 255}, {98, 80, 58, 255}, {82, 94, 58, 255}};
+        p.color = water ? Color{222, 232, 236, 255} : kEarth[i % 3];
+        particles_.push_back(p);
+    }
+    const int puffs = 4 + static_cast<int>(big * 6.0f);
+    for (int i = 0; i < puffs; ++i) {
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = {at.x + (fx_random() - 0.5f) * 0.4f * big, at.y + (fx_random() - 0.5f) * 0.4f * big};
+        p.z = 2.0f + 6.0f * fx_random();
+        p.vel = {0.15f + (fx_random() - 0.5f) * 0.3f, -0.1f + (fx_random() - 0.5f) * 0.3f};
+        // A column of earth and smoke thrown up, the rest rolling out low round it.
+        p.vz = i % 3 == 0 ? 40.0f + 30.0f * big * fx_random() : 8.0f + 14.0f * fx_random();
+        p.life = 1.6f + 1.2f * fx_random() + big;
+        p.size = 3.0f + 4.0f * big * fx_random();
+        p.grow = 6.0f + 5.0f * fx_random();
+        const bool dark = big >= 1.2f && i % 2 == 0;
+        p.color = water ? Color{214, 222, 226, 170} : dark ? Color{52, 48, 44, 200} : Color{118, 106, 88, 190};
+        particles_.push_back(p);
+    }
+}
+
+// A shot: smoke out of the muzzle, blown along the barrel; a tank's or a
+// gun's much more of it, and the dust its blast kicks up off the ground.
+void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit& u) {
+    const engine::UnitTypeDef& def = engine::unit_type(u.type);
+    Vector2 f = to_vector2(u.facing);
+    const float l = std::hypot(f.x, f.y);
+    f = l > 0.0f ? Vector2{f.x / l, f.y / l} : Vector2{1.0f, 0.0f};
+    const Vector2 g = to_vector2(u.pos);
+    float reach = def.vehicle ? 0.5f : 0.25f;
+    float height = def.vehicle ? 8.0f : 9.0f;
+    if (def.tank) {
+        const Vector2 m = tank_muzzle(def.model);
+        reach = m.x;
+        height = m.y;
+    }
+    const bool big = def.vehicle || def.weapon.indirect;
+    const Vector2 muzzle{g.x + f.x * reach, g.y + f.y * reach};
+    const int puffs = big ? 5 : 1;
+    for (int i = 0; i < puffs; ++i) {
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = muzzle;
+        p.z = height;
+        const float k = big ? 0.4f + 0.9f * fx_random() : 0.3f;
+        p.vel = {f.x * k + (fx_random() - 0.5f) * 0.3f, f.y * k + (fx_random() - 0.5f) * 0.3f};
+        p.vz = 3.0f + 6.0f * fx_random();
+        p.life = big ? 1.1f + 0.8f * fx_random() : 0.5f;
+        p.size = big ? 2.5f + 2.0f * fx_random() : 1.2f;
+        p.grow = big ? 7.0f : 3.0f;
+        p.color = {186, 182, 172, static_cast<unsigned char>(big ? 190 : 140)};
+        particles_.push_back(p);
+    }
+    if (!def.tank && !def.weapon.indirect) return;
+    for (int i = 0; i < 6; ++i) {  // the blast off the ground
+        const float a = fx_random() * 6.2831853f;
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = {g.x + f.x * reach * 0.7f, g.y + f.y * reach * 0.7f};
+        p.z = 1.0f;
+        p.vel = {std::cos(a) * 0.9f, std::sin(a) * 0.9f};
+        p.vz = 2.0f;
+        p.life = 0.8f + 0.5f * fx_random();
+        p.size = 2.0f + 1.5f * fx_random();
+        p.grow = 6.0f;
+        p.color = {140, 126, 100, 160};
+        particles_.push_back(p);
+    }
+    (void)world;
+}
+
+// A tank on fire: smoke off its engine deck, grey while it's battered, black
+// and thick with flames licking up when it's barely going or burnt out.
+void WorldRenderer::spawn_fire(Vector2 at, float height, int wear, float dt) {
+    const float smoke_rate = wear >= 4 ? 6.0f : wear == 3 ? 7.0f : 3.0f;
+    const float flame_rate = wear >= 3 ? 10.0f : 0.0f;
+    // As many as the time since the last frame calls for.
+    auto count = [&](float rate) {
+        const float n = rate * dt;
+        return static_cast<int>(n) + (fx_random() < n - std::floor(n) ? 1 : 0);
+    };
+    for (int i = count(smoke_rate); i > 0; --i) {
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = {at.x + (fx_random() - 0.5f) * 0.15f, at.y + (fx_random() - 0.5f) * 0.15f};
+        p.z = height;
+        p.vel = {0.18f + (fx_random() - 0.5f) * 0.1f, -0.12f + (fx_random() - 0.5f) * 0.1f};
+        p.vz = 14.0f + 10.0f * fx_random();
+        p.life = 2.5f + 1.5f * fx_random();
+        p.size = 2.0f + 1.5f * fx_random();
+        p.grow = 4.0f + 3.0f * fx_random();
+        p.color = wear >= 3 ? Color{34, 32, 30, 200} : Color{112, 110, 106, 170};
+        p.age = fx_random() * dt;  // spread over the frame
+        particles_.push_back(p);
+    }
+    for (int i = count(flame_rate); i > 0; --i) {
+        Particle p{};
+        p.kind = Particle::Kind::Flame;
+        p.ground = {at.x + (fx_random() - 0.5f) * 0.2f, at.y + (fx_random() - 0.5f) * 0.2f};
+        p.z = height - 1.0f;
+        p.vel = {};
+        p.vz = 16.0f + 12.0f * fx_random();
+        p.life = 0.35f + 0.25f * fx_random();
+        p.size = 2.0f + 1.5f * fx_random();
+        p.grow = -3.0f;
+        p.color = {255, 200, 80, 230};
+        particles_.push_back(p);
+    }
+}
+
 void WorldRenderer::update(const engine::World& world, float dt) {
     const engine::TileMap& map = world.map();
     if (map.width() != cache_width_ || map.height() != cache_height_) {
@@ -486,6 +632,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (impact.tick < impacts_seen_until_ || !in_view(world, to_vector2(impact.pos))) continue;
         const float splash = to_float(impact.splash);
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
+        if (splash > 0.0f) spawn_burst(world, to_vector2(impact.pos), splash);
     }
     impacts_seen_until_ = world.tick();
 
@@ -493,14 +640,76 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     // to see, and nobody sees who dies in the fog).
     std::unordered_map<engine::EntityId, Remains> alive;
     for (const engine::Unit& u : world.units()) {
-        if (!u.inside && shows(world, u)) alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle};
+        if (u.inside || !shows(world, u)) continue;
+        auto unit = [](Vector2 v) {  // the engine keeps directions unnormalized
+            const float l = std::hypot(v.x, v.y);
+            return l > 0.0f ? Vector2{v.x / l, v.y / l} : Vector2{1.0f, 0.0f};
+        };
+        alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle, u.type, u.owner, unit(to_vector2(u.hull)),
+                       unit(to_vector2(u.facing)), static_cast<uint32_t>(u.id) * 2654435761u};
     }
     for (const auto& [id, last] : units_seen_) {
         if (alive.contains(id) || world.find_unit(id)) continue;
         remains_.push_back(last);
-        if (last.vehicle) blasts_.push_back({last.ground, 0.0f, 0.7f});
+        if (last.vehicle) {
+            blasts_.push_back({last.ground, 0.0f, 0.7f});
+            spawn_burst(world, last.ground, 0.8f);
+        }
     }
     units_seen_ = std::move(alive);
+
+    // Smoke out of the muzzles of whoever fired since the last frame; battered tanks smoking and burning.
+    std::unordered_map<engine::EntityId, engine::Tick> shots;
+    for (const engine::Unit& u : world.units()) {
+        if (u.last_shot_tick == engine::kNeverFired) continue;
+        shots[u.id] = u.last_shot_tick;
+        const auto seen = shots_seen_.find(u.id);
+        if (seen != shots_seen_.end() && u.last_shot_tick > seen->second && !u.inside && shows(world, u)) spawn_muzzle(world, u);
+    }
+    shots_seen_ = std::move(shots);
+    for (const engine::Unit& u : world.units()) {
+        const engine::UnitTypeDef& def = engine::unit_type(u.type);
+        if (!def.tank || u.inside || !shows(world, u)) continue;
+        const int wear = wear_of(u.hp, def.max_hp);
+        if (wear < 2) continue;
+        Vector2 h = to_vector2(u.hull);
+        const float l = std::hypot(h.x, h.y);
+        h = l > 0.0f ? Vector2{h.x / l, h.y / l} : Vector2{1.0f, 0.0f};
+        const Vector2 e = tank_engine(def.model);
+        spawn_fire({to_vector2(u.pos).x + h.x * e.x, to_vector2(u.pos).y + h.y * e.x}, e.y, wear, dt);
+    }
+    for (const Remains& r : remains_) {  // burnt-out tanks smoulder, burning for the first half minute
+        if (!engine::unit_type(r.type).tank || r.age > 100.0f) continue;
+        const Vector2 e = tank_engine(engine::unit_type(r.type).model);
+        const float ease = r.age < 30.0f ? 1.0f : 0.4f;
+        if (fx_random() < ease) spawn_fire({r.ground.x + r.hull.x * e.x, r.ground.y + r.hull.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
+    }
+    // The particles fly, fall, spread and fade.
+    for (Particle& p : particles_) {
+        p.age += dt;
+        p.ground = {p.ground.x + p.vel.x * dt, p.ground.y + p.vel.y * dt};
+        p.z += p.vz * dt;
+        p.size = std::max(0.3f, p.size + p.grow * dt);
+        switch (p.kind) {
+            case Particle::Kind::Smoke:
+                p.vz *= 1.0f - 0.6f * dt;
+                p.vel = {p.vel.x * (1.0f - 0.8f * dt) + 0.12f * dt, p.vel.y * (1.0f - 0.8f * dt) - 0.08f * dt};  // the wind
+                break;
+            case Particle::Kind::Clod:
+            case Particle::Kind::Spray:
+                p.vz -= 170.0f * dt;
+                if (p.z <= 0.0f && p.vz < 0.0f) {  // landed: lies there
+                    p.z = 0.0f;
+                    p.vz = 0.0f;
+                    p.vel = {};
+                    if (p.kind == Particle::Kind::Spray) p.age = p.life;
+                }
+                break;
+            case Particle::Kind::Flame: break;
+        }
+    }
+    std::erase_if(particles_, [](const Particle& p) { return p.age >= p.life; });
+    if (particles_.size() > 3000) particles_.erase(particles_.begin(), particles_.begin() + static_cast<long>(particles_.size() - 3000));
 
     // Structures that vanished came down: a cloud of dust, or a fuel fire.
     std::unordered_map<engine::EntityId, StructureSeen> standing;
@@ -527,7 +736,10 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     for (Remains& r : remains_) r.age += dt;
     std::erase_if(pings_, [](const Ping& p) { return p.age >= kPingLifetime; });
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
-    std::erase_if(remains_, [](const Remains& r) { return r.age >= (r.vehicle ? kWreckLifetime : kBodyLifetime); });
+    std::erase_if(remains_, [](const Remains& r) {
+        const float life = engine::unit_type(r.type).tank ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
+        return r.age >= life;
+    });
 }
 
 // --- Drawing -----------------------------------------------------------------
@@ -2582,6 +2794,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
+        const Remains* wreck = nullptr;  // a burnt-out tank
         float light = 1.0f;  // dimmer under the fog of war
     };
     std::vector<Drawable> drawables;
@@ -2721,6 +2934,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     std::vector<TrainCar> cars;
     collect_trains(world, alpha, cars);
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
+    for (const Remains& r : remains_) {
+        if (engine::unit_type(r.type).tank && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
+    }
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
     for (const Drawable& d : drawables) {
@@ -2734,6 +2950,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_building(map, *d.building);
         } else if (d.car) {
             draw_train_car(map, *d.car);
+        } else if (d.wreck) {
+            draw_wreck(map, *d.wreck);
         } else if (d.ruins) {
             draw_ruins(map, d.house_x, d.house_y);
         } else if (d.rock) {
@@ -2762,6 +2980,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     g_light = 1.0f;
     set_grain({});
+    draw_particles(map);
 
     // Fires: flames flickering over the burning ground.
     for (const engine::Fire& f : world.fires()) {
@@ -3609,6 +3828,7 @@ void WorldRenderer::draw_spoil_gullies(const engine::World& world, Rectangle vie
 
 void WorldRenderer::draw_remains(const engine::TileMap& map) const {
     for (const Remains& r : remains_) {
+        if (engine::unit_type(r.type).tank) continue;  // drawn whole, with the others (draw_wreck)
         const float lifetime = r.vehicle ? kWreckLifetime : kBodyLifetime;
         const float fade = std::clamp((lifetime - r.age) / 3.0f, 0.0f, 1.0f);  // fade out over the last 3 s
         const Vector2 p = on_terrain(map, r.ground);
@@ -4162,7 +4382,8 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
 
     if (engine::unit_type(type).tank) {
         const engine::TankModel model = model_of(u);
-        const int variant = static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()];
+        const int wear = wear_of(u.hp, engine::unit_type(type).max_hp);
+        const int variant = (static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()]) * 5 + wear;
         const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, variant, u.owner);
         const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, variant, u.owner);
         if (hull_sheet && turret_sheet) {
@@ -4584,6 +4805,15 @@ static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::TankModel::Co
 engine::TankModel model_of(const engine::Unit& u) { return engine::unit_type(u.type).model; }
 const TankLook& look_of(engine::TankModel m) { return kTankLooks[static_cast<size_t>(m)]; }
 float turret_ring_of(engine::TankModel m) { return look_of(m).turret_at; }
+Vector2 tank_muzzle(engine::TankModel m) {
+    const TankLook& t = look_of(m);
+    return {(t.turret_at + t.gun) * kVehicleScale, (t.deck + t.turret_h * 0.66f) * kVehicleScale};
+}
+Vector2 tank_engine(engine::TankModel m) {
+    const TankLook& t = look_of(m);
+    const float back = t.rear == Rear::Turbine || t.turret == TurretShape::Merkava ? -0.3f : -0.35f;
+    return {t.length * back * kVehicleScale, (t.deck + 1.0f) * kVehicleScale};
+}
 
 // A polygon solid with its top drawn in towards its middle by `taper`.
 void poly_solid(const Frame& fr, const Vector2* pts, int n, float z0, float z1, Color color, float taper = 0.0f) {
@@ -4611,11 +4841,31 @@ void camouflage(const Frame& fr, const TankLook& look, float a0, float a1, float
     }
 }
 
+// How worn a tank is: 0 whole, 1 scratched, 2 battered, 3 barely going, 4 a
+// burnt-out wreck. A piece of it (a skirt plate, an ERA box) is torn off the
+// more likely the more worn it is.
+bool torn(uint32_t key, int wear) { return static_cast<int>(tile_hash(static_cast<int>(key & 0xFFFF), static_cast<int>(key >> 16) + 7) % 5) < wear; }
+int wear_of(int32_t hp, int32_t max_hp) {
+    const int32_t pct = hp * 100 / std::max(1, max_hp);
+    return pct > 75 ? 0 : pct > 50 ? 1 : pct > 25 ? 2 : 3;
+}
+
+// Soot on a top: dark patches where it burned, more and bigger the more worn.
+void scorch(const Frame& fr, float a0, float a1, float c0, float c1, float z, int wear, uint32_t seed) {
+    for (int i = 0; i < wear * 2; ++i) {
+        const uint32_t hi = tile_hash(static_cast<int>(seed & 0xFFFF) + i * 17, i * 5 + 11);
+        const float a = a0 + (a1 - a0) * hash_unit(hi);
+        const float c = c0 + (c1 - c0) * hash_unit(hi >> 16);
+        const float r = 0.04f + 0.02f * static_cast<float>(wear) * hash_unit(hi >> 8);
+        patch(fr, a, c, r, r * 0.8f, z, i % 3 == 0 ? Color{64, 44, 32, 255} : Color{28, 26, 24, 255}, hi);
+    }
+}
+
 // The hull: the tracks with their road wheels (and return rollers, and the
 // sprocket and idler), the skirt or the fenders, the hull and its sloped
 // glacis, what's on its back, the reactive armor its side has on it, the
 // side's stripe. `frame` moves the track links on.
-void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, Color team) {
+void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, Color team, int wear) {
     const float a0 = -look.length * 0.5f;
     const float a1 = look.length * 0.5f;
     const float w = look.width;
@@ -4635,6 +4885,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     block(fr, a0, a1 - look.glacis, -hw, hw, 2.0f, look.deck, paint);
     block(fr, a1 - look.glacis, a1, -hw, hw, 2.0f, look.deck, shade(paint, 1.08f), look.glacis * 0.92f);
     camouflage(fr, look, a0 + 0.05f, a1 - look.glacis - 0.05f, -hw + 0.03f, hw - 0.06f, look.deck, 0x51u + static_cast<uint32_t>(look.length * 100.0f), 5);
+    scorch(fr, a0 + 0.04f, a1 - look.glacis - 0.04f, -hw + 0.03f, hw - 0.06f, look.deck, wear, 0x33u + static_cast<uint32_t>(look.length * 50.0f));
 
     // Reactive armor on the glacis: bricks (Kontakt-1), plates (Kontakt-5, Relikt, FY), Nozh's angled rows.
     const float g0 = a1 - look.glacis;
@@ -4646,6 +4897,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             for (int k = 0; k < 5; ++k) {
                 const float c = -hw + 0.03f + (2.0f * hw - 0.06f) * static_cast<float>(k) / 5.0f;
                 const float t = 0.2f + 0.38f * static_cast<float>(row);
+                if (torn(0x100u + static_cast<uint32_t>(row * 8 + k), wear)) continue;
                 const Color brick = shade(paint, 0.95f + 0.1f * static_cast<float>((k + row) % 2));
                 const Vector2 q[4] = {glacis_at(t, c), glacis_at(t, c + 0.065f), glacis_at(t + 0.28f, c + 0.065f), glacis_at(t + 0.28f, c)};
                 fill_quad(q[0], q[1], q[2], q[3], brick);
@@ -4659,6 +4911,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         for (int k = 0; k < n; ++k) {
             const float c = -hw + (2.0f * hw) * static_cast<float>(k) / static_cast<float>(n);
             const float cw = 2.0f * hw / static_cast<float>(n) - 0.01f;
+            if (torn(0x200u + static_cast<uint32_t>(k), wear)) continue;
             const Color slab = shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2) + (era == 3 ? 0.06f : 0.0f));
             const Vector2 q[4] = {glacis_at(0.05f, c), glacis_at(0.05f, c + cw), glacis_at(0.85f, c + cw), glacis_at(0.85f, c)};
             fill_quad(q[0], q[1], q[2], q[3], slab);
@@ -4678,6 +4931,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     // Its back: fuel drums and the unditching log; a gas turbine's grilles; stowage.
     switch (look.rear) {
         case Rear::Drums: {
+            if (wear >= 4) break;
             for (int k = 0; k < 4; ++k) {
                 const float a = a0 + 0.08f + 0.05f * static_cast<float>(k);
                 DrawLineV(fr.at(a, -hw + 0.05f, look.deck), fr.at(a, hw - 0.05f, look.deck), lit(shade(paint, 0.62f)));
@@ -4749,6 +5003,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         const float len = look.length - 0.4f;
         for (int k = 0; k < 5; ++k) {
             const float b0 = s0 + len * static_cast<float>(k) / 5.0f;
+            if (torn(0x300u + static_cast<uint32_t>(k), wear)) continue;
             side_block(near, b0 + 0.004f, b0 + len / 5.0f - 0.004f, hw, w + 0.01f + 0.006f * static_cast<float>(k % 2), 4.0f, 6.6f,
                        shade(paint, 0.84f + 0.05f * static_cast<float>(k % 2)));
         }
@@ -4758,6 +5013,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         const int panels = 6;
         for (int k = 0; k < panels; ++k) {
             const float b0 = s0 + len * static_cast<float>(k) / static_cast<float>(panels);
+            if (torn(0x400u + static_cast<uint32_t>(k), wear - 1)) continue;  // armored: harder to tear off
             side_block(near, b0 + 0.003f, b0 + len / static_cast<float>(panels) - 0.003f, hw, w + 0.012f, 3.0f, look.deck - 0.4f,
                        shade(paint, 0.86f + 0.05f * static_cast<float>(k % 2)));
         }
@@ -4766,6 +5022,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         if (look.era == EraKind::Tusk && era >= 1) {  // TUSK: reactive tiles over the skirt, in a grid
             for (int k = 0; k < 10; ++k) {
                 for (int row = 0; row < 2; ++row) {
+                    if (torn(0x500u + static_cast<uint32_t>(k * 2 + row), wear)) continue;
                     const float b = a0 + 0.1f + (look.length - 0.3f) * static_cast<float>(k) / 10.0f;
                     side_block(near, b, b + (look.length - 0.3f) / 10.0f - 0.006f, hw, w + 0.024f, 3.4f + 2.2f * static_cast<float>(row),
                                5.4f + 2.2f * static_cast<float>(row), shade(paint, 0.92f + 0.08f * static_cast<float>((k + row) % 2)));
@@ -4779,6 +5036,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         const int n = 8;
         for (int k = 0; k < n; ++k) {
             const float b = a0 + 0.06f + (look.length - 0.4f) * static_cast<float>(k) / static_cast<float>(n);
+            if (torn(0x600u + static_cast<uint32_t>(k), wear)) continue;
             side_block(near, b, b + (look.length - 0.4f) / static_cast<float>(n) - 0.006f, hw, w + 0.025f, 3.6f, 6.9f,
                        shade(paint, 0.94f + 0.08f * static_cast<float>(k % 2)));
             disc(fr.at(b + 0.02f, near * (w + 0.027f), 6.2f), 0.5f, shade(paint, 1.5f));
@@ -4787,13 +5045,14 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     if (skirt_boxes || covered || (look.era == EraKind::Fy && era >= 2)) {
         for (int k = 0; k < 3; ++k) {
             const float b = a1 - 0.32f + 0.085f * static_cast<float>(k);
+            if (torn(0x700u + static_cast<uint32_t>(k), wear)) continue;
             side_block(near, b, b + 0.078f, hw, w + 0.03f, 3.4f, 7.2f, shade(paint, 0.96f + 0.08f * static_cast<float>(k % 2)));
             disc(fr.at(b + 0.02f, near * (w + 0.032f), 6.4f), 0.5f, shade(paint, 1.5f));
             disc(fr.at(b + 0.058f, near * (w + 0.032f), 4.2f), 0.5f, shade(paint, 0.5f));
         }
     }
     const float sc = near * (w + (covered ? 0.03f : look.skirt == Skirt::None ? -0.08f : 0.016f));
-    fill_quad(fr.at(a0 + 0.2f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z1),
+    if (wear < 4) fill_quad(fr.at(a0 + 0.2f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z1),
               fr.at(a0 + 0.2f, sc, stripe_z1), team);
 }
 
@@ -4803,7 +5062,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
 // muzzle. The whip aerial is added after, a pixel thin (see bake_sprites).
 Vector2 aerial_foot(const TankLook& look) { return {-look.turret_r * 0.6f, -look.turret_r * 0.45f}; }
 
-void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era) {
+void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era, int wear) {
     const float z0 = look.deck;
     const float r = look.turret_r;
     const float h = look.turret_h;
@@ -4816,14 +5075,17 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
     auto gun = [&] {
         const float g0 = r * 0.8f;
         const Color tube = shade(paint, 0.6f);
-        barrel(tf, g0, look.gun, 0.0f, gun_z, 0.0f, look.gun_w, tube);
+        const float sag = wear >= 4 ? -6.0f : 0.0f;  // a burnt-out wreck's gun hangs
+        barrel(tf, g0, look.gun, 0.0f, gun_z, sag, look.gun_w, tube);
         for (const float k : {0.3f, 0.6f, 0.82f}) {  // the thermal sleeve's bands
             const float a = g0 + (look.gun - g0) * k;
-            DrawLineEx(tf.at(a - 0.015f, 0.0f, gun_z), tf.at(a + 0.015f, 0.0f, gun_z), look.gun_w + 0.8f, lit(shade(paint, 0.48f)));
+            const float z = gun_z + sag * (a - g0) / (look.gun - g0);
+            DrawLineEx(tf.at(a - 0.015f, 0.0f, z), tf.at(a + 0.015f, 0.0f, z), look.gun_w + 0.8f, lit(shade(paint, 0.48f)));
         }
         if (look.evacuator >= 0.0f) {
             const float a = g0 + (look.gun - g0) * look.evacuator;
-            DrawLineEx(tf.at(a - 0.035f, 0.0f, gun_z), tf.at(a + 0.035f, 0.0f, gun_z), look.gun_w + 1.4f, lit(shade(paint, 0.72f)));
+            const float z = gun_z + sag * (a - g0) / (look.gun - g0);
+            DrawLineEx(tf.at(a - 0.035f, 0.0f, z), tf.at(a + 0.035f, 0.0f, z), look.gun_w + 1.4f, lit(shade(paint, 0.72f)));
         }
     };
     if (!gun_front) gun();
@@ -4908,6 +5170,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
         }
     }
     camouflage(tf, look, -r * 0.8f, r * 0.6f, -r * 0.7f, r * 0.6f, z0 + h, 0x77u + static_cast<uint32_t>(r * 1000.0f), 3);
+    scorch(tf, -r * 0.8f, r * 0.6f, -r * 0.7f, r * 0.6f, z0 + h, wear, 0x99u + static_cast<uint32_t>(r * 700.0f));
 
     // Reactive armor on the turret, by its kind and how far its side has got.
     const int k1 = look.era == EraKind::SovietK1 ? std::min(era, 1) : era;
@@ -4915,7 +5178,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
         // Smoke grenade launchers forward on either side; a stowage box towards the back.
         for (int k = 0; k < 3; ++k) disc(tf.at(r * 0.1f - 0.03f * static_cast<float>(k), sgn * r * 0.95f, z0 + h * 0.66f), 0.9f, {50, 52, 44, 255});
         if (!western) block(tf, -r * 0.85f, -r * 0.25f, sgn > 0 ? r * 0.75f : -r, sgn > 0 ? r : -r * 0.75f, z0 + 1.0f, z0 + h * 0.75f, shade(paint, 0.9f));
-        const bool wedges = (look.era == EraKind::Soviet && era >= 2);
+        const bool wedges = (look.era == EraKind::Soviet && era >= 2) && !torn(0x800u + (sgn > 0 ? 1u : 0u), wear);
         if (wedges) {  // Kontakt-5's (and Relikt's) wedges, their bricks in chevrons
             const Vector2 base[4] = {{r, sgn * 0.035f}, {r * 0.65f, sgn * r * 0.85f}, {r * 0.1f, sgn * r * 0.95f}, {r * 0.3f, sgn * 0.035f}};
             const Vector2 top[4] = {{r * 0.85f, sgn * 0.035f}, {r * 0.5f, sgn * r * 0.75f}, {r * 0.15f, sgn * r * 0.8f}, {r * 0.3f, sgn * 0.035f}};
@@ -4954,6 +5217,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
             if (std::fabs(t) < 0.18f) continue;  // the gun
             const float a = std::cos(t) * r * 0.75f;
             const float c = std::sin(t) * r * 0.7f;
+            if (torn(0x900u + static_cast<uint32_t>(k), wear)) continue;
             block(tf, a - 0.025f, a + 0.025f, c - 0.022f, c + 0.022f, z0 + h * 0.7f, z0 + h * 1.12f, shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2)));
         }
     }
@@ -4985,6 +5249,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
 // a line a pixel darker where one part meets another below or to the right,
 // and a dark outline round the whole.
 void pixelate(Image& img, const std::vector<Color>& palette) {
+    std::vector<int16_t> cache(32768, -1);  // a colour, five bits a channel: its palette entry
     auto* px = static_cast<Color*>(img.data);
     const int w = img.width;
     const int h = img.height;
@@ -4992,6 +5257,11 @@ void pixelate(Image& img, const std::vector<Color>& palette) {
     for (int i = 0; i < w * h; ++i) {
         if (px[i].a < 100) {
             px[i] = {0, 0, 0, 0};
+            continue;
+        }
+        const size_t key = static_cast<size_t>((px[i].r >> 3) << 10 | (px[i].g >> 3) << 5 | (px[i].b >> 3));
+        if (cache[key] >= 0) {
+            px[i] = palette[static_cast<size_t>(cache[key])];
             continue;
         }
         int best = 0;
@@ -5006,6 +5276,7 @@ void pixelate(Image& img, const std::vector<Color>& palette) {
                 best = static_cast<int>(k);
             }
         }
+        cache[key] = static_cast<int16_t>(best);
         px[i] = palette[static_cast<size_t>(best)];
     }
     std::vector<Color> out(px, px + w * h);
@@ -5065,31 +5336,43 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
     struct Wanted {
         engine::PlayerId owner;
         engine::TankModel model;
-        int era;  // reactive armor
+        int era;   // reactive armor
+        int wear;  // 0 whole .. 3 barely going, 4 a wreck
     };
     std::vector<Wanted> wanted;
     for (const engine::Unit& u : world.units()) {
-        if (!engine::unit_type(u.type).tank) continue;
-        const Wanted w{u.owner, model_of(u), world_era_[u.owner % world_era_.size()]};
+        const engine::UnitTypeDef& def = engine::unit_type(u.type);
+        if (!def.tank) continue;
+        const int era = world_era_[u.owner % world_era_.size()];
+        // Every wear up front (cheap: a row of directions at once), so a hit never waits for a bake.
+        for (int wear = 0; wear <= 4; ++wear) wanted.push_back({u.owner, def.model, wear == 4 ? 0 : era, wear});
         if (dump_dir()) {  // every kind of armor, to look at
-            for (int era = 0; era <= 3; ++era) wanted.push_back({w.owner, w.model, era});
-        } else {
-            wanted.push_back(w);
+            for (int e = 0; e <= 3; ++e) wanted.push_back({u.owner, def.model, e, 0});
         }
     }
-    for (const auto& [owner, model, era] : wanted) {
-        const int variant = static_cast<int>(model) * 4 + era;
+    for (const Remains& r : remains_) {
+        if (engine::unit_type(r.type).tank) wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 4});
+    }
+    for (const auto& [owner, model, era, wear] : wanted) {
+        const int variant = (static_cast<int>(model) * 4 + era) * 5 + wear;
         if (sheets_.count({{static_cast<int>(SpritePart::TankHull), variant}, owner})) continue;
-        const TankLook& look = look_of(model);
+        const TankLook& look_base = look_of(model);
+        TankLook look = look_base;
+        if (wear >= 4) {  // burnt out: the paint gone black and rusty
+            look.paint = mix(look_base.paint, {46, 40, 34, 255}, 0.75f);
+            look.camo = Camo::None;
+        } else if (wear == 3) {
+            look.paint = mix(look_base.paint, {52, 48, 42, 255}, 0.3f);
+        }
         constexpr int kW = 128;
         constexpr int kH = 96;
         constexpr int kDirs = 32;
         const Vector2 origin{64.0f, 62.0f};
         if (bake_target_.id == 0) {
-            bake_target_ = LoadRenderTexture(kW, kH);
+            bake_target_ = LoadRenderTexture(kW * kDirs, kH);
             SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
         }
-        const Color team = theme::player_color(owner);
+        const Color team = wear >= 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
         const Color paint = look.paint;
         std::vector<Color> palette;
         for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
@@ -5102,7 +5385,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         palette.push_back({150, 116, 76, 255});
         for (const float k : {0.6f, 0.85f, 1.1f, 1.3f}) palette.push_back(shade(team, k));
         for (const Color c : {Color{28, 28, 26, 255}, Color{44, 44, 40, 255}, Color{62, 64, 58, 255}, Color{92, 94, 84, 255},
-                              Color{124, 126, 112, 255}, Color{70, 96, 110, 255}, Color{210, 206, 170, 255}}) {
+                              Color{124, 126, 112, 255}, Color{70, 96, 110, 255}, Color{210, 206, 170, 255},
+                              Color{28, 26, 24, 255}, Color{64, 44, 32, 255}, Color{96, 62, 40, 255}}) {  // and soot, rust
             palette.push_back(c);
         }
         const float light = g_light;
@@ -5111,40 +5395,43 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             const int frames = part == SpritePart::TankHull ? 2 : 1;
             Image atlas = GenImageColor(kW * kDirs, kH * frames, {0, 0, 0, 0});
             for (int frame = 0; frame < frames; ++frame) {
+                BeginTextureMode(bake_target_);
+                ClearBackground({0, 0, 0, 0});
+                std::array<Vector2, kDirs> aerials{};
                 for (int d = 0; d < kDirs; ++d) {
                     const float a = static_cast<float>(d) * 6.2831853f / kDirs;
                     const Vector2 f{std::cos(a), std::sin(a)};
                     constexpr float kScale = kVehicleScale;
                     const Vector2 F = iso_offset(f);
                     const Vector2 S = iso_offset({-f.y, f.x});
-                    const Frame fr{origin, {F.x * kScale, F.y * kScale}, {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
-                    BeginTextureMode(bake_target_);
-                    ClearBackground({0, 0, 0, 0});
+                    const Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
+                                   {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
                     if (part == SpritePart::TankHull) {
-                        draw_tank_hull(fr, look, frame, era, team);
+                        draw_tank_hull(fr, look, frame, era, team, wear);
                     } else {
-                        draw_tank_turret(fr, look, team, era);
-                    }
-                    EndTextureMode();
-                    Image img = LoadImageFromTexture(bake_target_.texture);
-                    ImageFlipVertical(&img);
-                    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-                    pixelate(img, palette);
-                    if (part == SpritePart::TankTurret) {
-                        // The whip aerial: a pixel thin, no outline, short.
+                        draw_tank_turret(fr, look, team, era, wear);
                         const Vector2 af = aerial_foot(look);
-                        const Vector2 foot = fr.at(af.x, af.y, look.deck + look.turret_h);
+                        aerials[static_cast<size_t>(d)] = fr.at(af.x, af.y, look.deck + look.turret_h);
+                    }
+                }
+                EndTextureMode();
+                Image img = LoadImageFromTexture(bake_target_.texture);
+                ImageFlipVertical(&img);
+                ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+                pixelate(img, palette);
+                if (part == SpritePart::TankTurret && wear < 3) {
+                    for (const Vector2 foot : aerials) {  // the whip aerial: a pixel thin, no outline, short (shot away when battered)
                         const int x = static_cast<int>(std::lround(foot.x));
                         const int y = static_cast<int>(std::lround(foot.y));
                         ImageDrawLine(&img, x, y, x, y - 11, {36, 36, 32, 255});
                     }
-                    ImageDraw(&atlas, img, {0, 0, static_cast<float>(kW), static_cast<float>(kH)},
-                              {static_cast<float>(d * kW), static_cast<float>(frame * kH), static_cast<float>(kW), static_cast<float>(kH)}, WHITE);
-                    UnloadImage(img);
                 }
+                ImageDraw(&atlas, img, {0, 0, static_cast<float>(kW * kDirs), static_cast<float>(kH)},
+                          {0, static_cast<float>(frame * kH), static_cast<float>(kW * kDirs), static_cast<float>(kH)}, WHITE);
+                UnloadImage(img);
             }
             if (const char* dump = dump_dir()) {  // to look at them, for development
-                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era,
+                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era, wear,
                                               static_cast<int>(owner)));
             }
             SpriteSheet sheet;
@@ -5256,6 +5543,71 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
             DrawLineV(muzzle, on_terrain(map, to_vector2(u.last_shot_at), lift), {255, 235, 160, 140});
         }
     }
+}
+
+// Smoke in soft puffs fading as it spreads, clods of earth dark against the
+// ground, flames going from yellow to red as they rise and die, spray.
+void WorldRenderer::draw_particles(const engine::TileMap& map) const {
+    for (const Particle& p : particles_) {
+        const float t = std::clamp(p.age / p.life, 0.0f, 1.0f);
+        const Vector2 g = on_terrain(map, p.ground);
+        const Vector2 at{g.x, g.y - p.z};
+        switch (p.kind) {
+            case Particle::Kind::Smoke: {
+                const float alpha = static_cast<float>(p.color.a) / 255.0f * (1.0f - t) * std::min(1.0f, p.age * 8.0f);
+                DrawCircleV(at, p.size, ColorAlpha(p.color, alpha));
+                DrawCircleV({at.x - p.size * 0.3f, at.y - p.size * 0.3f}, p.size * 0.55f, ColorAlpha(shade(p.color, 1.15f), alpha * 0.6f));
+                break;
+            }
+            case Particle::Kind::Clod:
+            case Particle::Kind::Spray: {
+                const float alpha = t > 0.7f ? (1.0f - t) / 0.3f : 1.0f;
+                if (p.z > 0.5f) DrawCircleV({g.x + p.z * 0.25f, g.y}, p.size * 0.7f, ColorAlpha({0, 0, 0, 255}, 0.25f * alpha));  // its shadow
+                DrawRectangleRec({at.x - p.size * 0.5f, at.y - p.size * 0.5f, p.size, p.size}, ColorAlpha(p.color, alpha));
+                break;
+            }
+            case Particle::Kind::Flame: {
+                const Color c = t < 0.4f ? mix({255, 236, 150, 255}, {255, 170, 50, 255}, t / 0.4f)
+                                         : mix({255, 170, 50, 255}, {200, 60, 30, 255}, (t - 0.4f) / 0.6f);
+                DrawEllipse(static_cast<int>(at.x), static_cast<int>(at.y), p.size * 0.8f, p.size * 1.4f, ColorAlpha(c, 0.9f * (1.0f - t * 0.6f)));
+                break;
+            }
+        }
+    }
+}
+
+// A tank knocked out: its hull burnt out, the skirts and ERA blown off; the
+// turret on it, or, where the rounds in the carousel went up (the T-72s,
+// T-80s, T-90s, T-62s, the Karrar), blown off and lying upturned beside it,
+// a black hole where it sat.
+void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) const {
+    const engine::UnitTypeDef& def = engine::unit_type(r.type);
+    const int variant = (static_cast<int>(def.model) * 4) * 5 + 4;
+    const SpriteSheet* hull = sheet(SpritePart::TankHull, variant, r.owner);
+    const SpriteSheet* turret = sheet(SpritePart::TankTurret, variant, r.owner);
+    if (!hull || !turret) return;
+    auto unit = [](Vector2 v) {
+        const float l = std::hypot(v.x, v.y);
+        return l > 0.0f ? Vector2{v.x / l, v.y / l} : Vector2{1.0f, 0.0f};
+    };
+    const Frame fr = make_frame(map, r.ground, unit(r.hull));
+    const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
+    const float light = g_light;
+    g_light = light * (0.4f + 0.6f * fade);
+    draw_sprite(*hull, fr.o, fr.f, 0);
+    const Vector2 ring = fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f);
+    const bool tossed = def.crew_survives_percent <= 20;
+    if (tossed) {
+        const float deck = look_of(def.model).deck * kVehicleScale;
+        DrawEllipse(static_cast<int>(ring.x), static_cast<int>(ring.y - deck), 7.0f, 3.5f, lit({16, 14, 12, 255}));  // where it sat
+        const float a = hash_unit(r.seed) * 6.2831853f;
+        const Vector2 lie = on_terrain(map, {r.ground.x + std::cos(a) * 0.75f, r.ground.y + std::sin(a) * 0.75f});
+        const float b = hash_unit(r.seed >> 8) * 6.2831853f;
+        draw_sprite(*turret, {lie.x, lie.y + deck}, {std::cos(b), std::sin(b)}, 0);
+    } else {
+        draw_sprite(*turret, ring, unit(r.facing), 0);
+    }
+    g_light = light;
 }
 
 void WorldRenderer::draw_blasts(const engine::TileMap& map) const {

@@ -70,7 +70,36 @@ private:
         Vector2 ground;
         float age;
         bool vehicle;
+        engine::UnitTypeId type = engine::UnitTypeId::Rifleman;
+        engine::PlayerId owner = 0;
+        Vector2 hull{1.0f, 0.0f};    // a tank's, when it was knocked out
+        Vector2 facing{1.0f, 0.0f};
+        uint32_t seed = 0;
     };
+    // Smoke, flames, clods of earth, spray: flying about for a moment. Only
+    // for the eye: nothing in the game depends on them.
+    struct Particle {
+        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray };
+        Kind kind;
+        Vector2 ground;  // tiles
+        float z;         // pixels above the ground
+        Vector2 vel;     // tiles a second
+        float vz;        // pixels a second, up
+        float life;      // seconds
+        float size;      // pixels
+        float grow;      // pixels a second
+        Color color;
+        float age = 0.0f;
+    };
+    std::vector<Particle> particles_;
+    std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
+    uint32_t fx_rng_ = 0x2545F491u;
+    float fx_random();  // 0..1
+    void spawn_burst(const engine::World& world, Vector2 at, float splash);
+    void spawn_muzzle(const engine::World& world, const engine::Unit& u);
+    void spawn_fire(Vector2 at, float height, int wear, float dt);
+    void draw_particles(const engine::TileMap& map) const;
+    void draw_wreck(const engine::TileMap& map, const Remains& r) const;
     struct StructureSeen {
         Vector2 center;
         engine::StructureType type;
