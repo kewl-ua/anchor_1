@@ -409,6 +409,8 @@ bool gun_toward_viewer(Vector2 dir, int dirs) {
 }
 // A tile of height in a Frame's pixels: the view is from 30 degrees up.
 constexpr float kZPerTile = 39.2f;
+// A scout's platform up a tree: how high (pixels).
+constexpr float kTreePostZ = 24.0f;
 // A towed gun's or an aircraft's sprite sheets by its wear.
 int small_variant(engine::VehicleModel m, int wear) { return static_cast<int>(m) * 8 + wear; }  // (6, 7: an aircraft's crashed wreck, burnt, rusted)
 // A towed gun, an aircraft: a sprite of its own, its wreck too.
@@ -5060,6 +5062,7 @@ float drawn_height(const engine::Structure& s) {
         case engine::StructureType::GasStation: return 30.0f;
         case engine::StructureType::Elevator: return 112.0f;
         case engine::StructureType::Pillbox: return 10.0f;
+        case engine::StructureType::ObservationPost: return s.post == engine::PostKind::Tree ? 26.0f : 10.0f;
         case engine::StructureType::Bridge:
         case engine::StructureType::Airfield:
         case engine::StructureType::Dugout: return 4.0f;
@@ -7447,6 +7450,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                          std::span<const engine::EntityId> selection, engine::EntityId selected_structure,
                          const BuildGhost* ghost, std::span<const engine::TilePos> trench) const {
     const engine::TileMap& map = world.map();
+    drawn_world_ = &world;
     const Rectangle view = camera.visible_world_rect();
     auto is_selected = [&](engine::EntityId id) {
         return std::binary_search(selection.begin(), selection.end(), id);
@@ -7550,6 +7554,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         bool ruins = false;
         bool rock = false;
         const engine::Structure* barn = nullptr;  // a spacious village building, drawn whole
+        const engine::Structure* post = nullptr;  // a scout's observation post
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
@@ -7565,6 +7570,18 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
         drawables.push_back({.depth = g.x + g.y, .unit = &u});
+    }
+    // Observation posts: ours as they are, others' as last seen (a hair nearer than the trees on their tile).
+    for (const engine::Structure& s : world.structures()) {
+        if (s.type == engine::StructureType::ObservationPost && s.owner == viewer_ && !s.tiles.empty()) {
+            drawables.push_back({.depth = static_cast<float>(s.tiles.front().x + s.tiles.front().y) + 1.02f, .post = &s});
+        }
+    }
+    for (const auto& [id, s] : remembered_) {
+        if (s.type == engine::StructureType::ObservationPost && !s.tiles.empty()) {
+            drawables.push_back({.depth = static_cast<float>(s.tiles.front().x + s.tiles.front().y) + 1.02f, .post = &s,
+                                 .light = reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight});
+        }
     }
     for (const engine::Projectile& p : world.projectiles()) {
         const Vector2 g = lerp(to_vector2(p.prev_pos), to_vector2(p.pos), alpha);
@@ -7689,7 +7706,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout &&
                s.type != engine::StructureType::Airfield && s.type != engine::StructureType::Apartment &&
                s.type != engine::StructureType::CellTower && s.type != engine::StructureType::GasStation &&
-               s.type != engine::StructureType::Elevator;  // drawn with the ground's tiles, like houses
+               s.type != engine::StructureType::Elevator &&  // drawn with the ground's tiles, like houses
+               s.type != engine::StructureType::ObservationPost;  // (drawn apart)
     };
     for (const engine::Structure& s : world.structures()) {
         if (is_building(s) && s.owner == viewer_) add_building(s, 1.0f);
@@ -7777,11 +7795,27 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             if (!draw_baked(want)) draw_by_hand(map, want);
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
+        } else if (d.post) {
+            // The post, and the scout up his tree on it (in a stump, a hide, he's not to be seen).
+            const engine::Unit* man = nullptr;
+            for (const engine::Unit& u : world.units()) {
+                if (u.owner == d.post->owner && world.post_of(u) && world.post_of(u)->id == d.post->id && shows(world, u)) man = &u;
+            }
+            draw_post(map, *d.post, man != nullptr);
+            if (man && d.post->post == engine::PostKind::Tree) {
+                const engine::TilePos t = d.post->tiles.front();
+                draw_soldier(*man, on_terrain(map, {static_cast<float>(t.x) + 0.5f, static_cast<float>(t.y) + 0.5f}, kTreePostZ + 1.0f),
+                             unit_facing(*man));
+            }
         } else if (d.barn) {
             const int stage = damage_stage(d.damage);
             BuildingBake want{d.barn->id, static_cast<uint32_t>(stage | d.barn->bombed << 2), 1, *d.barn};
             want.damage = stage_damage(stage);
             if (!draw_baked(want)) draw_by_hand(map, want);
+            if (d.barn->type == engine::StructureType::CellTower && d.barn->antenna != engine::kNoOwner &&
+                (d.barn->antenna == viewer_ || reveal_ || world.sees(viewer_, *d.barn))) {
+                draw_tower_aerial(map, *d.barn, d.damage);
+            }
         } else if (d.house_x >= 0) {
             const int stage = damage_stage(d.damage);
             BuildingBake want{uint64_t{1} << 40 | static_cast<uint64_t>(d.house_y * map.width() + d.house_x), static_cast<uint32_t>(stage), 0};
@@ -7847,13 +7881,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     for (const engine::Bearing& b : world.bearings()) {
         if (b.owner != viewer_) continue;
         const engine::Unit* station = world.find_unit(b.station);
-        if (!station) continue;
+        if (!station && !world.find_structure(b.station)) continue;
         const Vector2 from = to_vector2(b.from);
         Vector2 dir = to_vector2(b.dir);
         const float len = std::hypot(dir.x, dir.y);
         if (len <= 0.0f) continue;
         dir = {dir.x / len, dir.y / len};
-        const float reach = to_float(engine::unit_type(station->type).df_range);
+        const float reach = to_float(station ? engine::unit_type(station->type).df_range : engine::kTowerDfRange);  // (an aerial up a tower)
         for (float t = 0.5f; t < reach; t += 1.0f) {  // dashes, a tile apart
             const Vector2 a{from.x + dir.x * t, from.y + dir.y * t};
             const Vector2 z{from.x + dir.x * (t + 0.5f), from.y + dir.y * (t + 0.5f)};
@@ -8804,6 +8838,21 @@ void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u,
     const Vector2 ground = unit_ground_pos(u, alpha);
     const Vector2 feet = on_terrain(map, ground);
     const Vector2 facing = unit_facing(u);
+    if (!def.vehicle && drawn_world_) {
+        // In his post: inside the stump or the hide (only it shows); up a tree, on its platform (drawn with it).
+        if (drawn_world_->post_of(u)) return;  // (drawn with his post)
+        // Up a cell tower's mast with an aerial: climbing, then at work up top.
+        if (u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MountAntenna && u.work > 0) {
+            const engine::TilePos t = map.clamp_tile({static_cast<int32_t>(std::floor(to_float(u.order_point.x))),
+                                                      static_cast<int32_t>(std::floor(to_float(u.order_point.y)))});
+            const Vector2 mast{static_cast<float>(t.x) + 0.5f, static_cast<float>(t.y) + 0.5f};
+            const Vector2 off{ground.x - mast.x, ground.y - mast.y};
+            const float ol = std::max(0.01f, std::hypot(off.x, off.y));
+            const float up = std::min(1.0f, static_cast<float>(u.work) / static_cast<float>(engine::kAntennaWork) * 1.4f);
+            const Vector2 at{mast.x + off.x / ol * 0.18f, mast.y + off.y / ol * 0.18f};
+            return draw_soldier(u, on_terrain(map, at, up * 74.0f), {-off.x / ol, -off.y / ol});
+        }
+    }
 
     fill_ground_ellipse(feet, to_float(def.radius) * 0.9f, {0, 0, 0, 70});  // shadow
     if (def.vehicle) {
@@ -8872,6 +8921,9 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u
     const float t = static_cast<float>(now) + static_cast<float>(u.id % 17) * 0.37f;
     const Kit kit = kit_of(u.type);
     if (u.riding) return {Pose::Sit, 0};  // on the armor
+    if (u.order == Order::Ability && u.order_ability == AbilityId::MountAntenna && u.work > 0) {
+        return {Pose::Climb, u.work < engine::kAntennaWork * 5 / 7 ? static_cast<int>(t * 3.0f) % 2 : 0};  // up the mast, then at work
+    }
     if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
     if (u.type == UnitTypeId::Worker && u.order == Order::Gather && u.work > 0) {
         const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
@@ -8938,6 +8990,103 @@ void WorldRenderer::draw_riders(const engine::World& world, const engine::Unit& 
     }
     std::sort(seats.begin(), seats.end(), [](const Seat& a, const Seat& b) { return a.at.x + a.at.y < b.at.x + b.at.y; });
     for (const Seat& s : seats) draw_soldier(*s.man, on_terrain(map, s.at, deck), s.facing);
+}
+
+// A scout's observation post, as he made it: an artificial stump out in the
+// open (bark, the cut's rings on top), a hide of branches heaped in the
+// crops, the reeds, the rubble; a platform of poles up a tree in a wood,
+// its ladder up the trunk, branches tied round. A dark slit towards the
+// sector; manned, the glint of his binoculars in it now and then.
+void WorldRenderer::draw_post(const engine::TileMap& map, const engine::Structure& s, bool manned) const {
+    if (s.tiles.empty()) return;
+    const Vector2 c{static_cast<float>(s.tiles.front().x) + 0.5f, static_cast<float>(s.tiles.front().y) + 0.5f};
+    Vector2 f = to_vector2(s.facing);
+    const float fl = std::hypot(f.x, f.y);
+    f = fl > 0.0f ? Vector2{f.x / fl, f.y / fl} : Vector2{1.0f, 0.0f};
+    Vector2 fs = iso_offset(f);
+    const float sl = std::hypot(fs.x, fs.y);
+    fs = sl > 0.0f ? Vector2{fs.x / sl, fs.y / sl} : Vector2{1.0f, 0.0f};
+    const Vector2 base = on_terrain(map, c);
+    const uint32_t h = s.id * 2654435761u;
+    const bool glint = manned && std::fmod(static_cast<float>(GetTime()) + static_cast<float>(s.id % 7), 3.0f) < 0.25f;
+    auto slit = [&](Vector2 at) {
+        DrawRectangleRec({std::round(at.x - 1.5f), std::round(at.y), 3.0f, 1.0f}, lit({24, 20, 16, 255}));
+        if (glint) DrawRectangleRec({std::round(at.x), std::round(at.y), 1.0f, 1.0f}, {226, 236, 255, 255});
+    };
+    switch (s.post) {
+        case engine::PostKind::Stump: {
+            constexpr float r = 4.5f;
+            constexpr float tall = 10.0f;
+            DrawEllipse(static_cast<int>(base.x + 2.0f), static_cast<int>(base.y + 1.0f), r + 2.5f, (r + 2.5f) * 0.45f, lit({0, 0, 0, 60}));
+            for (const float side : {-1.0f, 1.0f}) {  // roots
+                fill_triangle({base.x + side * (r + 2.5f), base.y + 1.0f}, {base.x + side * (r - 1.0f), base.y - 3.0f},
+                              {base.x + side * (r - 1.5f), base.y + 1.5f}, {84, 62, 42, 255});
+            }
+            DrawEllipse(static_cast<int>(base.x), static_cast<int>(base.y), r, r * 0.5f, lit({80, 60, 42, 255}));
+            DrawRectangleRec({base.x - r, base.y - tall, r * 2.0f, tall}, lit({96, 72, 50, 255}));
+            DrawRectangleRec({base.x - r, base.y - tall, r * 0.7f, tall}, lit({116, 90, 62, 255}));  // lit on the left
+            DrawRectangleRec({base.x + r * 0.45f, base.y - tall, r * 0.55f, tall}, lit({74, 56, 40, 255}));
+            for (int i = 0; i < 4; ++i) {  // bark ridges
+                const float x = base.x - r + 1.5f + static_cast<float>(i) * 2.2f + static_cast<float>((h >> (i * 3)) & 1u);
+                DrawLineV({x, base.y - tall + 2.0f}, {x, base.y - 1.0f}, lit({62, 46, 32, 255}));
+            }
+            DrawEllipse(static_cast<int>(base.x), static_cast<int>(base.y - tall), r, r * 0.5f, lit({176, 140, 94, 255}));
+            DrawEllipseLines(static_cast<int>(base.x), static_cast<int>(base.y - tall), r * 0.6f, r * 0.3f, lit({140, 108, 72, 255}));
+            if (fs.y > -0.3f) slit({base.x + fs.x * r * 0.6f, base.y - tall * 0.62f + fs.y * 1.5f});
+            break;
+        }
+        case engine::PostKind::Hide: {
+            static constexpr Color kLeaves[4] = {{70, 88, 44, 255}, {94, 108, 56, 255}, {112, 96, 62, 255}, {58, 72, 38, 255}};
+            DrawEllipse(static_cast<int>(base.x + 1.0f), static_cast<int>(base.y + 1.0f), 9.0f, 4.0f, lit({0, 0, 0, 60}));
+            for (int i = 0; i < 14; ++i) {  // branches heaped into a low dome, the back ones first
+                const float a = (static_cast<float>(i) / 14.0f) * 3.14159f;
+                const float ring = i % 2 == 0 ? 1.0f : 0.55f;
+                const Vector2 p{base.x - std::cos(a) * 7.0f * ring, base.y - 2.0f - std::sin(a) * 5.0f * ring - (1.0f - ring) * 2.0f};
+                disc(p, 2.4f + static_cast<float>((h >> i) & 1u), kLeaves[(h >> (i * 2)) % 4]);
+            }
+            for (int i = 0; i < 3; ++i) {  // twigs sticking out
+                const float x = base.x - 5.0f + static_cast<float>(i) * 5.0f;
+                DrawLineV({x, base.y - 6.0f}, {x + (i - 1) * 2.0f, base.y - 10.0f}, lit({92, 70, 48, 255}));
+            }
+            if (fs.y > -0.3f) slit({base.x + fs.x * 4.0f, base.y - 4.0f + fs.y * 1.0f});
+            break;
+        }
+        case engine::PostKind::Tree: {
+            // The ladder up the trunk.
+            const Vector2 foot{base.x - 3.0f, base.y};
+            for (const float dx : {0.0f, 3.0f}) DrawLineV({foot.x + dx, foot.y}, {foot.x + dx, foot.y - kTreePostZ}, lit({126, 96, 60, 255}));
+            for (float y = 3.0f; y < kTreePostZ; y += 4.0f) DrawLineV({foot.x, foot.y - y}, {foot.x + 3.0f, foot.y - y}, lit({146, 112, 70, 255}));
+            // The platform of poles.
+            const Vector2 q[4] = {on_terrain(map, {c.x - 0.2f, c.y - 0.2f}, kTreePostZ), on_terrain(map, {c.x + 0.2f, c.y - 0.2f}, kTreePostZ),
+                                  on_terrain(map, {c.x + 0.2f, c.y + 0.2f}, kTreePostZ), on_terrain(map, {c.x - 0.2f, c.y + 0.2f}, kTreePostZ)};
+            fill_quad(q[0], q[1], q[2], q[3], {138, 108, 70, 255});
+            for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit({92, 70, 46, 255}));
+            // Branches tied round its back and sides.
+            for (int i = 0; i < 7; ++i) {
+                const float a = 3.14159f + static_cast<float>(i) / 6.0f * 3.14159f;
+                disc({(q[0].x + q[2].x) * 0.5f + std::cos(a) * 9.0f, (q[0].y + q[2].y) * 0.5f - 2.0f + std::sin(a) * 4.0f}, 2.6f,
+                     i % 2 == 0 ? Color{64, 90, 44, 255} : Color{84, 108, 54, 255});
+            }
+            break;
+        }
+    }
+}
+
+// A direction finder's aerial up a cell tower: a cross-arm with its four
+// dipoles over the top platform, the set's box under it with the side's
+// tape, its cable down the mast.
+void WorldRenderer::draw_tower_aerial(const engine::TileMap& map, const engine::Structure& s, float damage) const {
+    if (stage_of(damage) >= 3) return;  // came down with the mast
+    const Vector2 foot = on_terrain(map, to_vector2(s.center));
+    const Vector2 at{foot.x, foot.y - 80.0f};
+    const Color metal = lit({46, 48, 46, 255});
+    const Vector2 ends[4] = {{at.x - 8.0f, at.y + 2.0f}, {at.x + 8.0f, at.y - 2.0f}, {at.x - 5.0f, at.y - 3.0f}, {at.x + 5.0f, at.y + 3.0f}};
+    DrawLineEx(ends[0], ends[1], 1.2f, metal);
+    DrawLineEx(ends[2], ends[3], 1.2f, metal);
+    for (const Vector2& e : ends) DrawLineEx({e.x, e.y - 6.0f}, {e.x, e.y + 5.0f}, 1.0f, lit({30, 32, 30, 255}));
+    DrawRectangleRec({at.x - 2.0f, at.y + 1.0f, 4.0f, 4.0f}, lit({86, 94, 70, 255}));
+    DrawRectangleRec({at.x - 1.0f, at.y + 5.0f, 2.0f, 2.0f}, theme::player_color(s.antenna));
+    DrawLineV({at.x + 1.0f, at.y + 5.0f}, {foot.x + 1.0f, foot.y - 12.0f}, ColorAlpha({30, 30, 30, 255}, 0.6f));
 }
 
 // A soldier in our pixel art (see soldiers.h), his pose as he's doing;

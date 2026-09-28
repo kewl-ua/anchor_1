@@ -301,6 +301,11 @@ private:
     void draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const;
     // The men riding on top of an IFV's armor, sitting on its deck.
     void draw_riders(const engine::World& world, const engine::Unit& carrier, float alpha) const;
+    // A scout's observation post (a stump, a hide, a platform up a tree); a
+    // direction finder's aerial up a cell tower; the world being drawn.
+    void draw_post(const engine::TileMap& map, const engine::Structure& s, bool manned) const;
+    void draw_tower_aerial(const engine::TileMap& map, const engine::Structure& s, float damage) const;
+    mutable const engine::World* drawn_world_ = nullptr;
     // Foot soldiers in pixel art (see soldiers.h): each kit in each side's colours, baked when first drawn.
     mutable std::map<std::pair<int, int>, SpriteSheet> soldier_sheets_;
     const SpriteSheet& soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const;

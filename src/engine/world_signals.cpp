@@ -54,6 +54,17 @@ void World::take_bearings() {
             bearings_.push_back({station.owner, station.id, radio.id, station.pos, dir});
         }
     }
+    // Aerials up cell towers, high over everything: farther still.
+    for (const Structure& tower : structures_) {
+        if (tower.type != StructureType::CellTower || tower.antenna >= kMaxPlayers) continue;
+        if (tower.owner != kNoOwner && tower.owner != tower.antenna) continue;
+        for (const Unit& radio : units_) {
+            if (radio.owner == tower.antenna || radio.silent || !unit_type(radio.type).emitter) continue;
+            const FixedVec2 dir = radio.pos - tower.center;
+            if (dir.length_sq_raw() > square_raw(kTowerDfRange)) continue;
+            bearings_.push_back({tower.antenna, tower.id, radio.id, tower.center, dir});
+        }
+    }
 }
 
 Fixed World::relay_reach(const Unit& relay) const {

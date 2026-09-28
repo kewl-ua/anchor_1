@@ -34,7 +34,7 @@ int32_t structure_sight(const Structure& s) {
         role == StructureType::CellTower || role == StructureType::GasStation || role == StructureType::Elevator) {
         return 0;  // the garrison looks instead
     }
-    if (is_fieldwork(s.type) || s.type == StructureType::Dugout) return 0;           // just holes in the ground
+    if (is_fieldwork(s.type) || s.type == StructureType::Dugout || s.type == StructureType::ObservationPost) return 0;  // holes in the ground; a post's man looks
     if (!s.built) return kSiteSight;
     return s.type == StructureType::Headquarters ? kHeadquartersSight : kBuildingSight;
 }
@@ -53,6 +53,12 @@ bool in_cover(const TileMap& map, const Unit& u) {
 }
 
 }  // namespace
+
+const Structure* World::post_of(const Unit& u) const {
+    if (u.inside || u.riding || u.moving || unit_type(u.type).vehicle) return nullptr;
+    const Structure* s = structure_at(map_.clamp_tile(tile_of(u.pos)));
+    return s && s->type == StructureType::ObservationPost && s->owner == u.owner ? s : nullptr;
+}
 
 // Scouts take up an observation post and watch the sector towards the point.
 void World::apply_observe(const Command& cmd) {
@@ -261,7 +267,10 @@ void World::update_vision() {
             if (s->type == StructureType::Dugout) continue;  // underground: sees nothing
             Fixed sight = def.sight;
             if (s->type == StructureType::Apartment) sight += Fixed::from_int(kApartmentSightBonus);
-            if (s->type == StructureType::CellTower) sight += Fixed::from_int(kTowerSightBonus);
+            if (s->type == StructureType::CellTower) {  // a scout up the mast: three times as far
+                sight = u.type == UnitTypeId::Scout ? Fixed::from_raw(def.sight.raw * kTowerScoutSightPercent / 100)
+                                                    : sight + Fixed::from_int(kTowerSightBonus);
+            }
             if (s->type == StructureType::Elevator) sight += Fixed::from_int(kElevatorSightBonus);
             look(u.owner, s->center, sight, window_height(s->id), s->id);
         } else {
@@ -285,10 +294,13 @@ void World::update_vision() {
         const int64_t dy = (u.order_point - from).y.raw >> 8;
         if (dx == 0 && dy == 0) continue;
         const int32_t optics = has_upgrade(u.owner, UpgradeId::Optics) ? kOpticsSectorTiles : 0;
-        const int32_t radius = def.sector_range.to_int() + optics + kSightPerLevel * map_.elevation(tile.x, tile.y);
+        const Structure* post = post_of(u);
+        const bool up_a_tree = post && post->post == PostKind::Tree;  // over the woods
+        const int32_t radius = def.sector_range.to_int() + optics + (up_a_tree ? kTreePostRange : 0) +
+                               kSightPerLevel * map_.elevation(tile.x, tile.y);
         Sector sector{u.owner, from, {}, u.order_point - from, radius};
         smoke_near(from, radius);
-        for (int32_t i : sight_from(tile, radius, eye_height(def), 0)) {
+        for (int32_t i : sight_from(tile, radius, up_a_tree ? kTreePostEye : eye_height(def), 0)) {
             if (hidden_by_smoke(from, i)) continue;
             const int64_t tx = i % map_.width() - tile.x;
             const int64_t ty = i / map_.width() - tile.y;
@@ -313,7 +325,7 @@ void World::update_vision() {
         const TilePos tile = map_.clamp_tile(tile_of(u.pos));
         const Tick reveal = weapon_of(u).indirect ? kGunRevealTicks : kRevealTicks;
         const bool fired = u.last_shot_tick != kNeverFired && tick_ - u.last_shot_tick < reveal;
-        const bool hidden = in_cover(map_, u) && !fired;
+        const bool hidden = (in_cover(map_, u) || post_of(u)) && !fired;
         for (size_t p = 0; p < kMaxPlayers; ++p) {
             const auto player = static_cast<PlayerId>(p);
             if (!present[p] || player == u.owner) continue;

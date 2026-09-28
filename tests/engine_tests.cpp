@@ -4075,6 +4075,100 @@ void test_direction_finding() {
     CHECK(!seen(sim, 0, tank));
 }
 
+// A scout up a cell tower sees three times as far all round; anyone else
+// up it, 8 tiles farther.
+void test_scout_up_a_tower() {
+    auto sees_far = [](UnitTypeId who, int32_t x) {
+        Simulation sim(1, TileMap(70, 30));
+        World& w = sim.world_for_setup();
+        const EntityId tower = w.place_structure(StructureType::CellTower, kNoOwner, {10, 15}, 1, 1);
+        const EntityId man = w.spawn_unit(0, who, at(8, 15));
+        issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = {man}, .target_unit = tower});
+        for (int i = 0; i < 200; ++i) sim.step();
+        CHECK(sim.world().find_unit(man)->inside == tower);
+        return sim.world().visible(0, {x, 15});
+    };
+    const int32_t scout = unit_type(UnitTypeId::Scout).sight.to_int();
+    CHECK(sees_far(UnitTypeId::Scout, 10 + scout * kTowerScoutSightPercent / 100 - 2));
+    CHECK(!sees_far(UnitTypeId::Rifleman, 10 + scout * kTowerScoutSightPercent / 100 - 2));
+    CHECK(sees_far(UnitTypeId::Rifleman, 10 + unit_type(UnitTypeId::Rifleman).sight.to_int() + kTowerSightBonus - 2));
+}
+
+// A signaller takes a direction finder's aerial up a cell tower: from up
+// there it takes bearings on enemy radios farther off than a DF station on
+// the ground does, and with a station's bearing across it fixes them. The
+// enemy's man going up the tower takes it down.
+void test_antenna_on_a_tower() {
+    Simulation sim(1, TileMap(70, 40));
+    World& w = sim.world_for_setup();
+    const EntityId tower = w.place_structure(StructureType::CellTower, kNoOwner, {10, 20}, 1, 1);
+    const EntityId signaller = w.spawn_unit(0, UnitTypeId::Signaler, at(6, 20));
+    const EntityId radio = w.spawn_unit(1, UnitTypeId::Signaler, at(10 + kTowerDfRange.to_int() - 4, 20));
+    CHECK(kTowerDfRange > unit_type(UnitTypeId::DfStation).df_range);
+    for (int i = 0; i < 10; ++i) sim.step();
+    CHECK(bearings_on(sim.world(), radio) == 0);
+    issue(sim, use_ability(0, {signaller}, AbilityId::MountAntenna, 10, 20));
+    for (Tick i = 0; i < kAntennaWork / 2; ++i) sim.step();
+    CHECK(sim.world().find_structure(tower)->antenna == kNoOwner);  // still up there at it
+    for (Tick i = 0; i < kAntennaWork + 100; ++i) sim.step();
+    CHECK(sim.world().find_structure(tower)->antenna == 0);
+    CHECK(sim.world().find_unit(signaller)->order == Order::Idle && sim.world().find_unit(signaller)->inside == 0);
+    CHECK(bearings_on(sim.world(), radio) == 1 && !seen(sim, 0, radio));
+    // A DF station's bearing from the side: fixed.
+    const EntityId station = w.spawn_unit(0, UnitTypeId::DfStation, at(40, 2));
+    w.unit_for_setup(station)->deployed = true;
+    for (int i = 0; i < 6; ++i) sim.step();
+    CHECK(bearings_on(sim.world(), radio) == 2 && seen(sim, 0, radio));
+    // The enemy climbs the tower: the aerial comes down.
+    const EntityId enemy = w.spawn_unit(1, UnitTypeId::Rifleman, at(12, 22));
+    issue(sim, Command{.type = CommandType::Garrison, .player = 1, .units = {enemy}, .target_unit = tower});
+    for (int i = 0; i < 200; ++i) sim.step();
+    CHECK(sim.world().find_unit(enemy) && sim.world().find_unit(enemy)->inside == tower);
+    CHECK(sim.world().find_structure(tower)->antenna == kNoOwner);
+    CHECK(bearings_on(sim.world(), radio) == 1);  // the station's alone
+}
+
+// A scout makes an observation post where he stands, as the ground allows:
+// a stump in the open, a hide in the crops, a platform up a tree in a wood.
+// Observing from it he's hidden (in the open a watcher 5 tiles off sees him,
+// not in the stump); up a tree he sees farther over the woods.
+void test_observation_posts() {
+    auto make_post = [](Terrain ground, bool build, bool& hidden, bool& far) {
+        TileMap map(50, 20);
+        map.set_terrain(10, 10, ground);
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, post());
+        if (build) {
+            issue(sim, use_ability(0, {scout}, AbilityId::BuildPost, 30, 10));
+            for (Tick i = 0; i < kPostWork + 10; ++i) sim.step();
+        } else {
+            issue(sim, make_order(CommandType::Observe, 0, {scout}, 30, 10));
+            for (int i = 0; i < 10; ++i) sim.step();
+        }
+        CHECK(sim.world().find_unit(scout)->order == Order::Observe);
+        w.spawn_unit(1, UnitTypeId::Truck, at(10, 15));
+        for (Tick i = 0; i < 3 * kVisionInterval; ++i) sim.step();
+        hidden = !seen(sim, 1, scout);
+        const int32_t reach = unit_type(UnitTypeId::Scout).sector_range.to_int() + kTreePostRange / 2;
+        far = sim.world().visible(0, {10 + reach, 10});
+        const Structure* s = sim.world().structure_at({10, 10});
+        return s && s->type == StructureType::ObservationPost && s->owner == 0 ? static_cast<int>(s->post) : -1;
+    };
+    bool hidden = false;
+    bool far = false;
+    CHECK(make_post(Terrain::Grass, false, hidden, far) == -1);
+    CHECK(!hidden && !far);  // out in the open, seen
+    CHECK(make_post(Terrain::Grass, true, hidden, far) == static_cast<int>(PostKind::Stump));
+    CHECK(hidden && !far);
+    CHECK(make_post(Terrain::Crops, true, hidden, far) == static_cast<int>(PostKind::Hide));
+    CHECK(hidden);
+    CHECK(make_post(Terrain::Forest, true, hidden, far) == static_cast<int>(PostKind::Tree));
+    CHECK(hidden && far);
+    CHECK(make_post(Terrain::Forest, false, hidden, far) == -1);
+    CHECK(!far);  // in the wood, on the ground: no farther
+}
+
 // The signals barracks hires the signallers, command vehicles and DF
 // stations. Every radio can go quiet; the DF station has none to switch off.
 void test_signals_barracks() {
@@ -6408,6 +6502,9 @@ int main() {
     test_demolition_charges();
     test_couriers_reach_silent_units();
     test_direction_finding();
+    test_scout_up_a_tower();
+    test_antenna_on_a_tower();
+    test_observation_posts();
     test_signals_barracks();
     test_aircraft_fly_missions();
     test_strike_follows_the_target();

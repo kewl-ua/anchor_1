@@ -694,6 +694,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .detection = tiles(4),
         .stealthy = true,
         .sector_range = tiles(15),
+        .abilities = {AbilityId::BuildPost},
+        .ability_count = 1,
     },
     {
         // Lighter than a rifleman, deadlier up close: storms trenches and houses.
@@ -869,8 +871,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .train_time = seconds(15),
         .rounds_capacity = 60,
         .rounds_per_supply = 30,
-        .abilities = {AbilityId::RadioSilence},
-        .ability_count = 1,
+        .abilities = {AbilityId::RadioSilence, AbilityId::MountAntenna},
+        .ability_count = 2,
         .emitter = true,
         .relay_range = tiles(6),
     },
@@ -1103,6 +1105,11 @@ constexpr AbilityDef kAbilities[] = {
                 .reload = seconds(4), .projectile_speed = tiles_per_second(5), .splash_radius = kNoSplash,
                 .accuracy = 90, .miss_spread = tiles(2), .structure_damage = 80, .guided = true},
      .needs = UpgradeId::Atgm},
+    {.name = "DF antenna up a cell tower: it takes bearings on enemy radios far and wide", .label = "Antenna",
+     .target = AbilityTarget::Point, .range = tiles(0), .cooldown = 0},
+    // As the ground allows: up a tree in a wood, a hide in the crops or the rubble, else an artificial stump.
+    {.name = "Observation post here, watching a direction: hidden in it (up a tree: sees farther)", .label = "Post",
+     .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -1190,6 +1197,8 @@ constexpr StructureDef kStructureTypes[] = {
     // Ten beds; the red cross on the roof.
     {.name = "Field hospital", .max_hp = 800, .armor = {0, 10, 50}, .capacity = 10,
      .buildable = true, .width = 2, .height = 2, .cost = {0, 50, 100, 0, 0}, .build_time = seconds(25)},
+    // A scout's: branches, a hollow stump, a platform up a tree. Flimsy.
+    {.name = "Observation post", .max_hp = 60, .armor = {0, 0, 40}},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

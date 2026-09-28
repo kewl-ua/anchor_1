@@ -50,8 +50,14 @@ enum class StructureType : uint8_t {
     Quarters,          // living barracks: bunks for the men, like AoE's houses
     Workshop,          // a motor pool: vehicles parked by it get repaired
     Hospital,          // a field hospital: the wounded are healed in its beds
+    ObservationPost,   // a scout's, on one tile, watching `facing` (see PostKind)
     Count,
 };
+
+// What a scout's observation post is, by the ground he made it on: up a tree
+// in a wood; a hide of branches in the crops, the reeds, the rubble; out in
+// the open, an artificial stump he sits in (as the old field manuals have it).
+enum class PostKind : uint8_t { Stump, Tree, Hide };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
 inline constexpr size_t kMaxRoster = 5;  // the grid's top row
 
@@ -163,6 +169,11 @@ struct Structure {
     // flats has the section there brought down (how it looks, nothing else).
     uint8_t bombed = 0;
     std::array<uint8_t, 3> bomb_at{};
+
+    // A cell tower: whose direction finder's aerial is up it (kNoOwner: none).
+    PlayerId antenna = kNoOwner;
+    // An observation post: what it is.
+    PostKind post = PostKind::Stump;
 
     // Where the units it hires go (AoE's rally point): rear troops to work
     // if it's on the wood or the stone, trucks to collect there.

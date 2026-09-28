@@ -504,6 +504,50 @@ void World::update_ability(Unit& u) {
         case AbilityId::Demolish:
             return plant_charge(u);
 
+        case AbilityId::MountAntenna: {
+            // Up a cell tower that's nobody's or ours with a direction finder's aerial.
+            const Structure* tower = structure_at(map_.clamp_tile(tile_of(u.order_point)));
+            if (!tower || tower->type != StructureType::CellTower || tower->antenna == u.owner ||
+                (tower->owner != kNoOwner && tower->owner != u.owner)) {
+                return finish_ability(u);
+            }
+            if (distance_sq_to(*tower, u.pos) > square_raw(Fixed::from_int(1))) {
+                navigate(u, tower->center, u.order_path, map_.clamp_tile(tile_of(tower->center)), false);
+                return;
+            }
+            if (++u.work < kAntennaWork) return;
+            find_structure_mut(tower->id)->antenna = u.owner;
+            return finish_ability(u);
+        }
+
+        case AbilityId::BuildPost: {
+            // Where he stands, watching the way he was shown: up a tree in a
+            // wood, a hide in the crops, the reeds, the rubble; out in the open,
+            // a stump. Done, he takes it up.
+            if (at_point) return finish_ability(u);
+            const TilePos t = map_.clamp_tile(tile_of(u.pos));
+            const Structure* there = structure_at(t);
+            if (there && (there->type != StructureType::ObservationPost || there->owner != u.owner)) return finish_ability(u);
+            u.facing = to_point;
+            if (!there && ++u.work < kPostWork) return;
+            const Terrain ground = map_.terrain(t);
+            const PostKind kind = ground == Terrain::Forest || ground == Terrain::Trail ? PostKind::Tree
+                                  : ground == Terrain::Crops || ground == Terrain::Orchard || ground == Terrain::Swamp ||
+                                            ground == Terrain::Ruins || ground == Terrain::Crater
+                                      ? PostKind::Hide
+                                      : PostKind::Stump;
+            const EntityId id = there ? there->id : place_fieldwork(StructureType::ObservationPost, u.owner, t, to_point);
+            if (Structure* s = find_structure_mut(id)) {
+                if (!there) s->post = kind;
+                s->facing = to_point;
+            }
+            const FixedVec2 watch = u.order_point;
+            finish_ability(u);
+            u.order = Order::Observe;
+            u.order_point = watch;
+            return;
+        }
+
         case AbilityId::SwitchAmmo:
         case AbilityId::RadioSilence:
         case AbilityId::CallSupply:

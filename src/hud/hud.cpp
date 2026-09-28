@@ -788,6 +788,18 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text(TextFormat("+%d%% cover against fire from the front.", engine::kParapetCover), area.x, line2,
                       kCardFontSize, theme::kTextDim);
             return;
+        case engine::StructureType::ObservationPost: {
+            static constexpr const char* kKinds[] = {"An artificial stump out in the open", "A hide of branches",
+                                                     "A platform up a tree"};
+            draw_text(TextFormat("%s: a scout observing from it stays hidden.", kKinds[static_cast<int>(s.post)]), area.x, line2,
+                      kCardFontSize, theme::kText);
+            if (s.post == engine::PostKind::Tree) {
+                draw_text(TextFormat("Up there he sees %d tiles farther over the woods.", engine::kTreePostRange), area.x, line3,
+                          kCardFontSize, theme::kTextDim);
+            }
+            draw_text("Firing gives him away.", area.x, line4, kCardFontSize, theme::kTextDim);
+            return;
+        }
         case engine::StructureType::Dugout:
             draw_text(TextFormat("Shelter: %d / %d inside. Bullets and fragments don't reach them.",
                                  static_cast<int>(s.garrison.size()), def.capacity),
@@ -824,8 +836,15 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
             draw_text("Nothing behind it is seen past it.", area.x, line4, kCardFontSize, theme::kTextDim);
             return;
         case engine::StructureType::CellTower:
-            draw_text(TextFormat("A spotter up the mast sees %d tiles farther.", engine::kTowerSightBonus), area.x, line2,
-                      kCardFontSize, theme::kText);
+            draw_text(TextFormat("A scout up the mast sees %d%% as far; anyone else %d tiles farther.", engine::kTowerScoutSightPercent,
+                                 engine::kTowerSightBonus),
+                      area.x, line2, kCardFontSize, theme::kText);
+            if (s.antenna != engine::kNoOwner) {
+                draw_text(TextFormat("A DF aerial up it: bearings on enemy radios within %d tiles.", engine::kTowerDfRange.to_int()),
+                          area.x, line3, kCardFontSize, theme::kText);
+                draw_text("The enemy's man going up takes it down.", area.x, line4, kCardFontSize, theme::kWarning);
+                return;
+            }
             draw_text(TextFormat("Held by our men, it relays our radio within %d tiles.", engine::kTowerRelay.to_int()),
                       area.x, line3, kCardFontSize, theme::kTextDim);
             draw_text("A few shells bring it down, and him with it.", area.x, line4, kCardFontSize, theme::kWarning);

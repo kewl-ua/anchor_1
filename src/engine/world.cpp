@@ -318,6 +318,7 @@ bool World::enter(Unit& u, Structure& s) {
     if (s.owner != kNoOwner && s.owner != u.owner) return false;
     s.garrison.push_back(u.id);
     s.owner = u.owner;
+    if (s.type == StructureType::CellTower && s.antenna != kNoOwner && s.antenna != u.owner) s.antenna = kNoOwner;  // the enemy's aerial: down with it
     u.inside = s.id;
     u.pos = s.center;
     u.prev_pos = s.center;
@@ -489,7 +490,7 @@ void World::collapse(const Structure& s) {
         rubble = Terrain::Grass;  // filled in, cut, torn down, cratered
     }
     for (const TilePos& t : s.tiles) {
-        if (s.type == StructureType::Parapet) {  // just a mound on the ground
+        if (s.type == StructureType::Parapet || s.type == StructureType::ObservationPost) {  // just a mound, a stump, branches on the ground
             structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
             continue;
         }
@@ -1905,6 +1906,8 @@ uint64_t World::checksum() const {
         mix(s.build_progress);
         mix(s.bombed);
         for (const uint8_t b : s.bomb_at) mix(b);
+        mix(s.antenna);
+        mix(static_cast<uint8_t>(s.post));
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
         mix(s.parapet ? 1 : 0);

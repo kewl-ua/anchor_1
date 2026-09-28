@@ -871,6 +871,83 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if ((options.scene == "tower" || options.scene == "posts") && options.mode == Options::Mode::Offline) {
+        // Offline. "tower": at the cell tower nearest our base, a scout goes up
+        // it, a signaller climbs it with a DF aerial. "posts": three scouts make
+        // observation posts ahead, as the ground there allows: in the open (a
+        // stump), in the crops (a hide), in a wood (up a tree).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        const engine::TileMap& map = world.map();
+        auto nearest = [&](Vector2 from, auto wanted) {
+            std::optional<engine::TilePos> best;
+            float best_d = 1e9f;
+            for (int y = 0; y < map.height(); ++y) {
+                for (int x = 0; x < map.width(); ++x) {
+                    if (!wanted(x, y)) continue;
+                    const float d = std::hypot(static_cast<float>(x) + 0.5f - from.x, static_cast<float>(y) + 0.5f - from.y);
+                    if (d < best_d) {
+                        best_d = d;
+                        best = engine::TilePos{x, y};
+                    }
+                }
+            }
+            return best;
+        };
+        auto center = [](engine::TilePos t) { return engine::FixedVec2{engine::Fixed::from_int(t.x) + engine::Fixed::from_ratio(1, 2),
+                                                                       engine::Fixed::from_int(t.y) + engine::Fixed::from_ratio(1, 2)}; };
+        if (options.scene == "tower") {
+            const auto t = nearest(b, [&](int x, int y) {
+                const engine::Structure* s = world.structure_at({x, y});
+                return s && s->type == engine::StructureType::CellTower;
+            });
+            if (!t) return std::nullopt;
+            const engine::Structure* tower = world.structure_at(*t);
+            const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, center({t->x - 1, t->y + 1}));
+            const engine::EntityId signaller = w.spawn_unit(me, engine::UnitTypeId::Signaler, center({t->x + 1, t->y}));
+            game.submit({.type = engine::CommandType::Garrison, .units = {scout}, .target_unit = tower->id});
+            game.submit({.type = engine::CommandType::Ability, .units = {signaller}, .target = tower->center,
+                         .ability = static_cast<uint8_t>(engine::AbilityId::MountAntenna)});
+            return render::to_vector2(tower->center);
+        }
+        // Out in the open by a wood's edge; a patch of crops sown beside.
+        const Vector2 front = render::to_vector2(ahead(12.0f, 0.0f));
+        const auto open = nearest(front, [&](int x, int y) {
+            for (int dy = -2; dy <= 4; ++dy) {
+                for (int dx = -2; dx <= 2; ++dx) {
+                    if (!map.contains_tile(x + dx, y + dy) || map.terrain(x + dx, y + dy) != engine::Terrain::Grass ||
+                        world.structure_at({x + dx, y + dy})) {
+                        return false;
+                    }
+                }
+            }
+            for (int dx = -4; dx <= -2; ++dx) {
+                if (map.contains_tile(x + dx, y - 2) && map.terrain(x + dx, y - 2) == engine::Terrain::Forest) return true;
+            }
+            return false;
+        });
+        if (!open) return std::nullopt;
+        for (int dy = 3; dy <= 4; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) w.map_for_setup().set_terrain(open->x + dx, open->y + dy, engine::Terrain::Crops);
+        }
+        std::optional<engine::TilePos> wood;
+        for (int dx = -2; dx >= -4 && !wood; --dx) {
+            if (map.terrain(open->x + dx, open->y - 2) == engine::Terrain::Forest) wood = engine::TilePos{open->x + dx, open->y - 2};
+        }
+        const engine::FixedVec2 watch = ahead(40.0f, 0.0f);
+        for (const engine::TilePos t : {*open, engine::TilePos{open->x, open->y + 3}, *wood}) {
+            const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, center(t));
+            game.submit({.type = engine::CommandType::Ability, .units = {scout}, .target = watch,
+                         .ability = static_cast<uint8_t>(engine::AbilityId::BuildPost)});
+        }
+        return Vector2{static_cast<float>(open->x) + 0.5f, static_cast<float>(open->y) + 0.5f};
+    }
+
     if (options.scene == "riders" && options.mode == Options::Mode::Offline) {
         // Offline: a BMP-2 full inside with six more men riding on its armor,
         // driving across the field; a BTR-82A beside it the same, parked.

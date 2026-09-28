@@ -310,6 +310,19 @@ inline constexpr Fixed kTowerRelay = Fixed::from_int(15);
 // fires down as from this much higher ground (elevation levels).
 inline constexpr int32_t kApartmentSightBonus = 3;
 inline constexpr int32_t kTowerSightBonus = 8;
+// A scout up a cell tower sees this far, all round (percent of his sight).
+inline constexpr int32_t kTowerScoutSightPercent = 300;
+// A signaller takes a direction finder's aerial up a cell tower in this long;
+// from up there it takes bearings on enemy radios this far off, for whoever
+// put it up, while the tower stands and the enemy doesn't hold it (the
+// enemy's man going up takes it down).
+inline constexpr Tick kAntennaWork = 15 * kTicksPerSecond;
+inline constexpr Fixed kTowerDfRange = Fixed::from_int(45);
+// A scout makes an observation post in this long. Observing from it, he's
+// hidden (as in a wood); up a tree he sees this much farther over the woods.
+inline constexpr Tick kPostWork = 10 * kTicksPerSecond;
+inline constexpr int32_t kTreePostRange = 4;
+inline constexpr Fixed kTreePostEye = Fixed::from_int(2);
 inline constexpr uint8_t kUpperFloorLevels = 2;
 inline constexpr int32_t kElevatorSightBonus = 6;
 // Spoils: fuel in a gas station's tanks, grain in an elevator. Whoever holds
@@ -636,6 +649,8 @@ public:
     const std::vector<Structure>& structures() const { return structures_; }
     const Structure* find_structure(EntityId id) const;
     const Structure* structure_at(TilePos tile) const;
+    // The observation post of his own he's in (a man not moving on its tile), or null.
+    const Structure* post_of(const Unit& u) const;
     // Setup: a player's building on a w x h block of tiles starting at `origin`.
     EntityId place_structure(StructureType type, PlayerId owner, TilePos origin, int32_t w, int32_t h);
     // Whether a building of this type fits with its top-left tile at `origin`:

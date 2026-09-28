@@ -144,6 +144,8 @@ enum class AbilityId : uint8_t {
     RadioSilence,  // radios: go quiet (direction finders lose it, orders come by courier) or back on air
     CallSupply,    // radios: call the nearest free tanker / ammunition truck over
     Atgm,          // IFV: a guided anti-tank missile at an enemy vehicle (needs the launchers)
+    MountAntenna,  // signaller: up a cell tower with a direction finder's aerial
+    BuildPost,     // scout: an observation post where he stands, as the ground allows, watching a direction
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
