@@ -124,6 +124,10 @@ private:
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};
+    // Trees in pixel art: for each kind and how cut up, a row of variants.
+    mutable std::map<int, SpriteSheet> tree_sheets_;  // kind * kTreeStages + stage
+    mutable RenderTexture2D tree_target_{};
+    void bake_trees() const;
     mutable std::array<int, 4> world_era_{};  // each side's reactive armor, as last baked
     void bake_sprites(const engine::World& world) const;
     const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;

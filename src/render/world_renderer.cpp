@@ -781,6 +781,8 @@ void for_each_visible_tile(const engine::TileMap& map, Rectangle view, Fn fn) {
     }
 }
 
+Color mix(Color a, Color b, float t);  // below, with the ground's colours
+
 // A filled circle with as few sides as its size needs (a forest is many of them).
 void disc(Vector2 centre, float radius, Color color) {
     const int sides = std::clamp(static_cast<int>(radius * 1.6f), 6, 18);
@@ -817,8 +819,42 @@ Color g_bark{72, 54, 38, 255};
 // Bare branches in a crown's oval, from the trunk's top up and out: when the
 // leaves are going, then gone, broken off short the worse it's been hit, a
 // twig or two on each; splintered pale where they snapped.
+void branch(Vector2 p, float a, float len, float width, int depth, uint32_t seed) {
+    const Vector2 end{p.x + std::cos(a) * len, p.y + std::sin(a) * len * 0.9f};
+    // The thin branches darker than the bark of the trunk (a birch's twigs are brown, not white).
+    const Color wood = width > 1.8f ? g_bark : mix(g_bark, {64, 52, 42, 255}, 0.65f);
+    DrawLineEx(p, end, width, lit(shade(wood, 0.9f)));
+    if (width > 1.6f) DrawLineV({p.x - 0.5f, p.y}, {end.x - 0.5f, end.y}, lit(shade(wood, 1.3f)));  // lit on the left
+    const float r = hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF), depth * 31 + static_cast<int>(a * 10.0f)));
+    if (depth == 0) return;
+    if (depth < 2 && r < g_bare * 0.45f) {  // snapped off here: the pale wood
+        disc(end, std::max(0.8f, width * 0.6f), {206, 190, 150, 255});
+        return;
+    }
+    const float spread = 0.35f + 0.25f * r;
+    branch(end, a - spread, len * 0.62f, std::max(1.0f, width * 0.66f), depth - 1, seed * 2654435761u + 1u);
+    branch(end, a + spread, len * 0.58f, std::max(1.0f, width * 0.62f), depth - 1, seed * 2246822519u + 7u);
+}
+
+// A crown's bare branches, when its leaves are going or gone: three or four
+// limbs up and out of the trunk's top, forking twice into twigs.
+void draw_bare_crown(Vector2 c, float w, float h, uint32_t seed) {
+    const Vector2 foot{c.x, c.y + h * 0.45f};
+    const int limbs = 3 + static_cast<int>(seed % 2);
+    for (int i = 0; i < limbs; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(limbs - 1);
+        const float a = -2.45f + 1.75f * t + (hash_unit(tile_hash(static_cast<int>(seed >> 3) + i, 11)) - 0.5f) * 0.3f;  // up and out
+        const float len = std::max(w, h) * (0.4f + 0.15f * hash_unit(tile_hash(static_cast<int>(seed >> 5) + i, 13)));
+        branch(foot, a, len, 2.4f, std::max(w, h) > 22.0f ? 3 : 2, seed + static_cast<uint32_t>(i) * 977u);
+    }
+}
+
 void draw_limbs(Vector2 c, float w, float h, uint32_t seed) {
     if (g_bare <= 0.1f) return;
+    if (g_bare >= 0.6f) {
+        draw_bare_crown(c, w, h, seed);
+        return;
+    }
     auto rnd = [seed](int i, int salt) { return hash_unit(tile_hash(static_cast<int>(seed >> 2) + i * 11 + salt * 97, i * 5 + salt)); };
     const Vector2 foot{c.x, c.y + h * 0.45f};
     const int limbs = 5;
@@ -915,13 +951,27 @@ Vector2 draw_trunk(Vector2 base, float height, float w0, float w1, float bend, C
     w[0] *= 1.45f;  // the roots
     const Color light = shade(bark, 1.18f);
     const Color dark = shade(bark, 0.72f);
+    // The roots spreading out at its foot, either side.
+    for (const float side : {-1.0f, 1.0f}) {
+        const Vector2 from{base.x + side * w[0] * 0.3f, base.y - w[0] * 0.3f};
+        DrawLineEx(from, {base.x + side * std::min(w[0] * 0.8f, 5.0f + w[0] * 0.3f), base.y + 0.8f}, std::max(1.0f, std::min(w[0] * 0.24f, 2.2f)),
+                   lit(side < 0 ? light : dark));
+    }
     for (int i = 0; i < kSteps; ++i) {
         const Vector2 a{p[i].x - w[i] * 0.5f, p[i].y};
         const Vector2 d{p[i + 1].x - w[i + 1] * 0.5f, p[i + 1].y};
         const Vector2 b{p[i].x + w[i] * 0.5f, p[i].y};
         const Vector2 c{p[i + 1].x + w[i + 1] * 0.5f, p[i + 1].y};
-        fill_quad(a, p[i], p[i + 1], d, light);
-        fill_quad(p[i], b, c, p[i + 1], dark);
+        // Twisted: the light side sweeping round the trunk as it goes up.
+        const float twist = 0.18f * std::sin(static_cast<float>(i) * 1.3f + bend);
+        const Vector2 m0{p[i].x + w[i] * twist, p[i].y};
+        const Vector2 m1{p[i + 1].x + w[i + 1] * twist, p[i + 1].y};
+        fill_quad(a, m0, m1, d, light);
+        fill_quad(m0, b, c, m1, dark);
+        if (w[i] >= 2.5f) {  // the bark in streaks: a dark one in the shade, a pale one on the lit side
+            DrawLineV({m0.x + w[i] * 0.2f, m0.y}, {m1.x + w[i + 1] * 0.2f, m1.y}, lit(shade(bark, 0.5f)));
+            DrawLineV({a.x + w[i] * 0.18f, a.y}, {d.x + w[i + 1] * 0.18f, d.y}, lit(shade(bark, 1.4f)));
+        }
     }
     return p[kSteps];
 }
@@ -939,8 +989,8 @@ void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint,
     draw_limbs(c, w, h, seed);
     if (g_leaf <= 0.02f) return;
     if (g_leaf > 0.55f) {
-        DrawEllipse(static_cast<int>(c.x + w * 0.05f), static_cast<int>(c.y + h * 0.06f), w * 0.45f * g_leaf, h * 0.45f * g_leaf,
-                    lit(shade(leaf, 0.46f * tint)));
+        DrawEllipse(static_cast<int>(c.x + w * 0.05f), static_cast<int>(c.y + h * 0.1f), w * 0.4f * g_leaf, h * 0.38f * g_leaf,
+                    lit(shade(leaf, 0.6f * tint)));
     }
     const int tufts = far ? 8 : 16;
     for (int i = 0; i < tufts; ++i) {
@@ -956,29 +1006,51 @@ void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint,
         float r;
         float k;
     };
-    constexpr int kMaxClumps = 28;
+    constexpr int kMaxClumps = 32;
     std::array<Clump, kMaxClumps> clumps{};
-    int count = std::clamp(static_cast<int>(w * h / (lump * lump) * 2.4f), 12, kMaxClumps);
-    if (far) count /= 2;
-    for (int i = 0; i < count; ++i) {
-        const float a = rnd(i, 1) * 6.2831853f;
-        const float r = std::sqrt(rnd(i, 2)) * 0.8f;
-        const Vector2 at{c.x + std::cos(a) * r * w * 0.5f, c.y + std::sin(a) * r * h * 0.5f};
-        const float k = 0.8f + 0.55f * ((c.x - at.x) / w + (c.y - at.y) / h) + 0.12f * (rnd(i, 3) - 0.5f);
-        clumps[static_cast<size_t>(i)] = {at, lump * (0.34f + 0.2f * rnd(i, 4)), k};
+    int count = 0;
+    const int tiers = std::clamp(static_cast<int>(h / (lump * 0.9f)), 2, 5);
+    for (int j = 0; j < tiers && count < kMaxClumps; ++j) {
+        const float f = static_cast<float>(j) / static_cast<float>(tiers - 1);  // 0 the top .. 1 the bottom
+        const float y = c.y - h * 0.38f + h * 0.72f * f;
+        const float across = w * (0.45f + 0.55f * std::sin(0.3f + f * 2.4f));  // widest a little below the middle
+        const int n = std::max(1, static_cast<int>(across / (lump * 0.95f)));
+        for (int i = 0; i < n && count < kMaxClumps; ++i) {
+            const int id = j * 8 + i;
+            const float u = n == 1 ? 0.0f : static_cast<float>(i) / static_cast<float>(n - 1) - 0.5f;
+            const Vector2 at{c.x + u * across * 0.9f + (rnd(id, 1) - 0.5f) * lump * 0.5f, y + (rnd(id, 2) - 0.5f) * lump * 0.4f};
+            const float k = 1.12f - 0.42f * f - 0.22f * u + 0.1f * (rnd(id, 3) - 0.5f);
+            clumps[static_cast<size_t>(count++)] = {at, lump * (0.42f + 0.16f * rnd(id, 4)), k};
+        }
     }
-    std::sort(clumps.begin(), clumps.begin() + count, [](const Clump& a, const Clump& b) { return a.k < b.k; });
+    if (far) count = std::max(1, count / 2);
+    // Back to front: the bottom tier first, the top one over it.
+    std::sort(clumps.begin(), clumps.begin() + count, [](const Clump& a, const Clump& b) { return a.at.y > b.at.y; });
     for (int i = 0; i < count; ++i) {
         const Clump& l = clumps[static_cast<size_t>(i)];
         if (hash_unit(tile_hash(static_cast<int>(seed >> 4) + i * 29, i * 3 + 7)) >= g_leaf) continue;  // stripped
-        disc({l.at.x + l.r * 0.25f, l.at.y + l.r * 0.3f}, l.r, shade(leaf, l.k * 0.72f * tint));
-        disc(l.at, l.r * 0.8f, shade(leaf, l.k * tint));
-        if (!far) disc({l.at.x - l.r * 0.3f, l.at.y - l.r * 0.34f}, l.r * 0.38f, shade(leaf, l.k * 1.25f * tint));
+        // The leaves hanging down from it in points, dark in its shade.
+        if (!far) {
+            for (int k = -2; k <= 2; ++k) {
+                const float x = l.at.x + static_cast<float>(k) * l.r * 0.36f;
+                const float y = l.at.y + l.r * (0.62f - 0.06f * std::fabs(static_cast<float>(k)));
+                const float drop = l.r * (0.5f + 0.25f * static_cast<float>((k + 2) % 2));
+                fill_triangle({x - l.r * 0.2f, y}, {x + l.r * 0.2f, y}, {x + l.r * 0.04f, y + drop}, shade(leaf, l.k * 0.55f * tint));
+            }
+        }
+        disc({l.at.x + l.r * 0.2f, l.at.y + l.r * 0.25f}, l.r, shade(leaf, l.k * 0.72f * tint));
+        disc({l.at.x - l.r * 0.05f, l.at.y - l.r * 0.05f}, l.r * 0.8f, shade(leaf, l.k * tint));
+        if (!far) {  // its top catching the light, in short strokes of leaves
+            disc({l.at.x - l.r * 0.3f, l.at.y - l.r * 0.36f}, l.r * 0.42f, shade(leaf, l.k * 1.35f * tint));
+            DrawLineV({l.at.x - l.r * 0.55f, l.at.y - l.r * 0.1f}, {l.at.x - l.r * 0.15f, l.at.y - l.r * 0.5f},
+                      lit(mix(shade(leaf, l.k * 1.6f * tint), {214, 214, 110, 255}, 0.35f)));
+        }
     }
 }
 
-void draw_tree(const engine::TileMap& map, const Tree& t) {
-    const Vector2 b = on_terrain(map, t.ground);
+// A tree standing at `b` on screen; `shadowed`: its shadow on the ground too
+// (not when baking it into a sprite).
+void draw_tree_at(Vector2 b, const Tree& t, bool shadowed) {
     const float s = t.size;
     if (t.stump) {
         DrawEllipse(static_cast<int>(b.x), static_cast<int>(b.y), 2.6f * s * t.girth, 1.3f * s, lit({70, 52, 36, 255}));
@@ -1008,20 +1080,28 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
         }
     }
     if (t.shred >= 7) {
-        // Snapped off: a stump of a trunk, splintered pale at the break, a stub or two.
-        DrawEllipse(static_cast<int>(b.x + 3.0f * s), static_cast<int>(b.y + 1.0f * s), 4.0f * s, 1.8f * s, lit({16, 24, 12, 60}));
-        const float height = (5.0f + 5.0f * hash_unit(t.seed >> 6)) * s * t.height;
-        const Vector2 top = draw_trunk(b, height, 3.2f * s * t.girth, 2.4f * s * t.girth, t.bend * s * 0.5f, g_bark);
-        const float lean = (hash_unit(t.seed >> 9) - 0.5f) * 3.0f * s;
-        fill_triangle({top.x - 1.4f * s * t.girth, top.y + 1.0f}, {top.x + 1.4f * s * t.girth, top.y + 1.0f}, {top.x + lean, top.y - 3.0f * s},
+        // Snapped off: a tall pole of a trunk, splintered at the break, stubs of
+        // its limbs sticking out either side.
+        if (shadowed) DrawEllipse(static_cast<int>(b.x + 3.0f * s), static_cast<int>(b.y + 1.0f * s), 4.0f * s, 1.8f * s, lit({16, 24, 12, 60}));
+        const uint32_t hs = tile_hash(static_cast<int>(t.seed >> 6), 41);
+        const float height = (18.0f + 14.0f * hash_unit(hs)) * s * t.height;
+        const Vector2 top = draw_trunk(b, height, 3.6f * s * t.girth, 1.6f * s * t.girth, t.bend * s * 0.4f, g_bark);
+        const float lean = (hash_unit(hs >> 8) - 0.5f) * 3.0f * s;
+        fill_triangle({top.x - 1.0f * s * t.girth, top.y + 1.0f}, {top.x + 1.0f * s * t.girth, top.y + 1.0f}, {top.x + lean, top.y - 3.5f * s},
                       {214, 198, 158, 255});
-        DrawLineEx({top.x, top.y + height * 0.35f}, {top.x + 4.0f * s, top.y + height * 0.2f}, 1.2f, lit(shade(g_bark, 0.8f)));
+        for (int k = 0; k < 4; ++k) {
+            const float f = 0.35f + 0.15f * static_cast<float>(k);
+            const float side = k % 2 == 0 ? -1.0f : 1.0f;
+            const Vector2 at{b.x + t.bend * s * 0.4f * 4.0f * f * (1.0f - f), b.y - height * f};
+            const float len = (2.5f + 2.5f * hash_unit(hs >> (k + 3))) * s;
+            DrawLineEx(at, {at.x + side * len, at.y - len * 0.7f}, 1.2f, lit(shade(g_bark, 0.85f)));
+        }
         g_leaf = 1.0f;
         g_bare = 0.0f;
         return;
     }
     // Its shadow on the ground, away from the light (upper left): thinner as the crown thins.
-    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread * (0.4f + 0.6f * g_leaf), 3.4f * s,
+    if (shadowed) DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread * (0.4f + 0.6f * g_leaf), 3.4f * s,
                 lit({16, 24, 12, 70}));
     const float bend = t.bend * s;
     switch (t.kind) {
@@ -1050,13 +1130,13 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
         case TreeKind::Beech: {
             // Tall, slender and smooth grey, an upright crown.
             const Vector2 top = draw_trunk(b, 14.0f * s * t.height, 3.6f * s * t.girth, 2.2f * s, bend, {146, 142, 134, 255});
-            draw_crown({top.x, top.y - 8.0f * s}, 16.0f * s, 20.0f * s, 5.5f * s, {70, 112, 50, 255}, t.tint, t.seed);
+            draw_crown({top.x, top.y - 10.0f * s}, 15.0f * s, 23.0f * s, 5.5f * s, {70, 112, 50, 255}, t.tint, t.seed);
             break;
         }
         case TreeKind::Broadleaf: {
             // Linden, maple: a brown trunk, a round crown.
             const Vector2 top = draw_trunk(b, 9.5f * s * t.height, 4.0f * s * t.girth, 2.4f * s, bend, {72, 54, 38, 255});
-            draw_crown({top.x, top.y - 7.0f * s}, 20.0f * s, 17.0f * s, 6.0f * s, {50, 96, 44, 255}, t.tint, t.seed);
+            draw_crown({top.x, top.y - 9.0f * s}, 19.0f * s, 21.0f * s, 6.0f * s, {50, 96, 44, 255}, t.tint, t.seed);
             break;
         }
         case TreeKind::Birch: {
@@ -1068,12 +1148,12 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
                 const float y = b.y - height * k;
                 DrawLineEx({x - 1.0f * s, y}, {x + 0.8f * s, y - 0.4f * s}, 1.0f, lit({40, 40, 38, 255}));
             }
-            draw_crown({top.x + 0.5f * s, top.y - 4.0f * s}, 14.0f * s, 14.0f * s, 4.6f * s, {98, 138, 60, 255}, t.tint, t.seed);
+            draw_crown({top.x + 0.5f * s, top.y - 7.0f * s}, 14.0f * s, 18.0f * s, 4.6f * s, {98, 138, 60, 255}, t.tint, t.seed);
             break;
         }
         case TreeKind::Pine: {
             // Old pines: a tall bare reddish trunk, the needles up top; young ones in tiers near the ground.
-            const bool old = t.height > 1.0f;
+            const bool old = t.height > 1.0f;  // (sprites: > 0.98 old)
             const float bare = (old ? 11.0f : 4.0f) * s * t.height;
             const Vector2 top = draw_trunk(b, bare + 6.0f * s, 3.0f * s * t.girth, 1.8f * s, bend * 0.5f,
                                            old ? Color{146, 92, 62, 255} : Color{64, 46, 34, 255});
@@ -1157,6 +1237,66 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
             break;
         }
     }
+}
+
+void draw_tree(const engine::TileMap& map, const Tree& t) { draw_tree_at(on_terrain(map, t.ground), t, true); }
+
+// Trees in pixel art, baked like the tanks: for each kind and each stage of
+// being cut up (whole, thinned, half bare, bare, snapped off), a row of
+// variants of its own height, girth, bow and crown.
+constexpr int kTreeKinds = 7;
+constexpr int kTreeStages = 5;
+constexpr int kTreeVariants = 6;
+constexpr int kTreeW = 96;
+constexpr int kTreeH = 128;
+constexpr Vector2 kTreeOrigin{48.0f, 120.0f};
+
+int tree_stage(uint8_t shred) { return shred == 0 ? 0 : shred <= 2 ? 1 : shred <= 4 ? 2 : shred <= 6 ? 3 : 4; }
+uint8_t stage_shred(int stage) { return static_cast<uint8_t>(stage == 0 ? 0 : stage == 1 ? 2 : stage == 2 ? 4 : stage == 3 ? 6 : 8); }
+
+// A kind's variant `v`: bigger the higher `v` (a lone old oak takes the biggest).
+Tree tree_variant(TreeKind kind, int v, int stage) {
+    const uint32_t h = tile_hash(static_cast<int>(kind) * 101 + v * 7, v * 13 + 5);
+    Tree t{};
+    t.kind = kind;
+    const float grow = static_cast<float>(v) / static_cast<float>(kTreeVariants - 1);
+    t.size = (kind == TreeKind::Oak ? 0.95f + 0.6f * grow : 0.8f + 0.4f * grow) * 1.3f;  // over life size, as the vehicles
+    t.size += (hash_unit(h) - 0.5f) * 0.06f;
+    t.tint = 0.9f + 0.2f * hash_unit(h >> 4);
+    t.height = (0.8f + 0.45f * hash_unit(h >> 8)) * 1.25f;
+    if (kind == TreeKind::Pine) t.height = v >= 3 ? std::max(t.height, 1.3f) : std::min(t.height, 0.98f);  // old pines and young ones
+    t.girth = 0.85f + 0.35f * hash_unit(h >> 12);
+    t.bend = (hash_unit(h >> 16) - 0.5f) * (kind == TreeKind::Birch ? 7.0f : kind == TreeKind::Poplar ? 1.0f : 4.0f);
+    t.seed = h;
+    t.shred = stage_shred(stage);
+    return t;
+}
+
+// Its colours: the leaves' and the bark's ramps, and what else it shows.
+std::vector<Color> tree_palette(TreeKind kind) {
+    Color leaf{50, 96, 44, 255};
+    Color bark{72, 54, 38, 255};
+    switch (kind) {
+        case TreeKind::Oak: leaf = {54, 92, 44, 255}; bark = {78, 62, 46, 255}; break;
+        case TreeKind::Beech: leaf = {70, 112, 50, 255}; bark = {146, 142, 134, 255}; break;
+        case TreeKind::Birch: leaf = {98, 138, 60, 255}; bark = {222, 220, 208, 255}; break;
+        case TreeKind::Pine: leaf = {38, 74, 52, 255}; bark = {146, 92, 62, 255}; break;
+        case TreeKind::Apple: leaf = {72, 114, 50, 255}; bark = {92, 70, 50, 255}; break;
+        case TreeKind::Poplar: leaf = {58, 100, 48, 255}; bark = {72, 56, 40, 255}; break;
+        default: break;
+    }
+    std::vector<Color> p;
+    for (const float k : {0.34f, 0.48f, 0.64f, 0.82f, 1.0f, 1.2f, 1.42f, 1.7f}) p.push_back(shade(leaf, k));
+    p.push_back(mix(shade(leaf, 1.6f), {214, 214, 110, 255}, 0.35f));  // the sunlit tips
+    for (const float k : {0.4f, 0.55f, 0.72f, 0.9f, 1.1f, 1.35f}) p.push_back(shade(bark, k));
+    if (kind != TreeKind::Birch) {
+        for (const float k : {0.5f, 0.8f, 1.1f}) p.push_back(shade({72, 54, 38, 255}, k));  // the bows' own brown
+    }
+    for (const Color c : {Color{206, 190, 150, 255}, Color{214, 198, 158, 255}, Color{40, 40, 38, 255}}) p.push_back(c);
+    if (kind == TreeKind::Apple) {
+        for (const Color c : {Color{234, 232, 224, 255}, Color{196, 40, 36, 255}, Color{220, 176, 60, 255}}) p.push_back(c);
+    }
+    return p;
 }
 
 // A small house on one tile: walls and a hipped roof. Damage darkens it with
@@ -1425,7 +1565,6 @@ void draw_barn(const engine::TileMap& map, const engine::Structure& s, float dam
     fill_quad(d0, d1, {d1.x, d1.y - kWall * 0.8f}, {d0.x, d0.y - kWall * 0.8f}, {60, 54, 46, 255});
 }
 
-Color mix(Color a, Color b, float t);  // below, with the ground's colours
 
 // A wooden fence round a rectangle of ground: posts and two rails.
 void draw_fence(const engine::TileMap& map, Rectangle r, Color wood) {
@@ -2790,6 +2929,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
 
     bake_sprites(world);  // outside the 2D mode: it draws into a texture
+    bake_trees();
     BeginMode2D(camera.camera2d());
     if (grain_.id == 0) {
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
@@ -3073,7 +3213,25 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         } else if (d.house_x >= 0) {
             draw_house(map, d.house_x, d.house_y, d.damage);
         } else {
-            draw_tree(map, d.tree);
+            const Tree& t = d.tree;
+            const auto it = tree_sheets_.find(static_cast<int>(t.kind) * kTreeStages + tree_stage(t.shred));
+            if (t.stump || it == tree_sheets_.end()) {
+                draw_tree(map, t);
+            } else {
+                // Its shadow, then the sprite: the variant by its seed, a lone old oak the biggest.
+                const Vector2 b = on_terrain(map, t.ground);
+                const int v = t.kind == TreeKind::Oak && t.size >= 1.3f ? kTreeVariants - 1 - static_cast<int>(t.seed % 2)
+                                                                        : static_cast<int>((t.seed >> 3) % kTreeVariants);
+                const float sz = tree_variant(t.kind, v, 0).size;  // (1.3 over the procedural trees' own)
+                const float leaf = t.shred >= 7 ? 0.3f : 1.0f - std::clamp(static_cast<float>(t.shred) / 6.0f, 0.0f, 1.0f);
+                const float spread = t.kind == TreeKind::Oak ? 1.5f : t.kind == TreeKind::Poplar ? 0.6f : t.kind == TreeKind::Apple ? 0.8f : 1.0f;
+                DrawEllipse(static_cast<int>(b.x + 5.0f * sz), static_cast<int>(b.y + 1.5f * sz), 9.0f * sz * spread * (0.4f + 0.6f * leaf),
+                            3.4f * sz, lit({16, 24, 12, 70}));
+                const SpriteSheet& sh = it->second;
+                DrawTexturePro(sh.atlas, {static_cast<float>(v * sh.w), 0.0f, static_cast<float>(sh.w), static_cast<float>(sh.h)},
+                               {std::round(b.x - sh.origin.x), std::round(b.y - sh.origin.y), static_cast<float>(sh.w), static_cast<float>(sh.h)},
+                               {0.0f, 0.0f}, 0.0f, lit(WHITE));
+            }
             g_leaf = 1.0f;
             g_bare = 0.0f;
         }
@@ -4483,7 +4641,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     if (engine::unit_type(type).tank) {
         const engine::TankModel model = model_of(u);
         const int wear = wear_of(u.hp, engine::unit_type(type).max_hp);
-        const int variant = (static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()]) * 5 + wear;
+        const int variant = (static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()]) * 6 + wear;
         const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, variant, u.owner);
         const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, variant, u.owner);
         if (hull_sheet && turret_sheet) {
@@ -5426,6 +5584,49 @@ const char* dump_dir() {
 #endif
 }
 
+void WorldRenderer::bake_trees() const {
+    if (!tree_sheets_.empty()) return;
+    if (tree_target_.id == 0) {
+        tree_target_ = LoadRenderTexture(kTreeW * kTreeVariants, kTreeH);
+        SetTextureFilter(tree_target_.texture, TEXTURE_FILTER_POINT);
+    }
+    const float light = g_light;
+    const float zoom = g_zoom;
+    g_light = 1.0f;
+    g_zoom = 1.0f;  // full detail
+    for (int k = 0; k < kTreeKinds; ++k) {
+        const auto kind = static_cast<TreeKind>(k);
+        const std::vector<Color> palette = tree_palette(kind);
+        for (int stage = 0; stage < kTreeStages; ++stage) {
+            BeginTextureMode(tree_target_);
+            ClearBackground({0, 0, 0, 0});
+            for (int v = 0; v < kTreeVariants; ++v) {
+                draw_tree_at({kTreeOrigin.x + static_cast<float>(v * kTreeW), kTreeOrigin.y}, tree_variant(kind, v, stage), false);
+                g_leaf = 1.0f;
+                g_bare = 0.0f;
+            }
+            EndTextureMode();
+            Image img = LoadImageFromTexture(tree_target_.texture);
+            ImageFlipVertical(&img);
+            ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+            pixelate(img, palette);
+            if (const char* dump = dump_dir()) ExportImage(img, TextFormat("%s/trees_%d_%d.png", dump, k, stage));
+            SpriteSheet sheet;
+            sheet.atlas = LoadTextureFromImage(img);
+            SetTextureFilter(sheet.atlas, TEXTURE_FILTER_POINT);
+            UnloadImage(img);
+            sheet.w = kTreeW;
+            sheet.h = kTreeH;
+            sheet.dirs = kTreeVariants;
+            sheet.frames = 1;
+            sheet.origin = kTreeOrigin;
+            tree_sheets_[k * kTreeStages + stage] = sheet;
+        }
+    }
+    g_light = light;
+    g_zoom = zoom;
+}
+
 void WorldRenderer::bake_sprites(const engine::World& world) const {
     std::vector<engine::PlayerId> owners;
     for (const engine::Unit& u : world.units()) {
@@ -5445,20 +5646,26 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         if (!def.tank) continue;
         const int era = world_era_[u.owner % world_era_.size()];
         // Every wear up front (cheap: a row of directions at once), so a hit never waits for a bake.
-        for (int wear = 0; wear <= 4; ++wear) wanted.push_back({u.owner, def.model, wear == 4 ? 0 : era, wear});
+        for (int wear = 0; wear <= 5; ++wear) wanted.push_back({u.owner, def.model, wear >= 4 ? 0 : era, wear});  // 5: rusted
         if (dump_dir()) {  // every kind of armor, to look at
             for (int e = 0; e <= 3; ++e) wanted.push_back({u.owner, def.model, e, 0});
         }
     }
     for (const Remains& r : remains_) {
-        if (engine::unit_type(r.type).tank) wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 4});
+        if (engine::unit_type(r.type).tank) {
+            wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 4});
+            wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 5});
+        }
     }
     for (const auto& [owner, model, era, wear] : wanted) {
-        const int variant = (static_cast<int>(model) * 4 + era) * 5 + wear;
+        const int variant = (static_cast<int>(model) * 4 + era) * 6 + wear;
         if (sheets_.count({{static_cast<int>(SpritePart::TankHull), variant}, owner})) continue;
         const TankLook& look_base = look_of(model);
         TankLook look = look_base;
-        if (wear >= 4) {  // burnt out: the paint gone black and rusty
+        if (wear == 5) {  // a wreck gone rusty with the weeks
+            look.paint = mix(look_base.paint, {114, 68, 44, 255}, 0.78f);
+            look.camo = Camo::None;
+        } else if (wear == 4) {  // burnt out: the paint gone black and rusty
             look.paint = mix(look_base.paint, {46, 40, 34, 255}, 0.75f);
             look.camo = Camo::None;
         } else if (wear == 3) {
@@ -5472,7 +5679,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             bake_target_ = LoadRenderTexture(kW * kDirs, kH);
             SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
         }
-        const Color team = wear >= 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
+        const Color team = wear == 5 ? Color{110, 64, 40, 255} : wear == 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
         const Color paint = look.paint;
         std::vector<Color> palette;
         for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
@@ -5507,9 +5714,9 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     const Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
                                    {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
                     if (part == SpritePart::TankHull) {
-                        draw_tank_hull(fr, look, frame, era, team, wear);
+                        draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
                     } else {
-                        draw_tank_turret(fr, look, team, era, wear);
+                        draw_tank_turret(fr, look, team, era, std::min(wear, 4));
                         const Vector2 af = aerial_foot(look);
                         aerials[static_cast<size_t>(d)] = fr.at(af.x, af.y, look.deck + look.turret_h);
                     }
@@ -5682,9 +5889,11 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
 // a black hole where it sat.
 void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) const {
     const engine::UnitTypeDef& def = engine::unit_type(r.type);
-    const int variant = (static_cast<int>(def.model) * 4) * 5 + 4;
-    const SpriteSheet* hull = sheet(SpritePart::TankHull, variant, r.owner);
-    const SpriteSheet* turret = sheet(SpritePart::TankTurret, variant, r.owner);
+    const int base = (static_cast<int>(def.model) * 4) * 6;
+    const SpriteSheet* hull = sheet(SpritePart::TankHull, base + 4, r.owner);
+    const SpriteSheet* turret = sheet(SpritePart::TankTurret, base + 4, r.owner);
+    const SpriteSheet* rust_hull = sheet(SpritePart::TankHull, base + 5, r.owner);
+    const SpriteSheet* rust_turret = sheet(SpritePart::TankTurret, base + 5, r.owner);
     if (!hull || !turret) return;
     auto unit = [](Vector2 v) {
         const float l = std::hypot(v.x, v.y);
@@ -5692,21 +5901,52 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     };
     const Frame fr = make_frame(map, r.ground, unit(r.hull));
     const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
+    // Burnt black at first, then rusting over.
+    const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
     const float light = g_light;
     g_light = light * (0.4f + 0.6f * fade);
-    draw_sprite(*hull, fr.o, fr.f, 0);
+    auto both = [&](const SpriteSheet* burnt, const SpriteSheet* rusted, auto draw) {
+        draw(*burnt, lit(WHITE));
+        if (rusted && rust > 0.0f) draw(*rusted, ColorAlpha(lit(WHITE), rust));
+    };
+    both(hull, rust_hull, [&](const SpriteSheet& sh, Color tint) {
+        float a = std::atan2(fr.f.y, fr.f.x);
+        if (a < 0.0f) a += 6.2831853f;
+        const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(sh.dirs))) % sh.dirs;
+        DrawTexturePro(sh.atlas, {static_cast<float>(d * sh.w), 0.0f, static_cast<float>(sh.w), static_cast<float>(sh.h)},
+                       {std::round(fr.o.x - sh.origin.x), std::round(fr.o.y - sh.origin.y), static_cast<float>(sh.w), static_cast<float>(sh.h)},
+                       {0.0f, 0.0f}, 0.0f, tint);
+    });
     const Vector2 ring = fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f);
     const bool tossed = def.crew_survives_percent <= 20;
+    // Where the turret lies and how: blown off, a tile or so from the hull,
+    // turned, tilted and now and then upside down, its own way each time.
+    const uint32_t h1 = tile_hash(static_cast<int>(r.seed & 0xFFFF), 17);
+    const uint32_t h2 = tile_hash(static_cast<int>(r.seed >> 16), 29);
+    Vector2 at = ring;
+    Vector2 dir = unit(r.facing);
+    float tilt = 0.0f;
+    bool flip = false;
     if (tossed) {
         const float deck = look_of(def.model).deck * kVehicleScale;
         DrawEllipse(static_cast<int>(ring.x), static_cast<int>(ring.y - deck), 7.0f, 3.5f, lit({16, 14, 12, 255}));  // where it sat
-        const float a = hash_unit(r.seed) * 6.2831853f;
-        const Vector2 lie = on_terrain(map, {r.ground.x + std::cos(a) * 0.75f, r.ground.y + std::sin(a) * 0.75f});
-        const float b = hash_unit(r.seed >> 8) * 6.2831853f;
-        draw_sprite(*turret, {lie.x, lie.y + deck}, {std::cos(b), std::sin(b)}, 0);
-    } else {
-        draw_sprite(*turret, ring, unit(r.facing), 0);
+        const float a = hash_unit(h1) * 6.2831853f;
+        const float dist = 0.95f + 0.3f * hash_unit(h1 >> 16);
+        const Vector2 lie = on_terrain(map, {r.ground.x + std::cos(a) * dist, r.ground.y + std::sin(a) * dist});
+        at = {lie.x, lie.y + deck};
+        const float b = hash_unit(h2) * 6.2831853f;
+        dir = {std::cos(b), std::sin(b)};
+        tilt = (hash_unit(h2 >> 16) - 0.5f) * 60.0f;
+        flip = (h2 >> 5) % 3 == 0;
     }
+    both(turret, rust_turret, [&](const SpriteSheet& sh, Color tint) {
+        float a = std::atan2(dir.y, dir.x);
+        if (a < 0.0f) a += 6.2831853f;
+        const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(sh.dirs))) % sh.dirs;
+        const float w = static_cast<float>(sh.w);
+        const Rectangle src{static_cast<float>(d * sh.w), 0.0f, flip ? -w : w, flip ? -static_cast<float>(sh.h) : static_cast<float>(sh.h)};
+        DrawTexturePro(sh.atlas, src, {std::round(at.x), std::round(at.y), w, static_cast<float>(sh.h)}, sh.origin, tilt, tint);
+    });
     g_light = light;
 }
 
