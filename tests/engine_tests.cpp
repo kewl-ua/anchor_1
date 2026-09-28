@@ -5938,10 +5938,14 @@ void test_farmland() {
         int long_sheds = 0;
         int small_sheds = 0;
         int coops = 0;
+        int factories = 0;  // the industrial zone's shops, both sides
         for (const Structure& s : world.structures()) {
             if (s.look == HouseLook::House) continue;
             CHECK(s.type == StructureType::House);
-            if (s.look == HouseLook::Coop) {
+            if (s.look == HouseLook::Factory) {
+                ++factories;
+                CHECK(s.tiles.size() >= kSpaciousTiles);
+            } else if (s.look == HouseLook::Coop) {
                 ++coops;
                 CHECK(s.tiles.size() == 2);
             } else if (s.tiles.size() >= kSpaciousTiles) {
@@ -5952,7 +5956,7 @@ void test_farmland() {
                 CHECK(s.tiles.size() == 2);
             }
         }
-        CHECK(long_sheds == 4 && small_sheds == 4 && coops == 6);
+        CHECK(long_sheds == 4 && small_sheds == 4 && coops == 6 && factories == 4);
     }
 }
 

@@ -625,6 +625,7 @@ void setup_demo_scenario(World& world) {
         look(at(c.x_pct), at(c.y_pct), HouseLook::Coop);
         look(at(c.x_pct) + kHoldingShedOffset, at(c.y_pct), HouseLook::Cowshed);
     }
+    for (const Shed& f : kSheds) look(at(f.x_pct), at(f.y_pct), HouseLook::Factory);  // the industrial zone's
 
     for (PlayerId player = 0; player < 2; ++player) {
         const FixedVec2 base = demo_base_position(world.map().width(), player);

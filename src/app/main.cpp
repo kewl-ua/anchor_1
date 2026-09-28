@@ -700,6 +700,37 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(30.0f, 0.2f));
     }
 
+    if (options.scene == "buildings" && options.mode == Options::Mode::Offline) {
+        // Offline: every kind of the player's buildings on a flat field
+        // ahead of the base, in rows; one of them going up, one battered.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(16.0f, 0.0f), 18);
+        using engine::StructureType;
+        const StructureType types[] = {StructureType::InfantryBarracks, StructureType::ArmorBarracks,  StructureType::Warehouse,
+                                       StructureType::AmmoDepot,        StructureType::FuelDepot,      StructureType::ReconBarracks,
+                                       StructureType::ArtilleryBarracks, StructureType::EngineerBarracks, StructureType::SignalsBarracks,
+                                       StructureType::AirDefenseBarracks, StructureType::Quarters,      StructureType::Workshop,
+                                       StructureType::Hospital,         StructureType::InfantryBarracks, StructureType::Workshop};
+        for (size_t i = 0; i < std::size(types); ++i) {
+            const engine::StructureDef& def = engine::structure_type(types[i]);
+            const engine::TilePos at = engine::tile_of(ahead(9.0f + 5.5f * static_cast<float>(i % 5), -7.0f + 5.5f * static_cast<float>(i / 5)));
+            const engine::EntityId id = w.place_structure(types[i], me, at, def.width, def.height);
+            engine::Structure* s = w.structure_for_setup(id);
+            if (i == 13) {  // going up
+                s->built = false;
+                s->build_progress = def.build_time / 2;
+            }
+            if (i == 14) s->hp = def.max_hp / 3;  // battered
+        }
+        return render::to_vector2(ahead(18.0f, 0.0f));
+    }
+
     if (options.scene.starts_with("gunnery") && options.mode == Options::Mode::Offline) {
         // Offline, to see guns laid and skills at work: a tank firing on the
         // move at an enemy it drives past; an enemy T-72 with its racks full

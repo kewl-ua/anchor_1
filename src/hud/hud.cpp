@@ -660,6 +660,7 @@ void Hud::draw_structure_card(const engine::World& world, const engine::Structur
     const char* name = role == s.type ? def.name : TextFormat("%s (village building)", engine::structure_type(role).name);
     if (role == s.type && s.type == engine::StructureType::House && s.look == engine::HouseLook::Cowshed) name = "Cowshed";
     if (role == s.type && s.type == engine::StructureType::House && s.look == engine::HouseLook::Coop) name = "Chicken coop";
+    if (role == s.type && s.type == engine::StructureType::House && s.look == engine::HouseLook::Factory) name = "Factory shop";
     if (def.cache_capacity > 0) {
         name = TextFormat("%s   ammunition %d / %d", name, s.cache_owner == s.owner || s.cache == 0 ? s.cache : 0,
                           def.cache_capacity);

@@ -200,6 +200,33 @@ private:
     mutable std::map<int, SpriteSheet> tree_sheets_;  // kind * kTreeStages + stage
     mutable RenderTexture2D tree_target_{};
     void bake_trees() const;
+    // Buildings baked into pixel art (see bake_buildings), by what they are
+    // (a structure's id; a house's tile) and how they look now (the stage of
+    // their damage, of their building; whose): drawn from that. One not
+    // baked yet is drawn by hand meanwhile, and asked for.
+    struct BuildingSprite {
+        Texture2D tex{};
+        Vector2 at{};  // its top-left, world pixels
+        uint32_t look = 0;
+        uint64_t used = 0;  // the frame it was last drawn
+    };
+    struct BuildingBake {
+        uint64_t key = 0;
+        uint32_t look = 0;
+        int kind = 0;  // 0 a house on its tile; 1 a village building (a barn, a block of flats...); 2 a player's
+        engine::Structure s{};  // (a copy: as last seen)
+        int tx = 0;
+        int ty = 0;
+        float damage = 0.0f;
+    };
+    mutable std::unordered_map<uint64_t, BuildingSprite> building_sprites_;
+    mutable std::vector<BuildingBake> building_bakes_;
+    mutable std::vector<uint64_t> unbakeable_;
+    mutable RenderTexture2D building_target_{};
+    mutable uint64_t frame_ = 0;
+    void bake_buildings(const engine::World& world) const;
+    bool draw_baked(const BuildingBake& want) const;  // false: not baked yet (it's asked for)
+    void draw_by_hand(const engine::TileMap& map, const BuildingBake& b) const;
     mutable std::array<int, 4> world_era_{};  // each side's reactive armor, as last baked
     mutable std::array<int, 4> world_kit_{};  // each side's IFV kit: slat cages (1), missiles (2)
     // Which of its sprites an armored vehicle wears: a tank its side's reactive armor, an IFV its kit.

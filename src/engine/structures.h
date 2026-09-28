@@ -17,7 +17,7 @@ namespace engine {
 
 // What a house looks like: the game treats them all as houses (a long one is
 // spacious, so it can be turned into a depot).
-enum class HouseLook : uint8_t { House, Cowshed, Coop };
+enum class HouseLook : uint8_t { House, Cowshed, Coop, Factory };  // (a factory: a works' shop floor)
 
 enum class StructureType : uint8_t {
     House,             // infantry can hold it; collapses with everyone inside
