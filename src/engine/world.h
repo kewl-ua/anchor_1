@@ -323,6 +323,13 @@ inline constexpr int64_t kFixSinSqPermille = 117;
 inline constexpr Fixed kCruiseHeight = Fixed::from_int(9);
 inline constexpr Fixed kClimbRate = Fixed::from_ratio(1, 5);  // levels a tick
 inline constexpr Fixed kLandApproach = Fixed::from_int(8);    // tiles out from the runway it starts down
+// Brought down: it falls for kFallTicks and so many more a level it was up,
+// on ahead at this share of its speed; it crashes with a burst of burning
+// fuel and what it had aboard; the crash is kept this long after (to see).
+inline constexpr Tick kFallTicks = 16;
+inline constexpr Tick kFallTicksPerLevel = 4;
+inline constexpr int32_t kFallGlidePercent = 55;
+inline constexpr Tick kCrashHistory = 3 * kTicksPerSecond;
 // A unit of fuel from the stock takes an aircraft this many tiles.
 inline constexpr int32_t kAircraftTilesPerFuel = 4;
 // On the airfield: a rocket and a unit of fuel every so often, from the stock.
@@ -515,6 +522,7 @@ struct Unit {
     bool silent = false;  // radio silence: no bearings on it, orders by courier
     bool airborne = false;  // an aircraft in the air: only air defence reaches it
     Fixed altitude{};       // its height over the ground, levels (see kCruiseHeight)
+    bool diverted = false;  // gone off to a rear airfield (none left to land on): out of the fight, not down
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -552,6 +560,21 @@ struct Impact {
     bool air = false;  // up in the sky: a missile bursting at an aircraft
     EntityId blown = 0;  // a tank whose rounds went up: its turret thrown off
     Shell shell = Shell::He;  // what shell it was (how its smoke looks)
+    Fixed height{};  // up in the sky: how high over the ground, levels
+};
+
+// An aircraft brought down in the air: it falls on ahead from where it was
+// hit, from its height, and crashes: its fuel and what it carried go up
+// there, burning whatever it comes down on; its wreck burns a while.
+struct Crash {
+    EntityId id = 0;
+    UnitTypeId type = UnitTypeId::Su25;
+    PlayerId owner = 0;
+    FixedVec2 from{};
+    FixedVec2 to{};
+    Fixed height{};  // where it was hit, levels
+    Tick fell = 0;   // when it was hit
+    Tick hits = 0;   // when it comes down
 };
 
 // The round a unit's gun is loaded with: the main one, or the alternative.
@@ -635,6 +658,8 @@ public:
     }
     const std::vector<Charge>& charges() const { return charges_; }
     const std::vector<Smoke>& smokes() const { return smokes_; }
+    // Aircraft brought down: falling, and crashed the last few seconds.
+    const std::vector<Crash>& crashes() const { return crashes_; }
     // Which explosive reactive armor a side's tanks carry: 0 none, 1 Kontakt-1,
     // 2 Kontakt-5, 3 Relikt.
     int era_level(PlayerId player) const {
@@ -905,6 +930,7 @@ private:
     const Unit* find_air_target(Unit& u);
     void fire_at_air(Unit& u, const Unit& target);
     void move_missile(Projectile& p);
+    void update_crashes();
     bool sky_watch(PlayerId player, const Unit& plane) const;
 
     // Electronic warfare (world_signals.cpp).
@@ -993,6 +1019,7 @@ private:
     std::array<uint32_t, kMaxPlayers> upgrades_{};  // bit per UpgradeId
     std::vector<Fire> fires_;
     std::vector<Smoke> smokes_;
+    std::vector<Crash> crashes_;
     std::vector<Bearing> bearings_;  // rebuilt with the fog
     std::vector<Courier> couriers_;  // in the order they were sent, so they arrive in it
     std::array<bool, kMaxPlayers> hungry_{};

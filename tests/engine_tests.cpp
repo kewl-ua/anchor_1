@@ -3030,32 +3030,38 @@ void test_service_vehicles_refill_at_depots() {
 
 // A tanker hit with fuel aboard goes up and burns whatever stands next to it;
 // an empty one just stops. So does a supply truck with fuel or ammunition
-// on it (the rounds cooking off); with food, timber, it just burns out.
+// on it (a load of rounds going up hits harder than burning fuel); with
+// food, timber, it just burns out. What goes up hurts all round it: a man
+// nearly two tiles off too.
 void test_tanker_goes_up_in_flames() {
-    // (The neighbour a step off on the diagonal: burning fuel reaches it, a cook-off doesn't; `close`: right beside it.)
-    auto neighbour_hurt = [](int32_t fuel_aboard, UnitTypeId type = UnitTypeId::FuelTanker, Resource load = Resource::Fuel, bool close = false) {
+    // (How much the neighbour, a step off on the diagonal, loses; `far`: a man 1.8 tiles off.)
+    auto neighbour_loss = [](int32_t fuel_aboard, UnitTypeId type = UnitTypeId::FuelTanker, Resource load = Resource::Fuel, bool far = false) {
         Simulation sim(1, TileMap(40, 20));
         World& w = sim.world_for_setup();
         const EntityId tanker = w.spawn_unit(0, type, at(10, 10));
         w.unit_for_setup(tanker)->hp = 1;
         w.unit_for_setup(tanker)->carrying = fuel_aboard;
         w.unit_for_setup(tanker)->carrying_type = load;
-        const EntityId neighbour = w.spawn_unit(0, UnitTypeId::Truck, at(11, close ? 10 : 11));
+        const EntityId neighbour = far ? w.spawn_unit(0, UnitTypeId::Rifleman, {at(10, 10).x + Fixed::from_ratio(9, 5), at(10, 10).y})
+                                       : w.spawn_unit(0, UnitTypeId::Truck, at(11, 11));
+        const UnitTypeId who = far ? UnitTypeId::Rifleman : UnitTypeId::Truck;
         w.spawn_unit(1, UnitTypeId::Rifleman, at(10, 5));
         for (int i = 0; i < 200 && sim.world().find_unit(tanker); ++i) sim.step();
         CHECK(sim.world().find_unit(tanker) == nullptr);
         sim.step();  // the fire's damage lands on the next tick
         sim.step();
         // Burnt, not just shot at by the rifleman who goes on firing.
-        return unit_type(UnitTypeId::Truck).max_hp - hp_of(sim, neighbour) >= 30;
+        const int32_t lost = unit_type(who).max_hp - std::max(0, hp_of(sim, neighbour));
+        return lost >= 30 ? lost : 0;
     };
-    CHECK(neighbour_hurt(100));
-    CHECK(!neighbour_hurt(0));
-    CHECK(neighbour_hurt(20, UnitTypeId::Truck, Resource::Fuel));
-    CHECK(neighbour_hurt(20, UnitTypeId::Truck, Resource::Ammo, true));
-    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Ammo));  // (a cook-off reaches less far than burning fuel)
-    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Food, true));
-    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Materials, true));
+    CHECK(neighbour_loss(100) > 0);
+    CHECK(neighbour_loss(0) == 0);
+    const int32_t fuel = neighbour_loss(20, UnitTypeId::Truck, Resource::Fuel);
+    const int32_t rounds = neighbour_loss(20, UnitTypeId::Truck, Resource::Ammo);
+    CHECK(fuel > 0 && rounds > fuel);
+    CHECK(neighbour_loss(20, UnitTypeId::Truck, Resource::Food) == 0);
+    CHECK(neighbour_loss(20, UnitTypeId::Truck, Resource::Materials) == 0);
+    CHECK(neighbour_loss(100, UnitTypeId::AmmoTruck, Resource::Ammo, true) > 0);  // all round it
 }
 
 // --- Artillery -----------------------------------------------------------------
@@ -4340,6 +4346,68 @@ void test_air_defence_height() {
     const int32_t low = damage_at(Fixed::from_int(1));
     const int32_t high = damage_at(kCruiseHeight);
     CHECK(high > 0 && low > high * 5 / 4);
+}
+
+// An aircraft brought down in the air falls on ahead of where it was hit
+// and crashes there a moment later: the crash burns whoever is under it.
+// One gone off to the rear (no airfield left) doesn't crash.
+void test_aircraft_crash() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    Unit* p = w.unit_for_setup(a.plane);
+    p->airborne = true;
+    p->altitude = kCruiseHeight;
+    p->pos = at(30, 20);
+    p->facing = {Fixed::from_int(1), Fixed{}};
+    p->order = Order::AttackGround;
+    p->order_point = at(70, 20);
+    sim.step();
+    const FixedVec2 hit_at = sim.world().find_unit(a.plane)->pos;
+    const Fixed speed = unit_type(UnitTypeId::Su25).speed;
+    const Tick fall = kFallTicks + kFallTicksPerLevel * kCruiseHeight.to_int();
+    const FixedVec2 down = hit_at + FixedVec2{Fixed::from_raw(speed.raw * kFallGlidePercent / 100) * static_cast<int32_t>(fall), Fixed{}};
+    const EntityId below = w.spawn_unit(1, UnitTypeId::Rifleman, down);
+    const EntityId under_hit = w.spawn_unit(1, UnitTypeId::Rifleman, hit_at);
+    w.unit_for_setup(a.plane)->hp = 0;  // hit
+    sim.step();
+    CHECK(sim.world().find_unit(a.plane) == nullptr);
+    CHECK(sim.world().crashes().size() == 1);
+    for (Tick i = 0; i < fall / 2; ++i) sim.step();
+    CHECK(hp_of(sim, below) == unit_type(UnitTypeId::Rifleman).max_hp);  // still falling
+    for (Tick i = 0; i < fall; ++i) sim.step();
+    CHECK(hp_of(sim, below) < unit_type(UnitTypeId::Rifleman).max_hp);        // it came down on him
+    CHECK(hp_of(sim, under_hit) == unit_type(UnitTypeId::Rifleman).max_hp);   // not where it was hit
+    CHECK(std::any_of(sim.world().smokes().begin(), sim.world().smokes().end(), [&](const Smoke& s) {
+        return s.kind == SmokeKind::Plume && (s.center - down).length() < Fixed::from_int(2);
+    }));
+
+    // Coming down on a block of flats: as a bomb would, the section there brought down.
+    AirSetup c = air_setup();
+    World& cw = c.sim.world_for_setup();
+    Unit* q = cw.unit_for_setup(c.plane);
+    q->airborne = true;
+    q->altitude = kCruiseHeight;
+    q->pos = at(30, 20);
+    q->facing = {Fixed::from_int(1), Fixed{}};
+    q->order = Order::AttackGround;
+    q->order_point = at(70, 20);
+    c.sim.step();
+    const FixedVec2 falls_at = c.sim.world().find_unit(c.plane)->pos + (down - hit_at);
+    const TilePos corner = tile_of(falls_at);
+    const EntityId block = cw.place_structure(StructureType::Apartment, kNoOwner, {corner.x - 1, corner.y - 2}, 2, 4);
+    cw.unit_for_setup(c.plane)->hp = 0;
+    for (Tick i = 0; i < fall + 3; ++i) c.sim.step();
+    const Structure* s = c.sim.world().find_structure(block);
+    CHECK(s && s->bombed == 1 && s->hp < structure_type(StructureType::Apartment).max_hp);
+
+    // No airfield left: off to the rear, no crash.
+    AirSetup b = air_setup();
+    issue(b.sim, fire_at(0, {b.plane}, 60, 20));
+    for (int i = 0; i < 20; ++i) b.sim.step();
+    b.sim.world_for_setup().structure_for_setup(b.airfield)->hp = 0;
+    for (int i = 0; i < 400 && b.sim.world().find_unit(b.plane); ++i) b.sim.step();
+    CHECK(b.sim.world().find_unit(b.plane) == nullptr && b.sim.world().crashes().empty());
 }
 
 // An aircraft in the air is seen by whoever has it within his sight, over
@@ -6238,6 +6306,7 @@ int main() {
     test_manpads();
     test_dive_and_ceiling();
     test_air_defence_height();
+    test_aircraft_crash();
     test_radar_sees_aircraft();
     test_shilka();
     test_airfield_losses();

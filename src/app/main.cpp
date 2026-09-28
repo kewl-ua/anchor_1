@@ -845,6 +845,39 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(13.0f + gap * 4.5f, 0.5f));
     }
 
+    if (options.scene == "air_down" && options.mode == Options::Mode::Offline) {
+        // Offline: our aircraft over the field ahead of the base. One is hit
+        // a second and a half in (brought down: it falls on ahead, on fire,
+        // and crashes); another, low and badly hit, trails fire through the
+        // enemy's air defence (their missiles bursting round it).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(18.0f, 0.0f), 16);
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        auto flying = [&](engine::UnitTypeId type, float d, float side, engine::Fixed height, int hp_percent) {
+            const engine::EntityId id = w.spawn_unit(me, type, ahead(d, side));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->airborne = true;
+            u->altitude = height;
+            u->facing = ahead(d + 1.0f, side) - ahead(d, side);
+            u->order = engine::Order::AttackGround;
+            u->order_point = ahead(d + 60.0f, side);
+            u->hp = engine::unit_type(type).max_hp * hp_percent / 100;
+            return id;
+        };
+        g_doomed = {flying(engine::UnitTypeId::Su34, 8.0f, -2.0f, engine::kCruiseHeight, 100)};
+        g_doom_tick = 30;
+        flying(engine::UnitTypeId::Su25, 6.0f, 3.0f, engine::Fixed::from_int(3), 20);
+        w.spawn_unit(enemy, engine::UnitTypeId::Manpads, ahead(20.0f, 4.0f));
+        w.spawn_unit(enemy, engine::UnitTypeId::Manpads, ahead(24.0f, 2.0f));
+        return render::to_vector2(ahead(18.0f, -1.5f));
+    }
+
     if (options.scene == "fire_line" && options.mode == Options::Mode::Offline) {
         // Offline: an incendiary shell's fire in a tree line ahead of the
         // base (its trees burning), with a foxhole's ammunition boxes in it;

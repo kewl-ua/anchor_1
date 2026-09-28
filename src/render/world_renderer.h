@@ -81,7 +81,16 @@ private:
         bool sunk = false;   // a tank that went under in a bog
         bool blown = false;  // a tank whose rounds went up: its turret thrown off
         uint8_t cargo = 0;   // a truck's load (see Cargo): what burns, goes off, lies about
+        float height = 0.0f;  // up in the air when last seen, pixels (an aircraft's)
+        // An aircraft brought down: falling from `from` (where it was hit,
+        // `height` up) to `ground` for `fell` seconds (0 once it's crashed);
+        // `crashed`: its wreck lies broken apart.
+        float fell = 0.0f;
+        Vector2 from{};
+        bool crashed = false;
     };
+    // Where an aircraft coming down is now: over the ground, up (pixels), the way its nose points.
+    static void fall_of(const Remains& r, Vector2& ground, float& z, Vector2& dir);
     // Smoke, flames, clods of earth, spray, sparks, a muzzle's flash, spent
     // cases: flying about for a moment. Only for the eye: nothing in the game
     // depends on them.

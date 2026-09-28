@@ -398,7 +398,7 @@ bool gun_toward_viewer(Vector2 dir, int dirs) {
 // A tile of height in a Frame's pixels: the view is from 30 degrees up.
 constexpr float kZPerTile = 39.2f;
 // A towed gun's or an aircraft's sprite sheets by its wear.
-int small_variant(engine::VehicleModel m, int wear) { return static_cast<int>(m) * 6 + wear; }
+int small_variant(engine::VehicleModel m, int wear) { return static_cast<int>(m) * 8 + wear; }  // (6, 7: an aircraft's crashed wreck, burnt, rusted)
 // A towed gun, an aircraft: a sprite of its own, its wreck too.
 bool gun_or_plane(const engine::UnitTypeDef& def) { return def.family == engine::Family::Gun || def.family == engine::Family::Aircraft; }
 
@@ -1135,6 +1135,26 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     for (const engine::Impact& impact : world.recent_impacts()) {
         if (impact.tick < impacts_seen_until_ || !in_view(world, to_vector2(impact.pos))) continue;
         const float splash = to_float(impact.splash);
+        if (impact.air) {  // a missile bursting up by an aircraft: a flash, a little ball of fire, sparks, black smoke hanging
+            const float up = to_float(impact.height) * iso::kElevationStep;
+            blasts_.push_back({to_vector2(impact.pos), 0.0f, 0.4f, up});
+            spawn_flash(to_vector2(impact.pos), up, 9.0f, {255, 240, 190, 255});
+            spawn_sparks(to_vector2(impact.pos), up, 14, {255, 200, 100, 255}, 1.8f);
+            for (int i = 0; i < 5; ++i) {
+                Particle p{};
+                p.kind = Particle::Kind::Smoke;
+                p.ground = {to_vector2(impact.pos).x + (fx_random() - 0.5f) * 0.3f, to_vector2(impact.pos).y + (fx_random() - 0.5f) * 0.3f};
+                p.z = up + (fx_random() - 0.5f) * 6.0f;
+                p.vel = {0.1f + (fx_random() - 0.5f) * 0.2f, -0.06f + (fx_random() - 0.5f) * 0.2f};
+                p.vz = 2.0f;
+                p.life = 2.5f + fx_random();
+                p.size = 2.5f + 1.5f * fx_random();
+                p.grow = 4.0f;
+                p.color = {30, 28, 26, 220};
+                particles_.push_back(p);
+            }
+            continue;
+        }
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
         const bool fire = impact.shooter_type == engine::UnitTypeId::FuelTanker;  // a load going up: fire, not a shell's dust (drawn with the wreck)
         if (splash > 0.0f && !fire) spawn_burst(world, to_vector2(impact.pos), splash, static_cast<uint8_t>(burst_of(impact)));
@@ -1232,9 +1252,27 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                        unit(to_vector2(u.facing)), static_cast<uint32_t>(u.id) * 2654435761u,
                        u.mired * 4 >= engine::kBogLimit * 3};
         alive[u.id].cargo = static_cast<uint8_t>(cargo_of(world, u));
+        alive[u.id].height = u.airborne ? std::max(1.0f, flight_lift(u)) : 0.0f;
     }
     for (const auto& [id, last] : units_seen_) {
         if (alive.contains(id) || world.find_unit(id)) continue;
+        if (last.height > 0.0f) {  // an aircraft gone from the sky: brought down, or off to the rear
+            const auto& crashes = world.crashes();
+            const auto crash = std::find_if(crashes.begin(), crashes.end(), [&](const engine::Crash& c) { return c.id == id; });
+            if (crash == crashes.end()) continue;  // off to the rear
+            Remains r = last;
+            r.from = to_vector2(crash->from);
+            r.ground = to_vector2(crash->to);
+            r.height = to_float(crash->height) * iso::kElevationStep;
+            r.fell = static_cast<float>(crash->hits - crash->fell) / engine::kTicksPerSecond;
+            r.age = static_cast<float>(world.tick() - std::min(world.tick(), crash->fell)) / engine::kTicksPerSecond;
+            const Vector2 run{r.ground.x - r.from.x, r.ground.y - r.from.y};
+            const float rl = std::hypot(run.x, run.y);
+            if (rl > 0.01f) r.facing = {run.x / rl, run.y / rl};
+            r.crashed = true;
+            remains_.push_back(r);
+            continue;
+        }
         remains_.push_back(last);
         remains_.back().blown = std::find(blown.begin(), blown.end(), id) != blown.end();
         if (remains_.back().blown && !last.sunk) {  // its rounds going up: a fireball, black smoke boiling up
@@ -1382,7 +1420,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     for (const Remains& r : remains_) {  // burnt-out tanks, IFVs, trucks smoulder, burning for the first half minute
         const std::optional<TruckModel> truck = truck_model(r.type, r.owner);
         const bool small = gun_or_plane(engine::unit_type(r.type));
-        if ((!drawn_as_armor(engine::unit_type(r.type)) && !truck && !small) || r.age > 100.0f) continue;
+        if ((!drawn_as_armor(engine::unit_type(r.type)) && !truck && !small) || r.age > 100.0f || r.fell > 0.0f) continue;
         if (map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))})) ==
             engine::Terrain::Water ||
             r.sunk) {
@@ -1525,6 +1563,24 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     if (track_marks_.size() > 6000) track_marks_.erase(track_marks_.begin(), track_marks_.begin() + static_cast<long>(track_marks_.size() - 6000));
     std::erase_if(track_last_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
 
+    // Aircraft hit, in the air: smoke trailing off them, grey, then black with fire in it.
+    for (const engine::Unit& u : world.units()) {
+        if (!u.airborne || !shows(world, u)) continue;
+        const int wear = wear_of(u.hp, engine::unit_type(u.type).max_hp);
+        if (wear < 2 || fx_random() > dt * (wear >= 3 ? 30.0f : 14.0f)) continue;
+        const Vector2 f = unit_facing(u);
+        const Vector2 g = to_vector2(u.pos);
+        Particle p{};
+        p.kind = wear >= 3 && fx_random() < 0.4f ? Particle::Kind::Flame : Particle::Kind::Smoke;
+        p.ground = {g.x - f.x * 0.25f, g.y - f.y * 0.25f};
+        p.z = flight_lift(u) + 2.0f;
+        p.vz = 2.0f;
+        p.life = p.kind == Particle::Kind::Flame ? 0.3f : 2.2f + fx_random();
+        p.size = p.kind == Particle::Kind::Flame ? 2.5f + fx_random() : 1.8f + fx_random();
+        p.grow = p.kind == Particle::Kind::Flame ? -3.0f : 4.0f;
+        p.color = p.kind == Particle::Kind::Flame ? Color{255, 200, 80, 230} : wear >= 3 ? Color{26, 24, 22, 220} : Color{120, 118, 114, 180};
+        particles_.push_back(p);
+    }
     // Aircraft: the heights they're drawn at easing to where they fly.
     for (const engine::Unit& u : world.units()) {
         if (!u.airborne) {
@@ -1597,7 +1653,90 @@ void WorldRenderer::update(const engine::World& world, float dt) {
 
     for (Ping& p : pings_) p.age += dt;
     for (Blast& b : blasts_) b.age += dt;
-    for (Remains& r : remains_) r.age += dt;
+    for (Remains& r : remains_) {
+        r.age += dt;
+        if (r.fell <= 0.0f) continue;
+        Vector2 g{};
+        float z = 0.0f;
+        Vector2 d{};
+        fall_of(r, g, z, d);
+        if (r.age < r.fell) {
+            // Coming down on fire: flames streaming off it, black smoke left hanging behind.
+            auto count = [&](float rate) {
+                const float n = rate * dt;
+                return static_cast<int>(n) + (fx_random() < n - std::floor(n) ? 1 : 0);
+            };
+            for (int i = count(70.0f); i > 0; --i) {  // a streak of fire behind it
+                Particle p{};
+                p.kind = Particle::Kind::Flame;
+                const float back = 0.1f + 0.35f * fx_random();
+                p.ground = {g.x - d.x * back + (fx_random() - 0.5f) * 0.08f, g.y - d.y * back + (fx_random() - 0.5f) * 0.08f};
+                p.z = z + back * 6.0f;
+                p.vz = 3.0f;
+                p.life = 0.3f + 0.3f * fx_random();
+                p.size = 3.5f + 3.5f * fx_random();
+                p.grow = -3.0f;
+                p.color = {255, 200, 80, 230};
+                particles_.push_back(p);
+            }
+            for (int i = count(55.0f); i > 0; --i) {
+                Particle p{};
+                p.kind = Particle::Kind::Smoke;
+                const float back = 0.3f + 0.3f * fx_random();
+                p.ground = {g.x - d.x * back + (fx_random() - 0.5f) * 0.1f, g.y - d.y * back + (fx_random() - 0.5f) * 0.1f};
+                p.z = z + 2.0f;
+                p.vel = {0.08f, -0.05f};
+                p.vz = 4.0f + 4.0f * fx_random();
+                p.life = 3.0f + 1.5f * fx_random();
+                p.size = 2.5f + 1.5f * fx_random();
+                p.grow = 6.0f;
+                p.color = {20, 18, 16, 235};
+                particles_.push_back(p);
+            }
+            continue;
+        }
+        // Crashed: a mushroom of fire rolling up, the blackest smoke boiling over it, bits of it flung about.
+        const Vector2 at = r.ground;
+        blasts_.push_back({at, 0.0f, 2.4f, 0.0f});
+        blasts_.push_back({{at.x + d.x * 0.3f, at.y + d.y * 0.3f}, -0.08f, 1.8f, 6.0f});
+        blasts_.push_back({{at.x - d.x * 0.35f, at.y - d.y * 0.35f}, -0.16f, 1.6f, 4.0f});
+        blasts_.push_back({at, -0.3f, 1.7f, 26.0f});
+        blasts_.push_back({at, -0.55f, 1.3f, 46.0f});
+        spawn_flash(at, 10.0f, 28.0f, {255, 244, 200, 255});
+        spawn_sparks(at, 8.0f, 50, {255, 190, 90, 255}, 3.2f);
+        spawn_burst(world, at, 1.0f, 8);  // the earth thrown up (Burst::Dirt)
+        for (int i = 0; i < 18; ++i) {  // bits of it flung out
+            const float a = fx_random() * 6.2831853f;
+            const float v = 1.0f + 2.5f * fx_random();
+            Particle p{};
+            p.kind = Particle::Kind::Clod;
+            p.ground = at;
+            p.vel = {std::cos(a) * v + d.x * 1.2f, std::sin(a) * v + d.y * 1.2f};
+            p.z = 6.0f;
+            p.vz = 50.0f + 70.0f * fx_random();
+            p.life = 1.6f + fx_random();
+            p.size = 1.5f + 1.5f * fx_random();
+            p.color = i % 3 == 0 ? Color{120, 124, 116, 255} : i % 3 == 1 ? Color{40, 36, 32, 255} : Color{160, 160, 150, 255};
+            particles_.push_back(p);
+        }
+        for (int i = 0; i < 26; ++i) {  // the black smoke: a column, a cap spreading over it
+            const bool cap = i >= 10;
+            Particle p{};
+            p.kind = Particle::Kind::Smoke;
+            p.ground = {at.x + (fx_random() - 0.5f) * (cap ? 0.8f : 0.4f), at.y + (fx_random() - 0.5f) * (cap ? 0.8f : 0.4f)};
+            p.z = cap ? 34.0f + 20.0f * fx_random() : 6.0f + 24.0f * fx_random();
+            p.vel = {(fx_random() - 0.5f) * (cap ? 0.7f : 0.2f), (fx_random() - 0.5f) * (cap ? 0.7f : 0.2f)};
+            p.vz = cap ? 22.0f + 16.0f * fx_random() : 40.0f + 20.0f * fx_random();
+            p.life = 4.5f + 2.0f * fx_random();
+            p.size = cap ? 6.0f + 3.0f * fx_random() : 4.0f + 2.0f * fx_random();
+            p.grow = cap ? 12.0f : 8.0f;
+            p.color = {14, 12, 12, 240};
+            particles_.push_back(p);
+        }
+        r.fell = 0.0f;
+        r.age = 0.0f;  // (a wreck from now on)
+        r.cargo = static_cast<uint8_t>(Cargo::Fuel);  // its fuel burning a while, black smoke over it
+    }
     std::erase_if(pings_, [](const Ping& p) { return p.age >= kPingLifetime; });
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
     std::erase_if(remains_, [](const Remains& r) {
@@ -1605,6 +1744,15 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         const float life = whole ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
         return r.age >= life;
     });
+}
+
+void WorldRenderer::fall_of(const Remains& r, Vector2& ground, float& z, Vector2& dir) {
+    const float k = r.fell > 0.0f ? std::clamp(r.age / r.fell, 0.0f, 1.0f) : 1.0f;
+    ground = lerp(r.from, r.ground, k);
+    z = r.height * (1.0f - k * k);  // falling ever faster
+    // Tumbling round as it goes, the nose over.
+    const float spin = ((r.seed & 1u) != 0 ? 1.0f : -1.0f) * 3.2f * k * k;
+    dir = {r.facing.x * std::cos(spin) - r.facing.y * std::sin(spin), r.facing.y * std::cos(spin) + r.facing.x * std::sin(spin)};
 }
 
 // --- Drawing -----------------------------------------------------------------
@@ -7258,7 +7406,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
     for (const Remains& r : remains_) {
         const bool whole = drawn_as_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner).has_value() || gun_or_plane(engine::unit_type(r.type));
-        if (whole && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
+        if (whole && r.fell <= 0.0f && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
     }
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
@@ -7317,7 +7465,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             const engine::Terrain under = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))}));
             if (!r.sunk && under != engine::Terrain::Water && r.age < 45.0f) {
                 const bool truck = truck_model(r.type, r.owner).has_value();
-                draw_flames(map, r.ground, truck ? r.facing : r.hull,
+                draw_flames(map, r.ground, truck || r.crashed ? r.facing : r.hull,
                             vehicle_flames(r.type, r.owner, true, r.blown, static_cast<Cargo>(r.cargo), r.age, r.seed));
             }
         } else if (d.ruins) {
@@ -7383,6 +7531,18 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     // Aircraft in the air: a shadow on the ground, the aircraft high above it.
     for (const engine::Unit& u : world.units()) {
         if (u.airborne && shows(world, u)) draw_aircraft(map, u, alpha);
+    }
+    for (const Remains& r : remains_) {  // aircraft brought down, falling on fire, tumbling
+        if (r.fell <= 0.0f) continue;
+        Vector2 g{};
+        float z = 0.0f;
+        Vector2 d{};
+        fall_of(r, g, z, d);
+        if (!in_view(world, g)) continue;
+        if (const SpriteSheet* plane = sheet(SpritePart::Plane, small_variant(engine::unit_type(r.type).model, 3), r.owner)) {
+            draw_sprite(*plane, on_terrain(map, g), d, 0, {0, 0, 0, 70});  // its shadow
+            draw_sprite(*plane, on_terrain(map, g, z), d, 0);
+        }
     }
 
     draw_shots(world, alpha);
@@ -11229,6 +11389,8 @@ TruckSpots truck_spots(const TruckLook& l) {
     return {truck_engine(l), {(ch.cab0 + ch.cab1) * 0.5f * k, ch.cab_z * k}, (b0 + ch.bed1) * 0.5f * k, (ch.bed1 - b0) * 0.5f * k, z * k};
 }
 
+Vector2 plane_extent(engine::VehicleModel m);  // half an aircraft's length, half its span, tiles (below)
+
 std::vector<FlameSpot> vehicle_flames(engine::UnitTypeId type, engine::PlayerId owner, bool wreck, bool blown, Cargo cargo, float age, uint32_t seed) {
     std::vector<FlameSpot> spots;
     int most = 2;  // a wreck: all ablaze its first 24 s, dying down to 45 s
@@ -11285,6 +11447,27 @@ std::vector<FlameSpot> vehicle_flames(engine::UnitTypeId type, engine::PlayerId 
         add(e.x + 0.1f, -0.1f, e.y, 1);
         add(d.ring.x * k, d.ring.y * k, (blown ? d.deck : d.turret_z + d.turret_h) * k, blown ? 2 : 1);  // the turret, or the hole it left
         add(d.length * 0.3f * k, -0.06f, (d.deck + 0.5f) * k, 0);  // the driver's hatch
+        return spots;
+    }
+    if (wreck && has_plane_look(def.model) && cargo == Cargo::Fuel) {  // crashed: its pieces burning, its fuel round them
+        const Vector2 half = plane_extent(def.model);
+        const float l = half.x * kVehicleScale;
+        const float span = half.y * kVehicleScale;
+        add(0.0f, 0.02f, 2.0f, 2);          // the middle, burnt out
+        add(-0.18f * l, -0.05f, 1.5f, 2);
+        add(0.8f * l, 0.04f, 2.5f, 1);      // the nose
+        add(-0.85f * l, -0.03f, 2.5f, 1);   // the tail
+        add(0.05f * l, 0.9f * span, 0.5f, 1);  // the wing torn off
+        add(0.0f, -0.55f * span, 0.5f, 0);
+        if (age < 20.0f) {  // the fuel burning round them, going out
+            const int pool = age < 8.0f ? 1 : 0;
+            for (int i = 0; i < 9; ++i) {
+                if (age > 12.0f && i % 2 == 1) continue;
+                const float a = static_cast<float>(i) * 0.7f + rand01(seed, 50 + i) * 0.5f;
+                const float d = 0.4f + 0.4f * rand01(seed, 60 + i);
+                spots.push_back({std::cos(a) * d * 1.3f, std::sin(a) * d, 0.0f, pool, seed + 773u * static_cast<uint32_t>(i + 1)});
+            }
+        }
         return spots;
     }
     if (wreck && gun_or_plane(def)) add(0.0f, 0.0f, 3.0f, 1);
@@ -12154,6 +12337,7 @@ bool has_plane_look(engine::VehicleModel m) { return m >= engine::VehicleModel::
 const PlaneLook& plane_look_of(engine::VehicleModel m) {
     return kPlaneLooks[static_cast<size_t>(m) - static_cast<size_t>(engine::VehicleModel::Su25)];
 }
+Vector2 plane_extent(engine::VehicleModel m) { return {plane_look_of(m).length * 0.5f, plane_look_of(m).span}; }
 
 void draw_plane(const Frame& fr, const PlaneLook& look, Color team, int wear) {
     const Color paint = look.paint;
@@ -12200,6 +12384,130 @@ void draw_plane(const Frame& fr, const PlaneLook& look, Color team, int wear) {
         const Vector2 top[4] = {{-l + 0.08f, c + 0.006f}, {-l + 0.08f, c - 0.006f}, {-l, c - 0.006f}, {-l, c + 0.006f}};
         solid(fr, base, top, 4, 2.4f, 8.0f, shade(paint, 0.9f));
         if (wear < 4) block(fr, -l + 0.0f, -l + 0.08f, c - 0.007f, c + 0.007f, 7.0f, 8.4f, team);
+    }
+}
+
+// An aircraft come down: broken apart where it hit, burnt. The middle of it
+// burnt out down to its frames, black, ash over it; the nose broken off
+// ahead, turned askew; the tail behind, a fin still standing; a wing torn
+// off lying away, the marking on it; the other crumpled at its root; a
+// tailplane, an engine's pipe, scraps of its skin thrown about. What paint
+// is left grey, sooted. `layout`: how it came apart; `rust`: weeks on.
+void draw_plane_wreck(const Frame& fr, const PlaneLook& look, Color team, int layout, bool rust) {
+    const uint32_t seed = 0x5A17u + static_cast<uint32_t>(layout) * 7919u;
+    auto rnd = [&](int i) { return rand01(seed, i); };
+    const float l = look.length * 0.5f;
+    const float s = look.span;
+    const Color paint = rust ? mix(look.paint, {114, 68, 44, 255}, 0.7f) : mix(look.paint, {70, 66, 60, 255}, 0.25f);
+    const Color black = rust ? Color{90, 58, 42, 255} : Color{34, 30, 28, 255};
+    const Color ash{150, 148, 140, 255};
+    const Color steel = rust ? Color{110, 76, 56, 255} : Color{180, 178, 170, 255};
+    const float flip = layout == 0 ? 1.0f : -1.0f;  // which wing tore off
+    auto turned = [&](float a, float c, float angle) {
+        const Vector2 d{fr.f.x * std::cos(angle) - fr.f.y * std::sin(angle), fr.f.y * std::cos(angle) + fr.f.x * std::sin(angle)};
+        return fr.turned(d, a, c);
+    };
+    auto soot = [&](const Frame& f, float a0, float a1, float c0, float c1, float z, int n, int k) {
+        for (int i = 0; i < n; ++i) {
+            const float a = a0 + (a1 - a0) * rnd(k + i);
+            const float c = c0 + (c1 - c0) * rnd(k + 40 + i);
+            patch(f, a, c, 0.05f + 0.04f * rnd(k + 80 + i), 0.035f + 0.03f * rnd(k + 120 + i), z, i % 3 == 2 ? Color{64, 44, 32, 255} : black,
+                  seed + static_cast<uint32_t>(k + i));
+        }
+    };
+    struct Piece {
+        float a, c;
+        int kind;
+    };
+    std::vector<Piece> pieces;
+    for (int i = 0; i < 9; ++i) pieces.push_back({(rnd(200 + i) - 0.5f) * l * 2.8f, (rnd(220 + i) - 0.5f) * s * 2.4f, 0});  // scraps
+    pieces.push_back({l * 0.08f * flip, -flip * s * 1.2f, 1});                                                          // the tailplane
+    pieces.push_back({-l * 0.2f, flip * s * 0.55f + 0.08f, 2});                                                          // an engine's pipe
+    pieces.push_back({0.02f * l, flip * (s * 0.95f + 0.1f), 3});                                                        // the wing torn off
+    pieces.push_back({-0.95f * l, -0.03f * flip, 4});                                                                   // the tail
+    pieces.push_back({0.0f, 0.0f, 5});                                                                                  // the middle
+    pieces.push_back({0.9f * l, 0.05f * flip, 6});                                                                      // the nose
+    std::sort(pieces.begin(), pieces.end(), [&](const Piece& p, const Piece& q) { return fr.at(p.a, p.c).y < fr.at(q.a, q.c).y; });
+    for (const Piece& p : pieces) {
+        switch (p.kind) {
+            case 0: {  // a scrap of skin, bent up at an edge
+                const Frame f = turned(p.a, p.c, rnd(static_cast<int>(p.a * 100.0f) + 300) * 6.28f);
+                const float w = 0.03f + 0.04f * rnd(static_cast<int>(p.c * 100.0f) + 310);
+                const Vector2 q[4] = {{w, 0.0f}, {w * 0.3f, w * 0.8f}, {-w, w * 0.2f}, {-w * 0.4f, -w * 0.7f}};
+                poly_solid(f, q, 4, 0.0f, 0.4f + rnd(static_cast<int>(p.a * 50.0f) + 320), rnd(static_cast<int>(p.c * 70.0f) + 330) < 0.5f ? paint : black);
+                break;
+            }
+            case 1: {  // a tailplane lying on its own
+                const Frame f = turned(p.a, p.c, 0.9f + rnd(340) * 1.5f);
+                const Vector2 t[4] = {{0.05f, 0.0f}, {-0.02f, s * 0.4f}, {-0.09f, s * 0.4f}, {-0.07f, 0.0f}};
+                poly_solid(f, t, 4, 0.0f, 0.5f, paint);
+                soot(f, -0.08f, 0.03f, 0.0f, s * 0.35f, 0.5f, 2, 350);
+                break;
+            }
+            case 2: {  // an engine's pipe, silvery, black inside its end
+                const Frame f = turned(p.a, p.c, 0.3f + rnd(360) * 0.8f);
+                const Vector2 e[6] = {{0.16f, 0.035f}, {-0.16f, 0.04f}, {-0.17f, 0.0f}, {-0.16f, -0.04f}, {0.16f, -0.035f}, {0.17f, 0.0f}};
+                poly_solid(f, e, 6, 0.0f, 2.2f, steel, 0.25f);
+                patch(f, -0.15f, 0.0f, 0.02f, 0.03f, 2.3f, {20, 18, 16, 255}, seed + 7u);
+                soot(f, -0.1f, 0.1f, -0.03f, 0.03f, 2.2f, 2, 370);
+                break;
+            }
+            case 3: {  // the wing torn off, askew: its paint, its marking, the soot, its torn root
+                const Frame f = turned(p.a, p.c, flip * (0.35f + 0.5f * rnd(380)));
+                const float sg = flip;
+                const Vector2 w[4] = {{0.1f, 0.0f}, {0.1f - look.sweep, sg * s * 0.9f}, {0.1f - look.sweep - look.chord * 0.45f, sg * s * 0.9f},
+                                      {0.1f - look.chord, 0.0f}};
+                poly_solid(f, w, 4, 0.0f, 0.7f, paint);
+                const Vector2 m{0.1f - look.sweep * 0.5f - look.chord * 0.4f, sg * s * 0.5f};
+                patch(f, m.x, m.y, 0.07f, 0.06f, 0.75f, {236, 234, 226, 255}, seed + 11u);  // the marking
+                patch(f, m.x, m.y, 0.05f, 0.042f, 0.8f, team, seed + 12u);
+                soot(f, 0.1f - look.chord, 0.1f - look.sweep * 0.3f, 0.0f, sg * s * 0.4f, 0.75f, 4, 390);
+                for (int i = 0; i < 4; ++i) {  // its torn root, ragged
+                    const float a = 0.1f - look.chord * static_cast<float>(i) / 4.0f;
+                    DrawLineV(f.at(a, 0.0f, 0.7f), f.at(a - 0.02f, -sg * 0.03f * rnd(400 + i), 0.5f), lit(black));
+                }
+                break;
+            }
+            case 4: {  // the tail: the back of it, a fin standing (bent), the other down
+                const Frame f = turned(p.a, p.c, -flip * (0.25f + 0.4f * rnd(410)));
+                const Vector2 b[6] = {{0.26f, 0.05f}, {-0.16f, 0.045f}, {-0.22f, 0.02f}, {-0.22f, -0.02f}, {-0.16f, -0.045f}, {0.26f, -0.05f}};
+                poly_solid(f, b, 6, 0.0f, 2.2f, paint, 0.25f);
+                soot(f, 0.05f, 0.26f, -0.04f, 0.04f, 2.2f, 3, 420);  // the break
+                DrawLineV(f.at(0.26f, -0.05f, 1.0f), f.at(0.26f, 0.05f, 1.6f), lit(black));
+                const float c0 = look.twin_tail ? 0.07f : 0.0f;
+                const Vector2 base[4] = {{0.0f, c0 + 0.008f}, {0.0f, c0 - 0.008f}, {-0.2f, c0 - 0.008f}, {-0.2f, c0 + 0.008f}};
+                const Vector2 top[4] = {{-0.14f, c0 + 0.03f}, {-0.14f, c0 + 0.016f}, {-0.22f, c0 + 0.016f}, {-0.22f, c0 + 0.03f}};  // bent over
+                solid(f, base, top, 4, 2.0f, 7.0f, shade(paint, 0.9f));
+                block(f, -0.22f, -0.14f, c0 + 0.012f, c0 + 0.032f, 6.2f, 7.2f, team);
+                if (look.twin_tail) {  // the other one lying flat
+                    const Vector2 fin[4] = {{-0.02f, -0.1f}, {-0.2f, -0.1f}, {-0.26f, -0.24f}, {-0.1f, -0.24f}};
+                    poly_solid(f, fin, 4, 0.0f, 0.4f, shade(paint, 0.85f));
+                }
+                break;
+            }
+            case 5: {  // the middle burnt out: black to its frames, ash on it; the other wing crumpled at the root
+                const float sg = -flip;
+                const Vector2 w[4] = {{0.05f, 0.0f}, {0.05f - look.sweep * 0.5f, sg * s * 0.5f}, {-look.chord * 0.6f, sg * s * 0.46f}, {-look.chord * 0.9f, 0.0f}};
+                poly_solid(fr, w, 4, 0.0f, 0.5f, mix(paint, black, 0.5f));
+                soot(fr, -look.chord * 0.8f, 0.0f, 0.0f, sg * s * 0.45f, 0.5f, 3, 430);
+                const Vector2 body[6] = {{0.42f * l, 0.055f}, {-0.45f * l, 0.05f}, {-0.5f * l, 0.0f}, {-0.45f * l, -0.05f}, {0.42f * l, -0.055f}, {0.46f * l, 0.0f}};
+                poly_solid(fr, body, 6, 0.0f, 1.4f, black, 0.2f);
+                for (float a = -0.4f * l; a < 0.4f * l; a += 0.07f) {  // its frames, showing
+                    DrawLineV(fr.at(a, -0.045f, 1.4f), fr.at(a + 0.01f, 0.045f, 1.4f), lit(shade(steel, 0.7f)));
+                }
+                for (int i = 0; i < 6; ++i) patch(fr, (rnd(440 + i) - 0.5f) * 0.8f * l, (rnd(450 + i) - 0.5f) * 0.08f, 0.03f, 0.02f, 1.5f, ash, seed + 20u + static_cast<uint32_t>(i));
+                break;
+            }
+            case 6: {  // the nose broken off, turned: the canopy smashed, soot back from the break
+                const Frame f = turned(p.a, p.c, flip * (0.3f + 0.5f * rnd(460)));
+                const Vector2 n[5] = {{0.34f, 0.0f}, {0.16f, 0.05f}, {-0.2f, 0.055f}, {-0.2f, -0.055f}, {0.16f, -0.05f}};
+                poly_solid(f, n, 5, 0.0f, 2.6f, paint, 0.3f);
+                round_solid(f, 0.06f, 0.0f, 0.075f, 0.025f, 2.2f, 3.0f, {26, 24, 22, 255}, 0.3f, 8);  // the canopy, gone
+                soot(f, -0.2f, 0.02f, -0.05f, 0.05f, 2.6f, 4, 470);
+                DrawLineV(f.at(-0.2f, -0.05f, 1.2f), f.at(-0.2f, 0.05f, 2.0f), lit(black));  // the break
+                break;
+            }
+        }
     }
 }
 
@@ -12610,6 +12918,15 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                          draw_towed_gun(fr, gun, frame, team, w, frame == 1 ? 1 : 0);
                      }
                  });
+            if (plane && wear >= 4) {  // its crashed wreck, burnt (and rusted): broken apart two ways
+                PlaneLook left = plane_look_of(model);
+                std::vector<Color> wreck = palette_of(left.paint, left.camo, left.camo1, left.camo2, theme::player_color(owner),
+                                                      {{150, 148, 140, 255}, {180, 178, 170, 255}, {236, 234, 226, 255}, {90, 92, 90, 255}});
+                for (const float k : {0.45f, 0.62f, 0.8f}) wreck.push_back(shade(mix(left.paint, {114, 68, 44, 255}, 0.7f), k));
+                bake(part, small_variant(model, wear + 2), owner, 2, wreck,
+                     TextFormat("plane_wreck_%d_%d_%d", static_cast<int>(model), wear, static_cast<int>(owner)),
+                     [&](Frame fr, int frame, std::vector<Whip>&) { draw_plane_wreck(fr, left, theme::player_color(owner), frame, wear == 5); });
+            }
             if (!plane && (wear == 0 || wear == 3)) {
                 bake(SpritePart::Barrel, armor_variant(model, 0, wear, 0), owner, kBarrelFrames, palette,
                      TextFormat("barrel_%d_%d_0_%d", static_cast<int>(model), wear, static_cast<int>(owner)),
@@ -13150,6 +13467,22 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         if (under == engine::Terrain::Water) return;  // gone under
         const bool plane = has_plane_look(def.model);
         const SpritePart part = plane ? SpritePart::Plane : SpritePart::Gun;
+        if (plane && r.crashed) {  // come down: broken apart where it hit, burnt, its pieces burning a while
+            const SpriteSheet* pieces = sheet(part, small_variant(def.model, 6), r.owner);
+            const SpriteSheet* rusty = sheet(part, small_variant(def.model, 7), r.owner);
+            if (!pieces) return;
+            const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
+            const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
+            const float light = g_light;
+            g_light = light * (0.4f + 0.6f * fade);
+            const Vector2 at = on_terrain(map, r.ground);
+            draw_scorch(at, 2, r.age < 60.0f, fade, r.seed);
+            const int layout = static_cast<int>(r.seed % static_cast<uint32_t>(pieces->frames));
+            draw_sprite(*pieces, at, unit(r.facing), layout);
+            if (rusty && rust > 0.0f) draw_sprite(*rusty, at, unit(r.facing), layout, ColorAlpha(WHITE, rust));
+            g_light = light;
+            return;
+        }
         const SpriteSheet* burnt = sheet(part, small_variant(def.model, 4), r.owner);
         const SpriteSheet* rusted = sheet(part, small_variant(def.model, 5), r.owner);
         if (!burnt) return;

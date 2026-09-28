@@ -222,6 +222,7 @@ void World::update_aircraft(Unit& u) {
 
     if (!home) {
         u.hp = 0;  // nowhere to land: diverted to the rear, out of the fight
+        u.diverted = true;
         return;
     }
     const FixedVec2 spot = parking_spot(*home, u.id);
@@ -328,7 +329,26 @@ void World::move_missile(Projectile& p) {
     p.pos = p.target;
     if (plane && plane->airborne) hurt(*plane, p.weapon, {p.origin, 0, false, true});
     recent_impacts_.push_back({tick_, p.pos, p.shooter_type, Fixed::from_ratio(1, 2), true});
+    recent_impacts_.back().height = max(Fixed{}, p.target_height - ground_at(p.target));
     p.id = 0;
+}
+
+// Aircraft brought down, falling: coming down now, a burst of burning fuel
+// and what they had aboard where they crash, whatever is there burning in
+// it; a building it comes down on takes it as it would a bomb from the air
+// (a block of flats has the section there brought down). The wreck's smoke
+// rising there. Kept a little after, to be seen.
+void World::update_crashes() {
+    static constexpr WeaponDef kCrashFire{.name = "An aircraft crashing", .damage = 120, .damage_type = DamageType::Explosive,
+                                          .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
+                                          .splash_radius = Fixed::from_int(2), .accuracy = 100, .miss_spread = Fixed{},
+                                          .aerial_bomb = true};
+    for (const Crash& c : crashes_) {
+        if (c.hits != tick_) continue;
+        burst_into_flames(c.to, c.owner, kCrashFire);
+        smokes_.push_back({clamp_to_map(c.to + kPlumeDrift, Fixed{}), kPlumeRadius, tick_ + kPlumeTicks, SmokeKind::Plume, tick_});
+    }
+    std::erase_if(crashes_, [&](const Crash& c) { return c.hits + kCrashHistory < tick_; });
 }
 
 // An aircraft in the air is seen by anyone who has it within his sight, over

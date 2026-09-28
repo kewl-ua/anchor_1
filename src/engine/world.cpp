@@ -660,6 +660,7 @@ void World::step() {
     // Projectiles move after units, so a unit that stepped aside this tick dodges.
     move_projectiles();
     update_fires();
+    update_crashes();
     apply_damage_and_remove_dead();
 
     separate_units();
@@ -1620,13 +1621,13 @@ void World::apply_damage_and_remove_dead() {
     for (const Unit& u : units_) {
         const Resource load = going_up(u);
         if (load == Resource::Count) continue;
-        static constexpr WeaponDef kTankerFire{.name = "Burning fuel", .damage = 60,
+        static constexpr WeaponDef kTankerFire{.name = "Burning fuel", .damage = 80,
                                                .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
-                                               .projectile_speed = Fixed{}, .splash_radius = Fixed::from_ratio(3, 2),
+                                               .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(2),
                                                .accuracy = 100, .miss_spread = Fixed{}};
-        static constexpr WeaponDef kAmmoCookOff{.name = "Cooking-off rounds", .damage = 45,
+        static constexpr WeaponDef kAmmoCookOff{.name = "A load of rounds going up", .damage = 110,
                                                 .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
-                                                .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
+                                                .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(2),
                                                 .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, load == Resource::Fuel ? kTankerFire : kAmmoCookOff);
     }
@@ -1637,9 +1638,9 @@ void World::apply_damage_and_remove_dead() {
     };
     for (const Unit& u : units_) {
         if (u.hp > 0 || !blows_up(u)) continue;
-        static constexpr WeaponDef kRoundsGoingUp{.name = "A tank's rounds going up", .damage = 45,
+        static constexpr WeaponDef kRoundsGoingUp{.name = "A tank's rounds going up", .damage = 70,
                                                   .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
-                                                  .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
+                                                  .projectile_speed = Fixed{}, .splash_radius = Fixed::from_ratio(3, 2),
                                                   .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, kRoundsGoingUp, u.id);
     }
@@ -1652,10 +1653,19 @@ void World::apply_damage_and_remove_dead() {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];
         }
     }
-    // A vehicle knocked out burns: its smoke hides what's behind it a while
-    // (not one gone under the water or into a bog).
+    // An aircraft brought down in the air falls on ahead and crashes (see
+    // Crash, update_crashes); one gone off to the rear is just gone.
     for (const Unit& u : units_) {
-        if (u.hp > 0 || !def_of(u).vehicle || u.inside) continue;
+        if (u.hp > 0 || !u.airborne || u.diverted) continue;
+        const Tick fall = kFallTicks + kFallTicksPerLevel * u.altitude.to_int();
+        const Fixed run = Fixed::from_raw(def_of(u).speed.raw * kFallGlidePercent / 100) * static_cast<int32_t>(fall);
+        const FixedVec2 heading = u.facing.length().raw > 0 ? u.facing * (Fixed::from_int(1) / u.facing.length()) : FixedVec2{Fixed::from_int(1), Fixed{}};
+        crashes_.push_back({u.id, u.type, u.owner, u.pos, clamp_to_map(u.pos + heading * run, Fixed::from_int(1)), u.altitude, tick_, tick_ + fall});
+    }
+    // A vehicle knocked out burns: its smoke hides what's behind it a while
+    // (not one gone under the water or into a bog; an aircraft where it crashes).
+    for (const Unit& u : units_) {
+        if (u.hp > 0 || !def_of(u).vehicle || u.inside || u.airborne || u.diverted) continue;
         if (map_.terrain_at(u.pos) == Terrain::Water || u.mired >= kBogLimit) continue;
         smokes_.push_back({clamp_to_map(u.pos + kPlumeDrift, Fixed{}), kPlumeRadius, tick_ + kPlumeTicks, SmokeKind::Plume, tick_});
     }
@@ -1776,11 +1786,17 @@ uint64_t World::checksum() const {
         mix(u.silent ? 1 : 0);
         mix(u.airborne ? 1 : 0);
         mix_fixed(u.altitude);
+        mix(u.diverted ? 1 : 0);
         mix(static_cast<uint8_t>(u.haul_cargo));
         mix(u.haul_depot);
         mix(u.serves);
         mix(u.on_call ? 1 : 0);
         mix(u.delivering ? 1 : 0);
+    }
+    for (const Crash& c : crashes_) {
+        mix(c.id);
+        mix_vec(c.to);
+        mix(c.hits);
     }
     for (const Courier& c : couriers_) {
         mix(c.arrives);

@@ -677,7 +677,7 @@ void World::burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fir
     for (const Structure& s : structures_) {
         uint64_t closest = UINT64_MAX;
         for (const TilePos& t : s.tiles) closest = std::min(closest, distance_sq_to_tile(t, at));
-        if (s.hp > 0 && closest <= square_raw(fire.splash_radius)) hurt_structure(s, fire);
+        if (s.hp > 0 && closest <= square_raw(fire.splash_radius)) hurt_structure(s, fire, at);
     }
     (void)owner;
 }
