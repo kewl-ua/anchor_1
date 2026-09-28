@@ -3795,6 +3795,8 @@ float drawn_height(const engine::Structure& s) {
 // an entrance's, from the roof to the ground: the floors' ends and the
 // rooms (their wallpaper) open to the street, the back wall standing,
 // the heap of it before them.
+Color room_dark(Color c) { return shade(c, 0.35f); }
+
 void draw_apartment(const engine::TileMap& map, const engine::Structure& s, float damage) {
     constexpr float kPlinth = 4.0f;
     constexpr float kFloor = 11.0f;
@@ -3847,12 +3849,43 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     }
     auto stands = [&](int b) { return b >= 0 && b < bays && !gone[static_cast<size_t>(b)]; };
     auto x_at = [&](float u) { return r.x + r.width * (1.0f - u); };  // the long front runs from +x to x0
+    // The bays beside a gap are broken off ragged, floor by floor: each
+    // floor's piece of the bay reaches its own way (a stump, the whole bay,
+    // out over the gap). +1: the bay on the gap's x0 side (its cut faces the
+    // light), -1: on its +x side; 0: not at a gap.
+    auto ragged = [&](int b) {
+        if (!stands(b)) return 0;
+        if (b > 0 && !stands(b - 1)) return 1;
+        if (b + 1 < bays && !stands(b + 1)) return -1;
+        return 0;
+    };
+    const float bu = 1.0f / static_cast<float>(bays);
+    // The piece of a ragged bay on a floor, as a range of the facade's u, at
+    // `t` of its depth (0 its back, 1 its front: broken off aslant).
+    auto piece = [&](int b, int fl, float t = 1.0f) {
+        const float base = 0.45f + 0.5f * rand01(h, 1290 + b);  // the bay broken off about here, each floor its own way
+        const float front = std::clamp(base + 0.55f * (rand01(h, 1300 + b * 7 + fl) - 0.5f) - (fl == kFloors - 1 ? 0.15f : 0.0f), 0.2f, 1.25f);
+        const float back = std::clamp(front + 0.8f * (rand01(h, 1350 + b * 7 + fl) - 0.5f), 0.15f, 1.3f);
+        const float w = (back + (front - back) * t) * bu;
+        return ragged(b) > 0 ? std::pair{static_cast<float>(b + 1) * bu - w, static_cast<float>(b + 1) * bu}
+                             : std::pair{static_cast<float>(b) * bu, static_cast<float>(b) * bu + w};
+    };
+    auto floor_v = [&](int fl) {  // a floor's band up the wall (the plinth with the first, the parapet with the top)
+        return std::pair{fl == 0 ? 0.0f : kPlinth + kFloor * static_cast<float>(fl), fl == kFloors - 1 ? kWall : kPlinth + kFloor * static_cast<float>(fl + 1)};
+    };
+    // Is the facade there, on a floor, at u (a ragged bay's piece reaching over it)?
+    auto covered = [&](int b, int fl, float u0, float u1) {
+        if (!stands(b)) return false;
+        if (ragged(b) == 0) return true;
+        const auto [pa, pb] = piece(b, fl);
+        return u0 >= pa && u1 <= pb;
+    };
     // Through each gap: the back wall's inside, standing part way, the rooms'
     // colours floor by floor; the cut end of the section beside it.
     static constexpr Color kRooms[5] = {{186, 204, 170, 255}, {214, 196, 150, 255}, {170, 190, 210, 255}, {214, 176, 170, 255}, {200, 196, 186, 255}};
     for (const auto& [b0, b1] : gaps) {
-        const float u0 = static_cast<float>(b0) / bays;
-        const float u1 = static_cast<float>(b1) / bays;
+        const float u0 = static_cast<float>(std::max(0, b0 - 1)) / bays;  // (behind the ragged bays, too)
+        const float u1 = static_cast<float>(std::min(bays, b1 + 1)) / bays;
         const Face back{on_terrain(map, {x_at(u0), r.y}), on_terrain(map, {x_at(u1), r.y})};
         const int standing = 1 + static_cast<int>(rand01(h, b0) * 3.0f);
         const float bpx = back.px();
@@ -3870,21 +3903,55 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
             face_line(back, u, 0.0f, u, top_v, shade(concrete, 0.5f));  // a partition's end
             burnt(back, u, u1r, 0.0f, top_v, 0.5f, h + static_cast<uint32_t>(room));
         }
-        // The cut end of the section beside it (facing the light): the floors' slabs, the rooms between.
+        // The floors' tops bared where one reaches out further than the one over it (dust, a rug).
+        for (const int b : {b0 - 1, b1}) {
+            if (!stands(b)) continue;
+            for (int fl = 0; fl + 1 < kFloors; ++fl) {
+                float ua[2];
+                float ub[2];
+                for (int t = 0; t < 2; ++t) {  // at its back, at its front
+                    const auto [pa, pb] = piece(b, fl, static_cast<float>(t));
+                    const auto [qa, qb] = piece(b, fl + 1, static_cast<float>(t));
+                    ua[t] = ragged(b) > 0 ? pa : qb;
+                    ub[t] = std::max(ua[t], ragged(b) > 0 ? qa : pb);
+                }
+                if (ub[0] <= ua[0] && ub[1] <= ua[1]) continue;
+                const float z = kPlinth + kFloor * static_cast<float>(fl + 1);
+                fill_quad(on_terrain(map, {x_at(ub[0]), r.y}, z), on_terrain(map, {x_at(ua[0]), r.y}, z), on_terrain(map, {x_at(ua[1]), r.y + r.height}, z),
+                          on_terrain(map, {x_at(ub[1]), r.y + r.height}, z), shade({96, 88, 80, 255}, soot));
+                for (int k = 0; k < 14; ++k) {  // what's fallen on it: bits of the walls, plaster, a rug
+                    const float kt = rand01(h, 1420 + fl * 31 + k);
+                    const float ku = ua[0] + (ua[1] - ua[0]) * kt + ((ub[0] - ua[0]) + ((ub[1] - ua[1]) - (ub[0] - ua[0])) * kt) * rand01(h, 1400 + fl * 31 + k);
+                    const Vector2 p = on_terrain(map, {x_at(ku), r.y + r.height * kt}, z);
+                    const float size = 1.0f + 1.5f * rand01(h, 1440 + fl * 31 + k);
+                    const Color bit = k == 0 ? Color{150, 60, 50, 255} : k % 3 == 0 ? kRooms[k % 5] : shade(concrete, 0.7f + 0.4f * rand01(h, 1460 + k));
+                    DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), size, size * 0.6f, lit(shade(bit, soot)));
+                }
+            }
+        }
+        // The cut end of the section beside it (facing the light), floor by
+        // floor where each broke off: the floors' slabs, the rooms between.
         if (b1 >= bays) continue;  // (at the far end: the cut faces away)
-        const Face cut{on_terrain(map, {x_at(u1), r.y + r.height}), on_terrain(map, {x_at(u1), r.y})};
-        // Room by room across its depth (the partitions, a door through one), in the shadow of the floor
-        // over them; the floor's dark along the foot; a wardrobe, a sofa; the outer walls' ends at its edges.
-        const float cpx = cut.px();
-        static constexpr float kParts[4] = {0.0f, 0.34f, 0.68f, 1.0f};
-        for (int fl = 0; fl < kFloors; ++fl) {
-            const float v = kPlinth + kFloor * fl;
+        std::array<int, kFloors> order{};
+        for (int fl = 0; fl < kFloors; ++fl) order[static_cast<size_t>(fl)] = fl;
+        auto mid_u = [&](int fl) { return piece(b1, fl, 0.0f).first + piece(b1, fl, 1.0f).first; };
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return mid_u(a) > mid_u(b); });  // the ones further back first
+        for (const int fl : order) {
+            const Face cut{on_terrain(map, {x_at(piece(b1, fl, 1.0f).first), r.y + r.height}), on_terrain(map, {x_at(piece(b1, fl, 0.0f).first), r.y})};
+            const float cpx = cut.px();
+            const auto [va, vb] = floor_v(fl);
+            const float v = kPlinth + kFloor * static_cast<float>(fl);
+            // Room by room across its depth (the partitions, a door through one), in the shadow of the floor
+            // over them; the floor's dark along the foot; a wardrobe, a sofa; the outer walls' ends at its edges.
+            const float split = 0.3f + 0.1f * rand01(h, 1500 + fl);
+            const float kParts[4] = {0.0f, split, split + 0.3f + 0.08f * rand01(h, 1510 + fl), 1.0f};
             for (int part = 0; part < 3; ++part) {
                 const float a = kParts[part];
                 const float b = kParts[part + 1];
-                face_fill(cut, a, b, v + 1.5f, v + kFloor, shade(kRooms[(b1 + fl * 2 + part) % 5], 0.72f * soot));
-                face_fill(cut, a, b, v + kFloor - 2.0f, v + kFloor, shade(kRooms[(b1 + fl * 2 + part) % 5], 0.5f * soot));  // under the ceiling
-                face_fill(cut, a, b, v + 1.5f, v + 3.0f, shade({96, 80, 64, 255}, soot));  // the floor
+                const Color paint = kRooms[(b1 + fl * 2 + part) % 5];
+                face_fill(cut, a, b, v + 1.5f, v + kFloor, shade(paint, 0.72f * soot));
+                face_fill(cut, a, b, v + kFloor - 2.0f, v + kFloor, shade(paint, 0.5f * soot));  // under the ceiling
+                face_fill(cut, a, b, v + 1.5f, v + 3.0f, shade({96, 80, 64, 255}, soot));       // the floor
                 if (rand01(h, 20 + fl * 3 + part) < 0.35f) {
                     const float m = a + (b - a) * (0.2f + 0.5f * rand01(h, 40 + fl * 3 + part));
                     face_fill(cut, m, m + 4.0f * cpx, v + 3.0f, v + 3.0f + 3.0f + 3.0f * rand01(h, 60 + fl), shade({110, 80, 60, 255}, soot));
@@ -3894,25 +3961,24 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
                 face_fill(cut, kParts[k] - cpx, kParts[k] + cpx, v + 1.5f, v + kFloor, shade(concrete, 0.62f * soot));
                 if (rand01(h, 80 + fl * 2 + k) < 0.5f) face_fill(cut, kParts[k] - cpx, kParts[k] + cpx, v + 3.0f, v + 9.0f, {30, 26, 24, 255});
             }
-            face_fill(cut, 0.0f, 1.0f, v, v + 1.5f, shade(concrete, 1.05f * soot));  // the slab's end
-        }
-        for (const float e : {0.0f, 1.0f - 2.0f * cpx}) face_fill(cut, e, e + 2.0f * cpx, 0.0f, kWall, shade(wall, 0.9f));  // the outer walls' ends
-        face_fill(cut, 0.0f, 1.0f, 0.0f, kPlinth, shade(concrete, 0.8f * soot));
-        face_fill(cut, 0.0f, 1.0f, kWall - 1.0f, kWall + 1.0f, shade(concrete, 1.1f * soot));
-        if (stage >= 2) burnt(cut, 0.0f, 1.0f, kPlinth, kWall, stage == 2 ? 0.35f : 0.7f, h + static_cast<uint32_t>(b1));
-        // Slabs hanging off the cut floors.
-        for (int k = 0; k < 2; ++k) {
-            const float v = kPlinth + kFloor * (1 + static_cast<int>(rand01(h, 30 + k) * 3.0f));
-            const Vector2 a = facade.at(u1, v);
-            DrawLineEx(a, {a.x + 6.0f, a.y + 9.0f}, 2.0f, lit(shade(concrete, 0.9f)));
+            // The slab's end, broken: bits bitten out of it.
+            face_fill(cut, 0.0f, 1.0f, v, v + 1.5f, shade(concrete, 1.05f * soot));
+            for (int k = 0; k < 3; ++k) {
+                const float m = rand01(h, 1520 + fl * 5 + k);
+                face_fill(cut, m, std::min(1.0f, m + 3.0f * cpx), v, v + 1.5f, shade(room_dark(kRooms[(fl + k) % 5]), soot));
+            }
+            for (const float e : {0.0f, 1.0f - 2.0f * cpx}) face_fill(cut, e, e + 2.0f * cpx, va, vb, shade(wall, 0.9f));  // the outer walls' ends
+            if (fl == 0) face_fill(cut, 0.0f, 1.0f, 0.0f, kPlinth, shade(concrete, 0.8f * soot));
+            if (fl == kFloors - 1) face_fill(cut, 0.0f, 1.0f, kWall - 1.0f, kWall + 1.0f, shade(concrete, 1.1f * soot));
+            if (stage >= 2) burnt(cut, 0.0f, 1.0f, va, vb, stage == 2 ? 0.35f : 0.7f, h + static_cast<uint32_t>(b1 * 7 + fl));
         }
     }
     // The heap where each section came down: leaning on the back wall, down
     // to the street, spilling into it (and out of the end, at an end).
     const Color bits = brick ? Color{200, 198, 190, 255} : Color{150, 90, 64, 255};
     auto gap_pile = [&](int b0, int b1, bool spill) {
-        const float xa = x_at(static_cast<float>(b1) / static_cast<float>(bays));
-        const float xb = x_at(static_cast<float>(b0) / static_cast<float>(bays));
+        const float xa = x_at(b1 < bays ? std::max(piece(b1, 0, 0.0f).first, piece(b1, 0, 1.0f).first) : 1.0f);
+        const float xb = x_at(b0 > 0 ? std::min(piece(b0 - 1, 0, 0.0f).second, piece(b0 - 1, 0, 1.0f).second) : 0.0f);
         const bool open_lo = b1 >= bays;
         const bool open_hi = b0 == 0;
         constexpr float kSpill = 0.45f;
@@ -3927,21 +3993,31 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
                 float f = t <= 1.0f ? 1.0f - 0.3f * t : 0.7f * (1.0f - (g.y - front) / kSpill);
                 if (open_lo) f *= std::clamp((g.x - x0) / (2.0f * kOut), 0.0f, 1.0f);
                 if (open_hi) f *= std::clamp((x1 - g.x) / (2.0f * kOut), 0.0f, 1.0f);
-                return 30.0f * std::sqrt(std::max(0.0f, f)) * (0.72f + 0.28f * ruin_noise(g));
+                float cap = 1000.0f;  // under a floor reaching out over it
+                const float u = 1.0f - (g.x - r.x) / r.width;
+                for (const int b : {b0 - 1, b1}) {
+                    if (!stands(b) || g.y > front) continue;
+                    for (int fl = 1; fl < kFloors; ++fl) {
+                        const auto [pa, pb] = piece(b, fl, (g.y - r.y) / r.height);
+                        if (u >= pa && u <= pb) cap = std::min(cap, kPlinth + kFloor * static_cast<float>(fl) - 1.0f);
+                    }
+                }
+                return std::min(cap, 30.0f * std::sqrt(std::max(0.0f, f)) * (0.72f + 0.28f * ruin_noise(g)));
             },
             {concrete, bits, 0.18f, true}, h + static_cast<uint32_t>(b0 * 7), 12, [&](Vector2 g) { return (g.y > front) == spill; });
     };
     for (const auto& [b0, b1] : gaps) gap_pile(b0, b1, false);
-    // The walls, the plinth, standing stretch by stretch.
+    // The walls, the plinth, standing stretch by stretch (whole bays: the ragged ones piece by piece).
+    auto whole_bay = [&](int b) { return stands(b) && ragged(b) == 0; };
     auto stretches = [&](auto fn) {
         int b = 0;
         while (b < bays) {
-            if (!stands(b)) {
+            if (!whole_bay(b)) {
                 ++b;
                 continue;
             }
             int e = b;
-            while (e < bays && stands(e)) ++e;
+            while (e < bays && whole_bay(e)) ++e;
             fn(b, e);
             b = e;
         }
@@ -3958,6 +4034,50 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
         face_line(f, u0, kPlinth, u1, kPlinth, shade({150, 146, 138, 255}, k * soot));
     };
     stretches([&](int b0, int b1) { wall_of(facade, kf, b0, b1, bays); });
+    for (int b = 0; b < bays; ++b) {
+        const int side_of = ragged(b);
+        if (side_of == 0) continue;
+        for (int fl = 0; fl < kFloors; ++fl) {
+            const auto [pa, pb] = piece(b, fl);
+            const auto [va, vb] = floor_v(fl);
+            const float v0 = fl == 0 ? kPlinth : va;
+            if (brick) {
+                wall_texture(facade, pa, pb, v0, vb, Wall::Silicate, shade(wall, kf), h + static_cast<uint32_t>(fl));
+            } else {  // its panel (as panels_in has them)
+                face_fill(facade, pa, pb, v0, vb, shade(wall, kf * (0.95f + 0.1f * rand01(h, fl * 97 + b))));
+                for (const float seam : {static_cast<float>(b) * bu, static_cast<float>(b + 1) * bu}) {
+                    if (seam > pa + px && seam < pb - px) face_line(facade, seam, v0, seam, vb, shade(wall, 0.7f * kf));
+                }
+            }
+            face_line(facade, pa, va + 0.5f, pb, va + 0.5f, shade(concrete, 0.8f * kf));  // the slab's line
+            if (fl == 0) {
+                face_fill(facade, pa, pb, 0.0f, kPlinth, shade({120, 116, 108, 255}, kf * soot));
+                face_line(facade, pa, kPlinth, pb, kPlinth, shade({150, 146, 138, 255}, kf * soot));
+            }
+            // Its broken end: the panel's edge, pale, bitten out here and
+            // there (the room dark behind); the rebar out of it.
+            const float e = side_of > 0 ? pa : pb;
+            face_line(facade, e, va, e, vb, shade(concrete, 1.1f));
+            for (int k = 0; k < 2; ++k) {
+                if (rand01(h, 1620 + b * 5 + fl * 2 + k) > 0.6f) continue;
+                const float deep = (0.08f + 0.22f * rand01(h, 1630 + fl * 2 + k)) * bu * (side_of > 0 ? 1.0f : -1.0f);
+                const float n0 = va + (vb - va) * (0.15f + 0.45f * rand01(h, 1640 + fl * 2 + k));
+                const float n1 = std::min(vb - 1.0f, n0 + 2.0f + 5.0f * rand01(h, 1650 + fl * 2 + k));
+                const float in = std::clamp(e + deep, pa, pb);
+                face_fill(facade, std::min(e, in), std::max(e, in), n0, n1, shade(kRooms[(b + fl + k) % 5], 0.3f * soot));
+                face_line(facade, in, n0, in, n1, shade(concrete, 1.05f));
+            }
+            if (rand01(h, 1600 + b * 5 + fl) < 0.5f) {
+                const Vector2 p = facade.at(e, va + 3.0f + 5.0f * rand01(h, 1610 + fl));
+                DrawLineV(p, {p.x + (side_of > 0 ? 4.0f : -4.0f), p.y + 2.0f}, lit({74, 56, 44, 255}));
+            }
+            // Under a floor reaching out over it (on the far side of the gap): the dark in there.
+            if (side_of < 0 && fl + 1 < kFloors) {
+                const float qb = piece(b, fl + 1).second;
+                if (qb > pb) face_fill(facade, pb, qb, va + (fl == 0 ? kPlinth : 0.0f), vb, {28, 24, 22, 255});
+            }
+        }
+    }
     const int side_bays = std::max(2, static_cast<int>(side.pixels() / 11.0f));
     const bool end_stands = !long_front || stands(0);  // the end wall in the light came down with its section
     if (end_stands) wall_of(side, ks, 0, side_bays, side_bays);
@@ -3976,8 +4096,8 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     for (int fl = 0; fl < kFloors; ++fl) {
         const float v = kPlinth + kFloor * fl + 3.0f;
         for (int b = 0; b < bays; ++b) {
-            if (!stands(b)) continue;
             const float u = (static_cast<float>(b) + 0.5f) / static_cast<float>(bays);
+            if (!covered(b, fl, u - 3.0f * px, u + 3.0f * px)) continue;
             if (entrance_at(b)) {  // the stairwell's window, between the floors
                 if (fl > 0) window_on(facade, u, v - 3.0f, 3.0f, 4.0f, {shade({150, 150, 146, 255}, 1.0f), false}, window_state(fl, b) > 0, kf);
                 continue;
@@ -4016,7 +4136,7 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     // The balconies: a slab, the railing's panel before it; glazed in on
     // some, washing on others; rust down from them. Hanging off, gone, as it's hit.
     for (int b = 1; b < bays; b += 2) {
-        if (entrance_at(b) || entrance_at(b - 1) || !stands(b) || !stands(b - 1)) continue;
+        if (entrance_at(b) || entrance_at(b - 1) || !whole_bay(b) || !whole_bay(b - 1)) continue;
         const float u = static_cast<float>(b) / static_cast<float>(bays);
         for (int fl = 1; fl < kFloors; ++fl) {
             const float v = kPlinth + kFloor * fl;
@@ -4058,7 +4178,7 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     }
     // The entrances: iron doors under their concrete canopies, a step.
     for (int b = 0; b < bays; ++b) {
-        if (!entrance_at(b) || !stands(b)) continue;
+        if (!entrance_at(b) || !whole_bay(b)) continue;
         const float u = (static_cast<float>(b) + 0.5f) / static_cast<float>(bays);
         door_on(facade, u, 4.0f, 7.5f, rand01(h, 9000 + b) < 0.5f ? Color{96, 70, 50, 255} : Color{70, 96, 80, 255}, kf * soot);
         const float du = 4.0f * px;
@@ -4068,7 +4188,7 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
         DrawLineV({c0.x, c0.y + 4.0f}, {c1.x, c1.y + 4.0f}, lit(shade({120, 116, 108, 255}, soot)));
     }
     for (int b = 0; b < bays; b += 2) {  // the cellar's little windows
-        if (!stands(b)) continue;
+        if (!whole_bay(b)) continue;
         const float u = (static_cast<float>(b) + 0.5f) / static_cast<float>(bays);
         face_fill(facade, u - 1.5f * px, u + 1.5f * px, 1.0f, 2.5f, {30, 28, 26, 255});
     }
@@ -4077,7 +4197,7 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
         const int holes = stage == 2 ? 2 : 4;
         for (int k = 0; k < holes; ++k) {
             const int b = static_cast<int>(rand01(h, 11000 + k) * static_cast<float>(bays));
-            if (!stands(b)) continue;
+            if (!whole_bay(b)) continue;
             const float u = (static_cast<float>(b) + 0.5f) / static_cast<float>(bays);
             const float v = kPlinth + kFloor * (0.5f + 3.8f * rand01(h, 11100 + k));
             wall_hole(facade, u, v, 9.0f + 5.0f * damage, 7.0f + 5.0f * damage, h + static_cast<uint32_t>(k) * 31u);
@@ -4100,10 +4220,48 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
         if (b0 == 0 || whole) DrawLineEx({a1.x, a1.y - 1.0f}, {c1.x, c1.y - 1.0f}, 2.0f, lit(shade(wall, 1.1f)));
         if (b1 == bays || whole) DrawLineEx({a0.x, a0.y - 1.0f}, {c0.x, c0.y - 1.0f}, 2.0f, lit(shade(wall, 0.95f)));
     });
+    for (int b = 0; b < bays; ++b) {
+        const int side_of = ragged(b);
+        if (side_of == 0) continue;
+        const auto [pa, pb] = piece(b, kFloors - 1, 1.0f);
+        const auto [ra, rb] = piece(b, kFloors - 1, 0.0f);
+        const Vector2 a0 = lerp(top[3], top[2], 1.0f - pb);
+        const Vector2 a1 = lerp(top[3], top[2], 1.0f - pa);
+        const Vector2 c0 = lerp(top[0], top[1], 1.0f - rb);
+        const Vector2 c1 = lerp(top[0], top[1], 1.0f - ra);
+        roof_texture(Slope{a0, a1, c0, c1}, Roof::Bitumen, shade({98, 96, 92, 255}, stage >= 3 ? 0.6f : 1.0f), soot, h + static_cast<uint32_t>(b));
+        for (const auto& [p, q] : {std::pair{a0, a1}, std::pair{c0, c1}}) DrawLineEx({p.x, p.y - 1.0f}, {q.x, q.y - 1.0f}, 2.0f, lit(shade(wall, 0.95f)));
+        // Hanging into the gap: slabs off the broken floors, the roof's edge (its tarred felt, its slab).
+        const float out = side_of > 0 ? 1.0f : -1.0f;
+        for (int fl = 1; fl <= kFloors; ++fl) {
+            if (rand01(h, 1700 + b * 11 + fl) > (fl == kFloors ? 0.45f : 0.25f)) continue;
+            const int pf = std::min(fl, kFloors - 1);
+            auto edge_at = [&](float y) {
+                const auto [ea, eb] = piece(b, pf, (y - r.y) / r.height);
+                return x_at(side_of > 0 ? ea : eb);
+            };
+            const float z = fl == kFloors ? kWall : kPlinth + kFloor * static_cast<float>(fl);
+            const float y0 = r.y + r.height * (0.1f + 0.5f * rand01(h, 1710 + fl));
+            const float y1 = std::min(r.y + r.height * 0.95f, y0 + r.height * (0.2f + 0.25f * rand01(h, 1720 + fl)));
+            const Vector2 hinge0 = on_terrain(map, {edge_at(y0), y0}, z);
+            const Vector2 hinge1 = on_terrain(map, {edge_at(y1), y1}, z);
+            const float len = 0.2f + 0.2f * rand01(h, 1730 + fl);
+            const float drop = (fl == kFloors ? 16.0f : 10.0f) + 8.0f * rand01(h, 1740 + fl);
+            const Vector2 d0{out * 32.0f * len, out * 16.0f * len + drop};
+            const Vector2 d1{d0.x * (0.7f + 0.5f * rand01(h, 1750 + fl)), d0.y * (0.8f + 0.4f * rand01(h, 1760 + fl))};
+            const Color slab = fl == kFloors ? shade({84, 82, 78, 255}, soot) : shade(concrete, 0.85f * soot);
+            fill_quad(hinge0, hinge1, {hinge1.x + d1.x, hinge1.y + d1.y}, {hinge0.x + d0.x, hinge0.y + d0.y}, slab);
+            DrawLineV({hinge0.x + d0.x, hinge0.y + d0.y + 1.0f}, {hinge1.x + d1.x, hinge1.y + d1.y + 1.0f}, lit(shade(slab, 0.55f)));  // its edge
+            for (int k = 0; k < 3; ++k) {  // rebar out of it
+                const Vector2 p = lerp({hinge0.x + d0.x, hinge0.y + d0.y}, {hinge1.x + d1.x, hinge1.y + d1.y}, 0.2f + 0.3f * static_cast<float>(k));
+                DrawLineV(p, {p.x + out * 2.0f, p.y + 3.0f + 2.0f * rand01(h, 1770 + k)}, lit({74, 56, 44, 255}));
+            }
+        }
+    }
     for (int k = 0; k < entrances; ++k) {  // a vent stack over each stairwell
         const float t = (static_cast<float>(k) + 0.5f) / static_cast<float>(entrances);
         const int b = static_cast<int>(t * static_cast<float>(bays));
-        if (long_front && !stands(b)) continue;
+        if (long_front && !whole_bay(b)) continue;
         const Vector2 g = long_front ? Vector2{r.x + r.width * (1.0f - t), r.y + r.height * 0.55f} : Vector2{r.x + r.width * 0.55f, r.y + r.height * (1.0f - t)};
         const Vector2 c = on_terrain(map, g, kWall);
         fill_quad({c.x - 4.0f, c.y}, {c.x + 4.0f, c.y}, {c.x + 4.0f, c.y - 5.0f}, {c.x - 4.0f, c.y - 5.0f}, shade(wall, 0.8f * soot));
