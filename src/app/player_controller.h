@@ -74,8 +74,11 @@ public:
         selection_.clear();
         selected_structure_ = id;
     }
-    // The selected building's grid opened at its section (its tanks).
-    void open_section() { section_ = selected_structure_; }
+    // The selected building's grid opened at a section: its tanks (0), its IFVs and APCs (1).
+    void open_section(uint8_t kind = 0) {
+        section_ = selected_structure_;
+        section_kind_ = kind;
+    }
     void select_units(std::vector<engine::EntityId> ids) {
         std::sort(ids.begin(), ids.end());
         selection_ = std::move(ids);
@@ -168,8 +171,9 @@ private:
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
     bool convert_menu_ = false;  // rear troops: what depot to make of a village building
-    // A building's grid opened at a section (its tanks), for this building.
+    // A building's grid opened at a section (its tanks, or its IFVs and APCs), for this building.
     engine::EntityId section_ = 0;
+    uint8_t section_kind_ = 0;
     const char* hint_ = "";      // see cursor_hint()
     void update_hint(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse, float alpha);
     engine::StructureType converting_ = engine::StructureType::Warehouse;  // Targeting::Convert

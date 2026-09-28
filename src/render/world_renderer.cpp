@@ -350,14 +350,14 @@ void WorldRenderer::remember(const engine::World& world) {
     });
 }
 
-// Where on a tank its gun's muzzle and its engine deck are: along the hull
-// from its middle (tiles, drawn size) and up (pixels). With the tanks' pixel art.
-Vector2 tank_muzzle(engine::TankModel m);
-Vector2 tank_engine(engine::TankModel m);
+// Where on a tank (an IFV) its gun's muzzle and its engine deck are: along the hull
+// from its middle (tiles, drawn size) and up (pixels). With the vehicles' pixel art.
+Vector2 armor_muzzle(engine::VehicleModel m);
+Vector2 armor_engine(engine::VehicleModel m);
 int wear_of(int32_t hp, int32_t max_hp);
-float tank_track_half(engine::UnitTypeId type);  // how far each track runs from the middle, tiles
-Vector2 tank_size(engine::TankModel m);           // its hull's length and half its width, tiles
-int tank_variant(engine::TankModel model, int era, int wear, int sink);
+float track_half(engine::UnitTypeId type);  // how far each track runs from the middle, tiles
+Vector2 armor_size(engine::VehicleModel m);           // its hull's length and half its width, tiles
+int armor_variant(engine::VehicleModel model, int era, int wear, int sink);
 constexpr float kTankWreckLifetime = 150.0f;  // a burnt-out tank stays a while on the field
 
 float WorldRenderer::fx_random() {
@@ -419,8 +419,8 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
     const Vector2 g = to_vector2(u.pos);
     float reach = def.vehicle ? 0.5f : 0.25f;
     float height = def.vehicle ? 8.0f : 9.0f;
-    if (def.tank) {
-        const Vector2 m = tank_muzzle(def.model);
+    if (engine::is_armor(def)) {
+        const Vector2 m = armor_muzzle(def.model);
         reach = m.x;
         height = m.y;
     }
@@ -687,33 +687,33 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     shots_seen_ = std::move(shots);
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
-        if (!def.tank || u.inside || !shows(world, u)) continue;
+        if (!engine::is_armor(def) || u.inside || !shows(world, u)) continue;
         const int wear = wear_of(u.hp, def.max_hp);
         if (wear < 2) continue;
         Vector2 h = to_vector2(u.hull);
         const float l = std::hypot(h.x, h.y);
         h = l > 0.0f ? Vector2{h.x / l, h.y / l} : Vector2{1.0f, 0.0f};
-        const Vector2 e = tank_engine(def.model);
+        const Vector2 e = armor_engine(def.model);
         spawn_fire({to_vector2(u.pos).x + h.x * e.x, to_vector2(u.pos).y + h.y * e.x}, e.y, wear, dt);
     }
-    for (const Remains& r : remains_) {  // burnt-out tanks smoulder, burning for the first half minute
-        if (!engine::unit_type(r.type).tank || r.age > 100.0f) continue;
+    for (const Remains& r : remains_) {  // burnt-out tanks and IFVs smoulder, burning for the first half minute
+        if (!engine::is_armor(engine::unit_type(r.type)) || r.age > 100.0f) continue;
         if (map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))})) ==
             engine::Terrain::Water ||
             r.sunk) {
             continue;  // drowned, or gone under in a bog
         }
-        const Vector2 e = tank_engine(engine::unit_type(r.type).model);
+        const Vector2 e = armor_engine(engine::unit_type(r.type).model);
         const float ease = r.age < 30.0f ? 1.0f : 0.4f;
         if (fx_random() < ease) spawn_fire({r.ground.x + r.hull.x * e.x, r.ground.y + r.hull.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
     }
-    // Tracked vehicles leave their tracks in the ground as they go (not on
-    // concrete, a bridge or the water); they fade over two minutes.
+    // Tracked vehicles leave their tracks in the ground as they go, wheeled
+    // IFVs their tyres' (not on concrete, a bridge or the water); they fade
+    // over two minutes.
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
-        const bool tracked = def.tank || u.type == engine::UnitTypeId::Ifv || u.type == engine::UnitTypeId::Spg ||
-                             u.type == engine::UnitTypeId::Shilka;
-        if (!tracked || u.inside || !shows(world, u)) continue;
+        const bool marks = engine::is_armor(def) || u.type == engine::UnitTypeId::Spg || u.type == engine::UnitTypeId::Shilka;
+        if (!marks || u.inside || !shows(world, u)) continue;
         const Vector2 p = to_vector2(u.pos);
         const auto it = track_last_.find(u.id);
         if (it == track_last_.end()) {
@@ -725,7 +725,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(p.x)), static_cast<int32_t>(std::floor(p.y))}));
         const bool firm = t == engine::Terrain::Road || t == engine::Terrain::Bridge || t == engine::Terrain::Water ||
                           t == engine::Terrain::Airstrip || t == engine::Terrain::Rail;
-        if (len < 1.5f && !firm) track_marks_.push_back({it->second, p, tank_track_half(u.type), 0.0f});
+        if (len < 1.5f && !firm) track_marks_.push_back({it->second, p, track_half(u.type), 0.0f, def.wheeled});
         it->second = p;
     }
     for (TrackMark& m : track_marks_) m.age += dt;
@@ -786,7 +786,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     std::erase_if(pings_, [](const Ping& p) { return p.age >= kPingLifetime; });
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
     std::erase_if(remains_, [](const Remains& r) {
-        const float life = engine::unit_type(r.type).tank ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
+        const float life = engine::is_armor(engine::unit_type(r.type)) ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
         return r.age >= life;
     });
 }
@@ -3211,7 +3211,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     collect_trains(world, alpha, cars);
     for (const TrainCar& c : cars) drawables.push_back({.depth = c.ground.x + c.ground.y, .car = &c});
     for (const Remains& r : remains_) {
-        if (engine::unit_type(r.type).tank && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
+        if (engine::is_armor(engine::unit_type(r.type)) && in_view(world, r.ground)) drawables.push_back({.depth = r.ground.x + r.ground.y, .wreck = &r});
     }
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
@@ -4124,7 +4124,7 @@ void WorldRenderer::draw_spoil_gullies(const engine::World& world, Rectangle vie
 
 void WorldRenderer::draw_remains(const engine::TileMap& map) const {
     for (const Remains& r : remains_) {
-        if (engine::unit_type(r.type).tank) continue;  // drawn whole, with the others (draw_wreck)
+        if (engine::is_armor(engine::unit_type(r.type))) continue;  // drawn whole, with the others (draw_wreck)
         const float lifetime = r.vehicle ? kWreckLifetime : kBodyLifetime;
         const float fade = std::clamp((lifetime - r.age) / 3.0f, 0.0f, 1.0f);  // fade out over the last 3 s
         const Vector2 p = on_terrain(map, r.ground);
@@ -4654,8 +4654,9 @@ void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, f
 }
 
 constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over life size against the tiles
-engine::TankModel model_of(const engine::Unit& u);  // with the tanks' pixel art, below
-float turret_ring_of(engine::TankModel m);
+engine::VehicleModel model_of(const engine::Unit& u);  // with the vehicles' pixel art, below
+Vector2 turret_ring_of(engine::VehicleModel m);  // along and across the hull
+Vector2 ring_at(const Frame& fr, engine::VehicleModel m);  // where on the screen the turret stands
 
 // A vehicle, drawn by hand in its own frame (see Frame): tracks with their
 // road wheels or tyred wheels, the hull with its sloped plates, a turret
@@ -4706,9 +4707,10 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         hull_dir = l > 0.0f ? Vector2{hull_dir.x / l, hull_dir.y / l} : facing;
     }
     const UnitTypeId type = u.type;
-    const bool tracked = engine::unit_type(type).tank || type == UnitTypeId::Ifv || type == UnitTypeId::Spg || type == UnitTypeId::Shilka;
+    // Its hull goes where it drives, its turret turns on its own: tanks, IFVs, SPGs, Shilkas.
+    const bool hull_leads = engine::is_armor(engine::unit_type(type)) || type == UnitTypeId::Spg || type == UnitTypeId::Shilka;
     const bool gun_leads = type == UnitTypeId::Howitzer;  // no hull apart from the gun
-    const Frame fr = make_frame(map, ground, tracked || gun_leads ? hull_dir : facing);
+    const Frame fr = make_frame(map, ground, hull_leads || gun_leads ? hull_dir : facing);
     const Color team = theme::player_color(u.owner);
     const Color olive{98, 104, 70, 255};
     const Color paint = mix(olive, team, 0.3f);
@@ -4723,51 +4725,46 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     };
 
-    if (engine::unit_type(type).tank) {
-        const engine::TankModel model = model_of(u);
-        const int wear = wear_of(u.hp, engine::unit_type(type).max_hp);
-        // In a bog it sinks, deeper and deeper (drawn from a sunk sprite once baked).
+    const engine::UnitTypeDef& type_def = engine::unit_type(type);
+    if (engine::is_armor(type_def)) {
+        const engine::VehicleModel model = model_of(u);
+        const int wear = wear_of(u.hp, type_def.max_hp);
+        // In a bog a tank sinks, deeper and deeper (drawn from a sunk sprite
+        // once baked); an amphibious IFV sits in it to its fenders.
         const engine::TilePos under = map.clamp_tile({static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))});
         const bool bog = map.terrain(under) == engine::Terrain::Swamp;
         // To its fenders, then to its deck, then its hull's gone and only the turret shows.
-        const int depth = !bog ? 0 : u.mired * 3 < engine::kBogLimit ? 1 : u.mired * 3 < engine::kBogLimit * 2 ? 3 : 4;
-        const int era = world_era_[u.owner % world_era_.size()];
-        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, depth), u.owner);
-        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, depth), u.owner);
+        const int depth = !bog                                       ? 0
+                          : type_def.floats || u.mired * 3 < engine::kBogLimit ? 1
+                          : u.mired * 3 < engine::kBogLimit * 2      ? 3
+                                                                     : 4;
+        const int era = kit(model, u.owner);
+        const SpriteSheet* hull_sheet = sheet(SpritePart::Hull, armor_variant(model, era, wear, depth), u.owner);
+        const SpriteSheet* turret_sheet = sheet(SpritePart::Turret, armor_variant(model, era, wear, depth), u.owner);
         if (bog && (!hull_sheet || !turret_sheet)) {
-            hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, 0), u.owner);
-            turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, 0), u.owner);
+            hull_sheet = sheet(SpritePart::Hull, armor_variant(model, era, wear, 0), u.owner);
+            turret_sheet = sheet(SpritePart::Turret, armor_variant(model, era, wear, 0), u.owner);
         }
         if (hull_sheet && turret_sheet) {
             const uint32_t seed = static_cast<uint32_t>(u.id) * 2654435761u;
-            if (bog) mud_halo(fr, tank_size(model), false, seed);  // the mud behind and under it
+            if (bog) mud_halo(fr, armor_size(model), false, seed);  // the mud behind and under it
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
             draw_sprite(*hull_sheet, fr.o, fr.f, frame);
-            draw_sprite(*turret_sheet, fr.at(turret_ring_of(model) * kVehicleScale, 0.0f), facing, 0);
-            if (bog) mud_halo(fr, tank_size(model), true, seed);  // and in front of it
+            draw_sprite(*turret_sheet, ring_at(fr, model), facing, 0);
+            if (bog) mud_halo(fr, armor_size(model), true, seed);  // and in front of it
             return;
         }
+        if (type_def.apc) return;  // not baked yet
     }
-    if (tracked) {
+    if (hull_leads) {
         const bool tank = engine::unit_type(type).tank;
-        const bool ifv = type == UnitTypeId::Ifv;
-        const float track_h = ifv ? 4.5f : 5.0f;
-        const int wheels = ifv ? 6 : type == UnitTypeId::Spg ? 7 : 6;
+        const float track_h = 5.0f;
+        const int wheels = type == UnitTypeId::Spg ? 7 : 6;
         track(fr, -0.5f, 0.48f, 0.19f, 0.29f, track_h, wheels, false, u.moving);
-        // The hull: a low box, the front plate sloped (an IFV's long ribbed nose).
-        const float deck = ifv ? 7.5f : 8.0f;
-        if (ifv) {
-            block(fr, -0.5f, 0.2f, -0.21f, 0.21f, 2.0f, deck, paint);
-            block(fr, 0.2f, 0.52f, -0.21f, 0.21f, 2.0f, deck, shade(paint, 1.05f), 0.32f);
-            for (const float k : {0.3f, 0.5f, 0.7f}) {  // the ribs on the nose
-                const float a = 0.2f + 0.32f * k;
-                const float z = deck - (deck - 2.0f) * k;
-                DrawLineV(fr.at(a, -0.2f, z), fr.at(a, 0.2f, z), lit(shade(paint, 0.8f)));
-            }
-        } else {
-            block(fr, -0.48f, 0.36f, -0.2f, 0.2f, 2.0f, deck, paint);
-            block(fr, 0.36f, 0.5f, -0.2f, 0.2f, 2.0f, deck, shade(paint, 1.06f), 0.14f);
-        }
+        // The hull: a low box, the front plate sloped.
+        const float deck = 8.0f;
+        block(fr, -0.48f, 0.36f, -0.2f, 0.2f, 2.0f, deck, paint);
+        block(fr, 0.36f, 0.5f, -0.2f, 0.2f, 2.0f, deck, shade(paint, 1.06f), 0.14f);
         // Fenders over the tracks.
         for (const float sgn : {-1.0f, 1.0f}) {
             block(fr, -0.5f, 0.46f, sgn > 0 ? 0.2f : -0.3f, sgn > 0 ? 0.3f : -0.2f, track_h, track_h + 0.8f, shade(paint, 0.9f));
@@ -4777,15 +4774,6 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             // The engine deck's grille, two fuel drums across the back.
             for (const float a : {-0.4f, -0.34f, -0.28f}) DrawLineV(fr.at(a, -0.14f, deck), fr.at(a, 0.14f, deck), lit(shade(paint, 0.7f)));
             for (const float c : {-0.1f, 0.1f}) round_solid(fr, -0.47f, c, 0.04f, 0.08f, deck, deck + 2.5f, {86, 84, 70, 255}, 0.0f, 8);
-        }
-        if (ifv) {  // the troop doors at the back
-            const Vector2 bk = fr.ground_of(-1.0f, 0.0f);
-            if (bk.x + bk.y > 0.0f) {
-                for (const float c : {-0.12f, 0.06f}) {
-                    fill_quad(fr.at(-0.5f, c, 2.5f), fr.at(-0.5f, c + 0.07f, 2.5f), fr.at(-0.5f, c + 0.07f, 6.5f), fr.at(-0.5f, c, 6.5f),
-                              shade(paint, 0.5f));
-                }
-            }
         }
         track(fr, -0.5f, 0.48f, 0.19f, 0.29f, track_h, wheels, true, u.moving);
 
@@ -4814,11 +4802,6 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         };
         if (tank) {
             gun_z = deck + 3.2f;
-        } else if (ifv) {
-            gun_a0 = 0.08f;
-            gun_a1 = 0.55f;
-            gun_w = 1.4f;
-            gun_z = deck + 2.4f;
         } else if (type == UnitTypeId::Spg) {
             gun_a0 = 0.16f;
             gun_a1 = u.deployed ? 0.62f : 0.72f;
@@ -4836,10 +4819,6 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             camo(-0.1f, 0.08f, -0.08f, 0.08f, deck + 5.0f, 2);
             round_solid(tf, -0.06f, 0.07f, 0.045f, 0.045f, deck + 5.0f, deck + 6.5f, shade(paint, 0.92f), 0.2f, 8);
             DrawLineEx(tf.at(-0.06f, 0.07f, deck + 7.0f), tf.at(0.06f, 0.07f, deck + 7.5f), 1.0f, lit({34, 34, 34, 255}));
-        } else if (ifv) {
-            round_solid(tf, 0.0f, 0.02f, 0.12f, 0.12f, deck, deck + 1.5f, team, 0.0f, 10);
-            round_solid(tf, 0.0f, 0.02f, 0.118f, 0.118f, deck + 1.5f, deck + 3.5f, paint, 0.3f, 10);
-            if (u.missiles > 0) block(tf, -0.1f, 0.12f, -0.1f, -0.06f, deck + 3.5f, deck + 5.0f, {84, 92, 62, 255});  // the ATGM tube
         } else if (type == UnitTypeId::Spg) {
             block(tf, -0.18f, 0.17f, -0.17f, 0.17f, deck, deck + 2.0f, team, 0.0f, 0.0f, 0.0f);
             block(tf, -0.18f, 0.17f, -0.17f, 0.17f, deck + 2.0f, deck + 5.5f, paint, 0.05f, 0.02f, 0.03f);
@@ -5155,27 +5134,241 @@ constexpr TankLook kTankLooks[] = {
      .turret_h = 5.0f, .bustle = 0.08f, .gun = 0.86f, .gun_w = 1.8f, .evacuator = 0.5f, .eyebrows = false, .era = EraKind::Soviet,
      .camo = Camo::None, .paint = {146, 134, 94, 255}, .camo1 = {146, 134, 94, 255}, .camo2 = {146, 134, 94, 255}},
 };
-static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::TankModel::Count));
+static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::VehicleModel::Bmp2));  // the tanks, then the IFVs and APCs
 
-// The real tank a tank unit is.
-engine::TankModel model_of(const engine::Unit& u) { return engine::unit_type(u.type).model; }
-const TankLook& look_of(engine::TankModel m) { return kTankLooks[static_cast<size_t>(m)]; }
-float turret_ring_of(engine::TankModel m) { return look_of(m).turret_at; }
-float tank_track_half(engine::UnitTypeId type) {
-    const engine::UnitTypeDef& def = engine::unit_type(type);
-    return def.tank ? (look_of(def.model).width - 0.05f) * kVehicleScale : 0.24f * kVehicleScale;
+// The real IFVs and APCs of both alliances, drawn as the tanks are, each
+// from what sets it apart: tracks or wheels, the shape of its hull, its
+// hatches, doors and windows, its turret or weapon station, its gun and its
+// missiles, its paint; the hull and the turret apart.
+enum class ApcShape : uint8_t {
+    Bmp,      // BMP-1, BMP-2: low, the long ribbed nose, the engine at the front right, two doors at the back
+    Bmp3,     // BMP-3, ZBD-04A: a blunter nose, the back raised over the engine
+    Box,      // M113, Boragh: a tall box, a steep front
+    Bradley,  // Bradley, Marder, Type 89, K21: tall, the glacis sloped over the engine, armored skirts
+    Mtlb,     // MT-LB: long, flat and low, a cab across the front
+    Btr,      // BTR-82A: a boat on eight wheels, its sides leaning in, a door in the side
+    Btr4,     // BTR-4E: eight wheels, the cab and the engine in front, a tall box behind
+    Stryker,  // eight wheels, slab sides, the front sloped
+    Ratel,    // six big wheels, a tall box, the driver's windows across the front
+    Namer,    // on a Merkava's hull: the long glacis over the engine in front
+};
+enum class ApcTurret : uint8_t {
+    Bmp2,    // a two-man cone, the long thin 30 mm
+    Bmp1,    // a small one-man cone, the short fat 73 mm with the missile's rail over it
+    Bmp3,    // wide and flat: the 100 mm with the 30 mm beside it
+    Zbd,     // the ZBD-04A's: the BMP-3's, armor bolted on its sides
+    Btr,     // the BTR-82A's small cone
+    Box,     // an angular two-man turret (Bradley, Type 89, K21, Ratel)
+    Marder,  // the Marder's, low, the gun on top of it outside
+    Module,  // the BTR-4E's flat module on the roof, a grenade launcher beside the gun
+    Rws,     // a remote weapon station: a machine gun on a small mount
+    Cupola,  // the commander's cupola, a machine gun behind a shield
+    Mini,    // the MT-LB's tiny one-man turret
+};
+enum class Launcher : uint8_t {
+    None,
+    Roof,  // a tube on the roof: Konkurs (BMP-2); Barrier's pair beside the module (BTR-4E)
+    Rail,  // Malyutka on its rail over the gun (BMP-1)
+    Gun,   // fired through the gun (BMP-3, ZBD-04A): nothing outside
+    Box,   // the twin TOW box on the turret's side (Bradley)
+    Side,  // tubes on the turret's side: Milan (Marder), Jyu-MAT (Type 89)
+};
+
+struct ApcLook {
+    ApcShape shape;
+    float length;  // the hull, tiles
+    float width;   // half of it, to the tracks' or the wheels' outer edge
+    float deck;    // the roof, pixels up
+    float nose;    // tiles the front's upper plate slopes back over
+    float nose_z;  // where it meets the lower plate, pixels up
+    float cab;     // a cab over the front of the roof, this high (the MT-LB's; its turret on it), pixels
+    bool wheeled;
+    int wheels;     // road wheels a side, or axles
+    float wheel_r;  // pixels
+    bool rollers;   // return rollers
+    Skirt skirt;
+    ApcTurret turret;
+    float turret_at;  // along the hull
+    float turret_c;   // across it: off to the left (to the right below 0)
+    float turret_r;   // its size, tiles
+    float turret_h;   // pixels
+    float gun;        // how far the gun reaches from the ring, tiles
+    float gun_w;      // pixels
+    Launcher launcher;
+    float engine_at;  // where along the hull its engine is
+    bool doors;       // two doors at the back, else a ramp
+    Camo camo;
+    Color paint;
+    Color camo1;
+    Color camo2;
+};
+
+constexpr Color kOliveDrab{86, 94, 62, 255};
+constexpr Color kSand{150, 134, 98, 255};
+
+// In the order of engine::VehicleModel, from the BMP-2.
+constexpr ApcLook kApcLooks[] = {
+    // BMP-2: the two-man cone turret with the long 30 mm, Konkurs on its roof.
+    {.shape = ApcShape::Bmp, .length = 1.0f, .width = 0.25f, .deck = 8.0f, .nose = 0.36f, .nose_z = 3.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.5f, .rollers = true, .skirt = Skirt::Rubber, .turret = ApcTurret::Bmp2,
+     .turret_at = 0.02f, .turret_c = 0.0f, .turret_r = 0.15f, .turret_h = 4.4f, .gun = 0.62f, .gun_w = 1.3f,
+     .launcher = Launcher::Roof, .engine_at = 0.08f, .doors = true, .camo = Camo::None, .paint = kRussianOlive,
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // BMP-1: the same hull, a small one-man turret forward, the stubby 73 mm, Malyutka on its rail.
+    {.shape = ApcShape::Bmp, .length = 1.0f, .width = 0.24f, .deck = 7.8f, .nose = 0.36f, .nose_z = 3.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.5f, .rollers = true, .skirt = Skirt::Rubber, .turret = ApcTurret::Bmp1,
+     .turret_at = 0.06f, .turret_c = 0.0f, .turret_r = 0.12f, .turret_h = 3.8f, .gun = 0.3f, .gun_w = 2.6f,
+     .launcher = Launcher::Rail, .engine_at = 0.08f, .doors = true, .camo = Camo::None, .paint = {96, 102, 60, 255},
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // BMP-3: the blunt nose, the back raised over the engine, the flat turret with the 100 mm and the 30 mm.
+    {.shape = ApcShape::Bmp3, .length = 1.05f, .width = 0.26f, .deck = 8.4f, .nose = 0.24f, .nose_z = 4.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.7f, .rollers = false, .skirt = Skirt::Rubber, .turret = ApcTurret::Bmp3,
+     .turret_at = 0.1f, .turret_c = 0.0f, .turret_r = 0.17f, .turret_h = 4.0f, .gun = 0.55f, .gun_w = 2.2f,
+     .launcher = Launcher::Gun, .engine_at = -0.36f, .doors = true, .camo = Camo::None, .paint = {92, 100, 58, 255},
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // BTR-82A: the boat on eight wheels in pairs, the small turret forward with its 30 mm.
+    {.shape = ApcShape::Btr, .length = 1.13f, .width = 0.23f, .deck = 11.0f, .nose = 0.2f, .nose_z = 6.0f, .cab = 0.0f,
+     .wheeled = true, .wheels = 4, .wheel_r = 3.0f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Btr,
+     .turret_at = 0.2f, .turret_c = 0.0f, .turret_r = 0.1f, .turret_h = 3.6f, .gun = 0.5f, .gun_w = 1.2f,
+     .launcher = Launcher::None, .engine_at = -0.38f, .doors = false, .camo = Camo::None, .paint = {100, 106, 62, 255},
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // MT-LB: long, flat and low, the cab across the front with the tiny turret on it.
+    {.shape = ApcShape::Mtlb, .length = 0.95f, .width = 0.23f, .deck = 7.0f, .nose = 0.14f, .nose_z = 4.0f, .cab = 2.6f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.6f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Mini,
+     .turret_at = 0.2f, .turret_c = -0.1f, .turret_r = 0.055f, .turret_h = 2.6f, .gun = 0.22f, .gun_w = 1.0f,
+     .launcher = Launcher::None, .engine_at = 0.02f, .doors = true, .camo = Camo::None, .paint = {92, 98, 60, 255},
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive},
+    // ZBD-04A: the BMP-3's turret and guns on a hull of its own, armor bolted on, digital camouflage.
+    {.shape = ApcShape::Bmp3, .length = 1.06f, .width = 0.26f, .deck = 8.6f, .nose = 0.24f, .nose_z = 4.6f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.7f, .rollers = true, .skirt = Skirt::Rubber, .turret = ApcTurret::Zbd,
+     .turret_at = 0.06f, .turret_c = 0.0f, .turret_r = 0.17f, .turret_h = 4.2f, .gun = 0.55f, .gun_w = 2.2f,
+     .launcher = Launcher::Gun, .engine_at = 0.26f, .doors = true, .camo = Camo::Digital, .paint = {96, 112, 76, 255},
+     .camo1 = {64, 82, 54, 255}, .camo2 = {134, 144, 106, 255}},
+    // Ratel 20: six big wheels, a tall box with the driver's windows, a small turret with the 20 mm, the veld's brown.
+    {.shape = ApcShape::Ratel, .length = 1.06f, .width = 0.2f, .deck = 12.0f, .nose = 0.16f, .nose_z = 8.0f, .cab = 0.0f,
+     .wheeled = true, .wheels = 3, .wheel_r = 3.4f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Box,
+     .turret_at = 0.06f, .turret_c = 0.0f, .turret_r = 0.11f, .turret_h = 3.6f, .gun = 0.42f, .gun_w = 1.4f,
+     .launcher = Launcher::None, .engine_at = -0.38f, .doors = false, .camo = Camo::None, .paint = {150, 128, 92, 255},
+     .camo1 = kSand, .camo2 = kSand},
+    // Boragh: Iran's, a lengthened BMP-1's running gear under a box, a cupola with a 12.7 mm, sand.
+    {.shape = ApcShape::Box, .length = 1.02f, .width = 0.24f, .deck = 9.5f, .nose = 0.22f, .nose_z = 5.0f, .cab = 0.0f,
+     .wheeled = false, .wheels = 7, .wheel_r = 2.3f, .rollers = true, .skirt = Skirt::Rubber, .turret = ApcTurret::Cupola,
+     .turret_at = 0.14f, .turret_c = 0.08f, .turret_r = 0.06f, .turret_h = 2.6f, .gun = 0.3f, .gun_w = 1.2f,
+     .launcher = Launcher::None, .engine_at = 0.12f, .doors = true, .camo = Camo::None, .paint = {146, 134, 94, 255},
+     .camo1 = kSand, .camo2 = kSand},
+    // BTR-4E Bucephalus: eight wheels evenly, the cab and the engine in front, the module with the 30 mm and Barrier.
+    {.shape = ApcShape::Btr4, .length = 1.15f, .width = 0.24f, .deck = 11.5f, .nose = 0.26f, .nose_z = 7.0f, .cab = 0.0f,
+     .wheeled = true, .wheels = 4, .wheel_r = 3.1f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Module,
+     .turret_at = -0.04f, .turret_c = 0.0f, .turret_r = 0.12f, .turret_h = 3.0f, .gun = 0.5f, .gun_w = 1.4f,
+     .launcher = Launcher::Roof, .engine_at = 0.18f, .doors = true, .camo = Camo::None, .paint = kUkrainianGreen,
+     .camo1 = kUkrainianGreen, .camo2 = kUkrainianGreen},
+    // M113A3: the small aluminium box, five road wheels, the trim vane on its front, the .50 behind its shield.
+    {.shape = ApcShape::Box, .length = 0.74f, .width = 0.21f, .deck = 10.5f, .nose = 0.12f, .nose_z = 6.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 5, .wheel_r = 2.5f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Cupola,
+     .turret_at = 0.02f, .turret_c = -0.06f, .turret_r = 0.065f, .turret_h = 2.8f, .gun = 0.3f, .gun_w = 1.2f,
+     .launcher = Launcher::None, .engine_at = 0.08f, .doors = false, .camo = Camo::None, .paint = kOliveDrab,
+     .camo1 = kOliveDrab, .camo2 = kOliveDrab},
+    // M2A2 Bradley ODS: tall and wide, armored skirts, the turret off to the right, the 25 mm, the TOW box on its left.
+    {.shape = ApcShape::Bradley, .length = 0.98f, .width = 0.29f, .deck = 10.0f, .nose = 0.28f, .nose_z = 5.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.8f, .rollers = true, .skirt = Skirt::Full, .turret = ApcTurret::Box,
+     .turret_at = 0.0f, .turret_c = -0.05f, .turret_r = 0.16f, .turret_h = 5.0f, .gun = 0.44f, .gun_w = 1.6f,
+     .launcher = Launcher::Box, .engine_at = 0.14f, .doors = false, .camo = Camo::ThreeTone, .paint = kNatoGreen,
+     .camo1 = kNatoBrown, .camo2 = kNatoBlack},
+    // Marder 1A3: long, skirts, a low turret with the 20 mm on top of it outside, Milan at its side.
+    {.shape = ApcShape::Bradley, .length = 1.0f, .width = 0.26f, .deck = 9.4f, .nose = 0.3f, .nose_z = 5.0f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.8f, .rollers = true, .skirt = Skirt::Full, .turret = ApcTurret::Marder,
+     .turret_at = 0.0f, .turret_c = 0.0f, .turret_r = 0.14f, .turret_h = 3.6f, .gun = 0.45f, .gun_w = 1.4f,
+     .launcher = Launcher::Side, .engine_at = 0.14f, .doors = false, .camo = Camo::ThreeTone, .paint = kNatoGreen,
+     .camo1 = kNatoBrown, .camo2 = kNatoBlack},
+    // Stryker: eight wheels, slab sides, the machine gun on its remote station.
+    {.shape = ApcShape::Stryker, .length = 1.03f, .width = 0.22f, .deck = 11.5f, .nose = 0.2f, .nose_z = 7.0f, .cab = 0.0f,
+     .wheeled = true, .wheels = 4, .wheel_r = 3.0f, .rollers = false, .skirt = Skirt::None, .turret = ApcTurret::Rws,
+     .turret_at = 0.02f, .turret_c = 0.05f, .turret_r = 0.06f, .turret_h = 2.6f, .gun = 0.3f, .gun_w = 1.2f,
+     .launcher = Launcher::None, .engine_at = 0.2f, .doors = false, .camo = Camo::None, .paint = {82, 90, 62, 255},
+     .camo1 = kOliveDrab, .camo2 = kOliveDrab},
+    // Type 89: long and low, skirts, the 35 mm, Jyu-MAT at both sides of the turret, two colours.
+    {.shape = ApcShape::Bradley, .length = 1.0f, .width = 0.26f, .deck = 9.0f, .nose = 0.26f, .nose_z = 5.0f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.8f, .rollers = true, .skirt = Skirt::Full, .turret = ApcTurret::Box,
+     .turret_at = 0.02f, .turret_c = 0.0f, .turret_r = 0.16f, .turret_h = 4.6f, .gun = 0.55f, .gun_w = 1.6f,
+     .launcher = Launcher::Side, .engine_at = 0.14f, .doors = true, .camo = Camo::TwoTone, .paint = {86, 98, 64, 255},
+     .camo1 = {112, 94, 66, 255}, .camo2 = {112, 94, 66, 255}},
+    // K21: angular, skirts, the big two-man turret with the 40 mm, three colours.
+    {.shape = ApcShape::Bradley, .length = 1.02f, .width = 0.27f, .deck = 9.5f, .nose = 0.3f, .nose_z = 5.5f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 2.9f, .rollers = false, .skirt = Skirt::Full, .turret = ApcTurret::Box,
+     .turret_at = 0.02f, .turret_c = 0.0f, .turret_r = 0.17f, .turret_h = 5.0f, .gun = 0.55f, .gun_w = 1.8f,
+     .launcher = Launcher::None, .engine_at = 0.14f, .doors = false, .camo = Camo::ThreeTone, .paint = {78, 90, 60, 255},
+     .camo1 = {114, 96, 68, 255}, .camo2 = {40, 40, 34, 255}},
+    // Namer: a Merkava's hull, the long glacis, big wheels behind skirts, a weapon station on the roof.
+    {.shape = ApcShape::Namer, .length = 1.1f, .width = 0.29f, .deck = 10.5f, .nose = 0.36f, .nose_z = 5.0f, .cab = 0.0f,
+     .wheeled = false, .wheels = 6, .wheel_r = 3.2f, .rollers = true, .skirt = Skirt::Full, .turret = ApcTurret::Rws,
+     .turret_at = -0.08f, .turret_c = 0.0f, .turret_r = 0.07f, .turret_h = 2.6f, .gun = 0.32f, .gun_w = 1.3f,
+     .launcher = Launcher::None, .engine_at = 0.3f, .doors = false, .camo = Camo::None, .paint = {148, 144, 120, 255},
+     .camo1 = {148, 144, 120, 255}, .camo2 = {148, 144, 120, 255}},
+};
+static_assert(std::size(kApcLooks) ==
+              static_cast<size_t>(engine::VehicleModel::Count) - static_cast<size_t>(engine::VehicleModel::Bmp2));
+
+bool is_apc_model(engine::VehicleModel m) { return m >= engine::VehicleModel::Bmp2; }
+const ApcLook& apc_look_of(engine::VehicleModel m) {
+    return kApcLooks[static_cast<size_t>(m) - static_cast<size_t>(engine::VehicleModel::Bmp2)];
 }
-Vector2 tank_size(engine::TankModel m) { return {look_of(m).length, look_of(m).width}; }
-// A tank's sprite sheets by its reactive armor, wear and how far it's sunk.
-int tank_variant(engine::TankModel model, int era, int wear, int sink) { return ((static_cast<int>(model) * 4 + era) * 6 + wear) * 5 + sink; }
-Vector2 tank_muzzle(engine::TankModel m) {
+// Where an IFV's turret stands: on its roof, or on the cab (the MT-LB's).
+float apc_turret_z(const ApcLook& l) { return l.deck + l.cab; }
+
+// The real vehicle an armored unit is.
+engine::VehicleModel model_of(const engine::Unit& u) { return engine::unit_type(u.type).model; }
+const TankLook& look_of(engine::VehicleModel m) { return kTankLooks[static_cast<size_t>(m)]; }
+
+// What a tank's drawing and an IFV's have in common: its size, its roof,
+// where its turret stands and how high, its wheels.
+struct Dims {
+    float length;
+    float width;
+    float deck;
+    float turret_z;
+    float turret_h;
+    float wheel_r;
+    Vector2 ring;  // the turret's, along and across the hull
+};
+Dims dims_of(engine::VehicleModel m) {
+    if (is_apc_model(m)) {
+        const ApcLook& l = apc_look_of(m);
+        return {l.length, l.width, l.deck, apc_turret_z(l), l.turret_h, l.wheel_r, {l.turret_at, l.turret_c}};
+    }
+    const TankLook& t = look_of(m);
+    return {t.length, t.width, t.deck, t.deck, t.turret_h, t.wheel_r, {t.turret_at, 0.0f}};
+}
+Vector2 turret_ring_of(engine::VehicleModel m) { return dims_of(m).ring; }
+float track_half(engine::UnitTypeId type) {
+    const engine::UnitTypeDef& def = engine::unit_type(type);
+    return engine::is_armor(def) ? (dims_of(def.model).width - 0.05f) * kVehicleScale : 0.24f * kVehicleScale;
+}
+Vector2 armor_size(engine::VehicleModel m) {
+    const Dims d = dims_of(m);
+    return {d.length, d.width};
+}
+// An armored vehicle's sprite sheets by its reactive armor (an IFV's kit: slat cages 1, missiles 2), wear and how far it's sunk.
+int armor_variant(engine::VehicleModel model, int era, int wear, int sink) { return ((static_cast<int>(model) * 4 + era) * 6 + wear) * 5 + sink; }
+Vector2 armor_muzzle(engine::VehicleModel m) {
+    if (is_apc_model(m)) {
+        const ApcLook& l = apc_look_of(m);
+        return {(l.turret_at + l.gun) * kVehicleScale, (apc_turret_z(l) + l.turret_h * 0.55f) * kVehicleScale};
+    }
     const TankLook& t = look_of(m);
     return {(t.turret_at + t.gun) * kVehicleScale, (t.deck + t.turret_h * 0.66f) * kVehicleScale};
 }
-Vector2 tank_engine(engine::TankModel m) {
+Vector2 armor_engine(engine::VehicleModel m) {
+    if (is_apc_model(m)) {
+        const ApcLook& l = apc_look_of(m);
+        return {l.engine_at * kVehicleScale, (l.deck + 1.0f) * kVehicleScale};
+    }
     const TankLook& t = look_of(m);
     const float back = t.rear == Rear::Turbine || t.turret == TurretShape::Merkava ? -0.3f : -0.35f;
     return {t.length * back * kVehicleScale, (t.deck + 1.0f) * kVehicleScale};
+}
+Vector2 ring_at(const Frame& fr, engine::VehicleModel m) {
+    const Vector2 r = turret_ring_of(m);
+    return fr.at(r.x * kVehicleScale, r.y * kVehicleScale);
 }
 
 // A polygon solid with its top drawn in towards its middle by `taper`.
@@ -5188,7 +5381,8 @@ void poly_solid(const Frame& fr, const Vector2* pts, int n, float z0, float z1, 
 }
 
 // The paint's pattern on a top at height z: NATO's three colours, two, the Chinese digital squares.
-void camouflage(const Frame& fr, const TankLook& look, float a0, float a1, float c0, float c1, float z, uint32_t seed, int n) {
+template <typename Look>  // a TankLook, an ApcLook
+void camouflage(const Frame& fr, const Look& look, float a0, float a1, float c0, float c1, float z, uint32_t seed, int n) {
     if (look.camo == Camo::None) return;
     for (int i = 0; i < n; ++i) {
         const uint32_t hi = tile_hash(static_cast<int>(seed & 0xFFFF) + i * 13, i * 7 + 3);
@@ -5650,6 +5844,603 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
     if (gun_front) gun();
 }
 
+// --- IFVs and APCs in pixel art ------------------------------------------------------
+
+// Where a wheeled one's axles are along the hull: in pairs with a gap (the
+// BTR-82A's, the Stryker's), the Ratel's three, else evenly.
+float axle_at(const ApcLook& look, int i) {
+    const float h = look.length * 0.5f;
+    switch (look.shape) {
+        case ApcShape::Btr: {
+            constexpr float k[4] = {0.7f, 0.34f, -0.36f, -0.72f};
+            return h * k[i % 4];
+        }
+        case ApcShape::Stryker: {
+            constexpr float k[4] = {0.68f, 0.36f, -0.42f, -0.72f};
+            return h * k[i % 4];
+        }
+        case ApcShape::Ratel: {
+            constexpr float k[3] = {0.62f, -0.32f, -0.7f};
+            return h * k[i % 3];
+        }
+        default: return h * (0.7f - 1.42f * static_cast<float>(i) / static_cast<float>(std::max(1, look.wheels - 1)));
+    }
+}
+
+// A big tyre standing along the hull at (a, c), `r` pixels high: the
+// rubber, its tread's face, the dished rim in the vehicle's paint, the hub;
+// burnt out, the bare rim alone, down on the ground.
+void tyre(const Frame& fr, float a, float c, float r, Color paint, bool burnt) {
+    const float rr = burnt ? r * 0.62f : r;  // how high its middle is
+    if (fr.sink > 0.0f && rr * 2.0f <= fr.sink) return;  // sunk out of sight
+    constexpr int kPoints = 16;
+    const float ra = r / 32.0f;
+    const Vector2 mid = fr.at(a, c, rr);
+    auto ring = [&](float k, Color color) {
+        Vector2 prev{};
+        for (int i = 0; i <= kPoints; ++i) {
+            const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+            const Vector2 p = fr.at(a + std::cos(t) * ra * k, c, rr + std::sin(t) * r * k);
+            if (i > 0) fill_triangle(mid, prev, p, color);
+            prev = p;
+        }
+    };
+    if (!burnt) {
+        ring(1.0f, {24, 24, 22, 255});
+        ring(0.84f, {42, 42, 38, 255});  // the tread's face
+        ring(0.58f, shade(paint, 0.72f));  // the rim
+    } else {
+        ring(0.62f, {70, 46, 34, 255});  // the bare rim, burnt and rusting
+    }
+    ring(0.36f, burnt ? Color{96, 62, 40, 255} : shade(paint, 1.05f));
+    ring(0.14f, {30, 30, 28, 255});
+}
+
+// How a hull's shape cuts its box: its lower front plate (tiles back under
+// the nose), its sides narrowing to a boat's keel and leaning in over it,
+// its roof drawn in at the back.
+struct HullCut {
+    float lower;
+    float keel;
+    float lean;
+    float back;
+};
+HullCut cut_of(ApcShape s) {
+    switch (s) {
+        case ApcShape::Bmp: return {0.2f, 0.0f, 0.02f, 0.02f};
+        case ApcShape::Bmp3: return {0.12f, 0.0f, 0.02f, 0.01f};
+        case ApcShape::Box: return {0.04f, 0.0f, 0.0f, 0.01f};
+        case ApcShape::Bradley: return {0.08f, 0.0f, 0.0f, 0.01f};
+        case ApcShape::Mtlb: return {0.08f, 0.0f, 0.0f, 0.01f};
+        case ApcShape::Btr: return {0.18f, 0.06f, 0.05f, 0.1f};
+        case ApcShape::Btr4: return {0.1f, 0.04f, 0.02f, 0.02f};
+        case ApcShape::Stryker: return {0.08f, 0.02f, 0.0f, 0.01f};
+        case ApcShape::Ratel: return {0.1f, 0.02f, 0.01f, 0.02f};
+        case ApcShape::Namer: return {0.08f, 0.0f, 0.02f, 0.02f};
+    }
+    return {};
+}
+
+// The hull: the far track or wheels; the hull, its lower plate and its
+// upper one (a boat's keel and leaning sides); on the roof the engine's
+// grilles, the hatches, the driver's periscopes or windows, a BMP's ribbed
+// nose, a trim vane; its doors or ramp, a BTR's side door, the side's
+// stripe; the near track with its wheels, or the near tyres; the skirts;
+// slat cages over it once researched (`kit` & 1). Worn, pieces torn off;
+// burnt out, the tyres gone to the rims, a track slipped off.
+void draw_apc_hull(const Frame& fr, const ApcLook& look, int frame, int kit, Color team, int wear) {
+    const float a0 = -look.length * 0.5f;
+    const float a1 = look.length * 0.5f;
+    const float w = look.width;
+    const bool tracked = !look.wheeled;
+    const float hw = tracked ? w - 0.08f : w - 0.03f;  // the hull's side: inside the tracks, over the wheels
+    const float near = left_is_near(fr) ? 1.0f : -1.0f;
+    const Color paint = look.paint;
+    const Color rubber{30, 30, 27, 255};
+    const Color steel{64, 66, 58, 255};
+    const bool burnt = wear >= 4;
+    const float track_top = look.wheel_r * 1.9f;
+    const float belly = tracked ? 2.0f : look.wheel_r;
+    const HullCut cut = cut_of(look.shape);
+    const float tw = hw - cut.lean;  // the roof's half width
+    const float roof0 = a0 + cut.back;
+    const float roof1 = a1 - look.nose;
+    const uint32_t seed = static_cast<uint32_t>(look.length * 1000.0f) + static_cast<uint32_t>(look.deck * 10.0f);
+    auto side_block = [&](float sgn, float b0, float b1, float c0, float c1, float z0, float z1, Color color, float front = 0.0f) {
+        block(fr, b0, b1, sgn > 0 ? c0 : -c1, sgn > 0 ? c1 : -c0, z0, z1, color, front);
+    };
+    auto facing = [&](float na, float nc) {
+        const Vector2 g = fr.ground_of(na, nc);
+        return g.x + g.y > 0.02f;
+    };
+    // On the upper front plate: t from its lower edge (0) up to the roof (1).
+    auto glacis_z = [&](float t) { return look.nose_z + (look.deck - look.nose_z) * t; };
+    auto glacis = [&](float t, float c) { return fr.at(a1 - look.nose * t, c, glacis_z(t)); };
+    // A window (or its armored cover) on the upper front plate, from t0 to t1 up it.
+    auto window = [&](float t0, float t1, float c0, float c1, Color glass) {
+        if (under(fr, glacis_z(t1))) return;
+        const Vector2 q[4] = {glacis(t0, c0), glacis(t0, c1), glacis(t1, c1), glacis(t1, c0)};
+        fill_quad(q[0], q[1], q[2], q[3], glass);
+        DrawLineV(q[3], q[2], lit(shade(paint, 0.5f)));
+        DrawLineV(q[0], q[1], lit(shade(glass, 1.35f)));
+    };
+
+    // The far track or wheels.
+    if (tracked) {
+        side_block(-near, a0 + 0.01f, a1 - 0.03f, hw - 0.01f, w, 0.0f, track_top, rubber, 0.03f);
+    } else {
+        for (int i = 0; i < look.wheels; ++i) tyre(fr, axle_at(look, i), -near * (w - 0.05f), look.wheel_r, paint, burnt);
+    }
+
+    // The hull: the lower part, its front plate sloping back under the nose
+    // (a boat's sides in towards its keel); the upper, its glacis, its sides
+    // leaning in over the wheels (a BTR's), its back drawn in.
+    {
+        const float kw = hw - cut.keel;
+        const Vector2 base[4] = {{a1 - cut.lower, kw}, {a1 - cut.lower, -kw}, {a0 + 0.02f, -kw}, {a0 + 0.02f, kw}};
+        const Vector2 top[4] = {{a1, hw}, {a1, -hw}, {a0, -hw}, {a0, hw}};
+        solid(fr, base, top, 4, belly, look.nose_z, shade(paint, 0.9f));
+    }
+    {
+        const Vector2 base[4] = {{a1, hw}, {a1, -hw}, {a0, -hw}, {a0, hw}};
+        const Vector2 top[4] = {{roof1, tw}, {roof1, -tw}, {roof0, -tw}, {roof0, tw}};
+        solid(fr, base, top, 4, look.nose_z, look.deck, paint);
+    }
+    const bool deck_under = under(fr, look.deck);
+    if (!deck_under) {
+        camouflage(fr, look, roof0 + 0.04f, roof1 - 0.04f, -tw + 0.03f, tw - 0.06f, look.deck, 0x61u + seed, 6);
+        scorch(fr, roof0 + 0.03f, roof1 - 0.03f, -tw + 0.03f, tw - 0.06f, look.deck, wear, 0x43u + seed);
+    }
+
+    // What its roof and its front have by its kind.
+    auto lid = [&](float a, float c, float ra, float rc, float z, Color color) {  // a round lid lying on the roof
+        constexpr int kPoints = 10;
+        Vector2 ring[kPoints];
+        for (int i = 0; i < kPoints; ++i) {
+            const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+            ring[i] = fr.at(a + std::cos(t) * ra, c + std::sin(t) * rc, z);
+        }
+        const Vector2 mid = fr.at(a, c, z);
+        for (int i = 0; i < kPoints; ++i) fill_triangle(mid, ring[i], ring[(i + 1) % kPoints], color);
+    };
+    auto hatch = [&](float a, float c, float r) {
+        if (deck_under) return;
+        lid(a, c, r + 0.012f, r + 0.012f, look.deck, shade(paint, 0.58f));
+        lid(a, c, r, r, look.deck, shade(paint, 1.1f));
+    };
+    auto rect_hatch = [&](float b0, float b1, float c0, float c1) {  // a big square lid: an M113's, a Bradley's
+        if (deck_under) return;
+        const Vector2 q[4] = {fr.at(b0, c0, look.deck), fr.at(b1, c0, look.deck), fr.at(b1, c1, look.deck), fr.at(b0, c1, look.deck)};
+        fill_quad(q[0], q[1], q[2], q[3], shade(paint, 1.08f));
+        for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.6f)));
+    };
+    switch (look.shape) {
+        case ApcShape::Bmp: {
+            // The ribbed nose, the trim vane folded on it, the four hatches over the men.
+            for (int k = 1; k < 7; ++k) {
+                const float t = static_cast<float>(k) / 7.0f;
+                if (under(fr, glacis_z(t))) continue;
+                DrawLineV(glacis(t, -tw + 0.02f), glacis(t, tw - 0.02f), lit(shade(paint, k % 2 == 1 ? 0.68f : 1.28f)));
+            }
+            window(0.06f, 0.42f, -tw + 0.05f, tw - 0.05f, shade(paint, 1.06f));  // the trim vane
+            for (const float a : {roof0 + 0.1f, roof0 + 0.24f}) {
+                for (const float c : {-tw * 0.5f, tw * 0.5f}) hatch(a, c, 0.035f);
+            }
+            hatch(roof1 - 0.06f, tw * 0.55f, 0.03f);  // the driver's
+            break;
+        }
+        case ApcShape::Bmp3: {
+            // The back raised over the engine, two hatches before it; the driver's in the middle up front.
+            block(fr, roof0, roof0 + 0.34f, -tw, tw, look.deck, look.deck + 1.4f, shade(paint, 0.97f), 0.03f);
+            if (!under(fr, look.deck + 1.4f)) {
+                for (int k = 0; k < 4; ++k) {  // its grilles
+                    const float a = roof0 + 0.06f + 0.05f * static_cast<float>(k);
+                    DrawLineV(fr.at(a, -tw + 0.05f, look.deck + 1.4f), fr.at(a, tw - 0.05f, look.deck + 1.4f), lit(shade(paint, 0.62f)));
+                }
+            }
+            for (const float c : {-tw * 0.5f, tw * 0.5f}) hatch(roof0 + 0.42f, c, 0.035f);
+            hatch(roof1 - 0.05f, 0.0f, 0.03f);
+            break;
+        }
+        case ApcShape::Box: {
+            // A steep front with the trim vane over it, the big hatch over the men.
+            window(0.08f, 0.85f, -tw + 0.03f, tw - 0.03f, shade(paint, 1.08f));
+            if (!under(fr, glacis_z(0.5f))) DrawLineV(glacis(0.5f, -tw + 0.04f), glacis(0.5f, tw - 0.04f), lit(shade(paint, 0.7f)));
+            rect_hatch(roof0 + 0.05f, roof0 + 0.24f, -tw * 0.7f, tw * 0.7f);
+            hatch(roof1 - 0.05f, tw * 0.55f, 0.028f);
+            break;
+        }
+        case ApcShape::Bradley:
+        case ApcShape::Namer: {
+            rect_hatch(roof0 + 0.04f, roof0 + 0.2f, -tw * 0.6f, tw * 0.6f);  // the cargo hatch
+            hatch(roof1 - 0.05f, tw * 0.55f, 0.03f);
+            if (look.shape == ApcShape::Namer) {  // the commander's raised position
+                block(fr, -0.06f, 0.08f, tw * 0.25f, tw * 0.75f, look.deck, look.deck + 1.6f, shade(paint, 0.95f), 0.02f, 0.02f, 0.01f);
+            }
+            break;
+        }
+        case ApcShape::Mtlb: {
+            // The cab across the front, its two windows; two hatches over the men behind.
+            const float c0 = roof1 - 0.3f;
+            block(fr, c0, roof1 + 0.02f, -tw, tw, look.deck, look.deck + look.cab, shade(paint, 1.02f), 0.04f);
+            if (facing(1.0f, 0.0f) && !under(fr, look.deck + look.cab)) {
+                for (const float c : {-tw * 0.55f, tw * 0.45f}) {
+                    auto at = [&](float t, float cc) { return fr.at(roof1 + 0.02f - 0.04f * t, cc, look.deck + look.cab * t); };
+                    fill_quad(at(0.25f, c - 0.06f), at(0.25f, c + 0.06f), at(0.8f, c + 0.06f), at(0.8f, c - 0.06f), {70, 96, 110, 255});
+                }
+            }
+            for (const float c : {-tw * 0.5f, tw * 0.5f}) hatch(roof0 + 0.14f, c, 0.035f);
+            break;
+        }
+        case ApcShape::Btr: {
+            // The driver's and the commander's windows with their armored covers down; hatches on top.
+            for (const float c : {-0.06f, 0.06f}) window(0.55f, 0.92f, c - 0.045f, c + 0.045f, shade(paint, 0.82f));
+            for (const float c : {-tw * 0.45f, tw * 0.45f}) hatch(-0.04f, c, 0.03f);
+            break;
+        }
+        case ApcShape::Btr4:
+        case ApcShape::Ratel: {
+            // The cab's windows across the front.
+            const int n = look.shape == ApcShape::Ratel ? 3 : 2;
+            for (int k = 0; k < n; ++k) {
+                const float c = -tw + 0.04f + (2.0f * tw - 0.08f) * (static_cast<float>(k) + 0.5f) / static_cast<float>(n);
+                const float half = (2.0f * tw - 0.08f) / static_cast<float>(n) * 0.4f;
+                window(0.45f, 0.9f, c - half, c + half, {70, 96, 110, 255});
+            }
+            for (const float c : {-tw * 0.45f, tw * 0.45f}) hatch(roof0 + 0.2f, c, 0.032f);
+            break;
+        }
+        case ApcShape::Stryker: {
+            hatch(roof1 - 0.05f, tw * 0.55f, 0.03f);
+            rect_hatch(roof0 + 0.05f, roof0 + 0.22f, -tw * 0.55f, tw * 0.55f);
+            break;
+        }
+    }
+    // The engine's grilles: over it at the front right (a BMP's, a Bradley's), or across the back.
+    if (!deck_under) {
+        const bool front = look.engine_at > 0.0f;
+        const float c0 = front ? -tw + 0.03f : -tw + 0.05f;
+        const float c1 = front ? -0.02f : tw - 0.05f;
+        for (int k = 0; k < 4; ++k) {
+            const float a = look.engine_at - 0.06f + 0.04f * static_cast<float>(k);
+            if (a > roof1 - 0.01f || a < roof0 + 0.01f) continue;  // on the roof only
+            if (look.shape == ApcShape::Bmp3 && a < roof0 + 0.35f) continue;  // (its own, raised)
+            DrawLineV(fr.at(a, c0, look.deck), fr.at(a, c1, look.deck), lit(shade(paint, 0.62f)));
+        }
+    }
+    // Headlights low on the front.
+    if (!under(fr, look.nose_z + 0.5f)) {
+        for (const float c : {-hw + 0.03f, hw - 0.03f}) disc(fr.at(a1 + 0.005f, c, look.nose_z - 0.4f), 0.9f, {210, 206, 170, 255});
+    }
+
+    // Its back: two doors (a BMP's bulging: its fuel tanks), or the ramp with its hinge.
+    if (facing(-1.0f, 0.0f) && !under(fr, look.deck - 0.8f)) {
+        auto back = [&](float c, float z) {
+            const float t = std::clamp((z - look.nose_z) / (look.deck - look.nose_z), 0.0f, 1.0f);
+            return fr.at(a0 - 0.004f + (z > look.nose_z ? cut.back * t : 0.0f), c, z);
+        };
+        const float z0 = belly + 0.8f;
+        const float z1 = look.deck - 0.8f;
+        if (look.doors) {
+            for (const float c : {-tw * 0.48f, tw * 0.48f}) {
+                const float cw = tw * 0.4f;
+                const Vector2 q[4] = {back(c - cw, z0), back(c + cw, z0), back(c + cw, z1), back(c - cw, z1)};
+                fill_quad(q[0], q[1], q[2], q[3], shade(paint, look.shape == ApcShape::Bmp ? 1.04f : 0.8f));
+                for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.55f)));
+                disc(lerp(q[0], q[2], 0.5f), 0.6f, shade(paint, 0.45f));  // its handle
+            }
+        } else {
+            const Vector2 q[4] = {back(-tw * 0.85f, z0), back(tw * 0.85f, z0), back(tw * 0.85f, z1), back(-tw * 0.85f, z1)};
+            fill_quad(q[0], q[1], q[2], q[3], shade(paint, 0.84f));
+            for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.55f)));
+            DrawLineV(lerp(q[0], q[3], 0.08f), lerp(q[1], q[2], 0.08f), lit(shade(paint, 0.45f)));  // the hinge
+        }
+    }
+    // A BTR's door in the side between its second and third axles; firing ports along it.
+    const float side_c = near * hw;
+    if (look.shape == ApcShape::Btr && !under(fr, look.deck - 1.2f)) {
+        const float b0 = axle_at(look, 2) + 0.08f;
+        const float b1 = axle_at(look, 1) - 0.08f;
+        auto at = [&](float a, float z) {
+            const float t = std::clamp((z - look.nose_z) / (look.deck - look.nose_z), 0.0f, 1.0f);
+            return fr.at(a, near * (hw - cut.lean * t), z);
+        };
+        const Vector2 q[4] = {at(b0, look.nose_z - 1.0f), at(b1, look.nose_z - 1.0f), at(b1, look.deck - 1.2f), at(b0, look.deck - 1.2f)};
+        fill_quad(q[0], q[1], q[2], q[3], shade(paint, 0.84f));
+        for (int i = 0; i < 4; ++i) DrawLineV(q[i], q[(i + 1) % 4], lit(shade(paint, 0.5f)));
+    }
+    if ((look.shape == ApcShape::Bmp || look.shape == ApcShape::Btr || look.shape == ApcShape::Bmp3) && !under(fr, look.nose_z + 1.5f)) {
+        for (int k = 0; k < 3; ++k) {
+            const float a = roof0 + 0.12f + 0.12f * static_cast<float>(k);
+            disc(fr.at(a, near * (hw + 0.004f), look.nose_z + 1.5f), 0.7f, shade(paint, 0.45f));
+        }
+    }
+
+    // The near track with its wheels (a wreck's slipped off them, some torn
+    // off), or the near tyres; the skirts over the track.
+    if (tracked) {
+        const float c = near * w;
+        if (!burnt) {
+            side_block(near, a0 + 0.01f, a1 - 0.03f, hw - 0.01f, w, 0.0f, track_top, rubber, 0.03f);
+            for (float a = a0 + 0.03f + 0.028f * static_cast<float>(frame); a < a1 - 0.05f && !under(fr, 1.2f); a += 0.055f) {
+                DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.2f), lit({58, 58, 52, 255}));
+            }
+        } else {
+            side_block(near, a0 + 0.01f, a0 + 0.12f, hw - 0.01f, w, 0.0f, track_top, rubber, 0.03f);
+            const float out0 = w + 0.005f;
+            const float out1 = w + 0.09f;
+            side_block(near, a0 + 0.1f, a1 - 0.1f, out0, out1, 0.0f, 1.0f, rubber);
+            for (float a = a0 + 0.14f; a < a1 - 0.12f && !under(fr, 1.0f); a += 0.045f) {
+                DrawLineV(fr.at(a, near * out0, 1.0f), fr.at(a, near * out1, 1.0f), lit({62, 62, 56, 255}));
+            }
+        }
+        road_wheel(fr, a1 - 0.05f, c + near * 0.004f, look.wheel_r * 0.85f, steel);  // the sprocket, the idler
+        road_wheel(fr, a0 + 0.05f, c + near * 0.004f, look.wheel_r * 0.8f, steel);
+        const float span = look.length - 0.26f;
+        for (int i = 0; i < look.wheels; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(look.wheels - 1);
+            float drop = 0.0f;
+            if (burnt) {
+                if (torn(0xA10u + static_cast<uint32_t>(i), 2)) continue;
+                if (torn(0xB10u + static_cast<uint32_t>(i), 2)) drop = -1.0f;
+            }
+            road_wheel(fr, a1 - 0.13f - span * t, c + near * (0.008f + (drop < 0.0f ? 0.02f : 0.0f)), look.wheel_r, {74, 76, 64, 255}, drop);
+        }
+        if (look.rollers && look.skirt != Skirt::Full) {
+            for (int i = 0; i < 3; ++i) {
+                if (burnt && torn(0xC10u + static_cast<uint32_t>(i), 2)) continue;
+                road_wheel(fr, a1 - 0.22f - (span - 0.2f) * static_cast<float>(i) / 2.0f, c + near * 0.004f, 0.8f, steel, track_top - 1.8f);
+            }
+        }
+        for (float a = a0 + 0.035f * static_cast<float>(frame); a < (burnt ? a0 + 0.1f : a1 - 0.04f) && !under(fr, track_top); a += 0.07f) {
+            DrawLineV(fr.at(a, near * (hw - 0.01f), track_top), fr.at(a, near * w, track_top), lit({26, 26, 24, 255}));
+        }
+        // A skirt of `n` panels side by side from s0: each run of them in one
+        // piece, the seams drawn on it, a torn-off panel a gap; bolts on the armored ones.
+        auto skirt = [&](int n, float s0, float len, float z0, float z1, float out, uint32_t key, int tear, bool bolts) {
+            auto at = [&](int k) { return s0 + len * static_cast<float>(k) / static_cast<float>(n); };
+            int k = 0;
+            while (k < n) {
+                if (torn(key + static_cast<uint32_t>(k), tear)) {
+                    ++k;
+                    continue;
+                }
+                int e = k;
+                while (e + 1 < n && !torn(key + static_cast<uint32_t>(e + 1), tear)) ++e;
+                side_block(near, at(k), at(e + 1), hw, out, z0, z1, shade(paint, 0.86f));
+                if (!under(fr, z1)) {
+                    for (int j = k + 1; j <= e; ++j) {
+                        DrawLineV(fr.at(at(j), near * out, z0 + 0.3f), fr.at(at(j), near * out, z1 - 0.2f), lit(shade(paint, 0.68f)));
+                    }
+                    for (int j = k; j <= e && bolts; ++j) {
+                        for (const float a : {at(j) + 0.02f, at(j + 1) - 0.025f}) {
+                            disc(fr.at(a, near * (out + 0.002f), (z0 + z1) * 0.5f + 0.6f), 0.45f, shade(paint, 1.4f));
+                        }
+                    }
+                }
+                k = e + 1;
+            }
+        };
+        if (look.skirt == Skirt::Rubber) {  // flaps over the upper run
+            skirt(5, a0 + 0.08f, look.length - 0.3f, track_top - 1.4f, track_top + 0.6f, w + 0.01f, 0x310u, wear, false);
+        } else if (look.skirt == Skirt::Full) {  // armored panels, bolted on
+            skirt(5, a0 + 0.04f, look.length - 0.1f, 2.4f, track_top + 1.8f, w + 0.012f, 0x410u, wear - 1, true);
+        }
+    } else {
+        for (int i = 0; i < look.wheels; ++i) tyre(fr, axle_at(look, i), near * (w - 0.05f), look.wheel_r, paint, burnt);
+    }
+
+    // The side's stripe: on the skirt, or on the hull's side.
+    const bool on_skirt = tracked && look.skirt == Skirt::Full;
+    const float sc = on_skirt ? near * (w + 0.016f) : side_c + near * 0.004f;
+    const float s0 = on_skirt ? track_top - 0.4f : (tracked ? std::max(track_top, look.nose_z) + 0.5f : look.wheel_r * 2.0f + 0.8f);
+    const float s1 = s0 + 1.4f;
+    if (wear < 4 && !under(fr, s1)) {
+        fill_quad(fr.at(a0 + 0.14f, sc, s0), fr.at(a0 + 0.38f, sc, s0), fr.at(a0 + 0.38f, sc, s1), fr.at(a0 + 0.14f, sc, s1), team);
+    }
+
+    // Slat cages, once researched: bars stood off its side and its back.
+    if ((kit & 1) != 0 && !burnt) {
+        const Color bar{56, 58, 50, 255};
+        const float z0 = tracked ? track_top + 0.6f : look.wheel_r * 1.8f;
+        const float z1 = look.deck + 0.6f;
+        if (!under(fr, z1)) {
+            const float out = near * (w + 0.03f);
+            const float b0 = a0 + 0.02f;
+            const float b1 = roof1 - 0.02f;
+            int k = 0;
+            for (float a = b0; a <= b1; a += 0.03f, ++k) {
+                if (torn(0xD00u + static_cast<uint32_t>(k), wear)) continue;
+                DrawLineV(fr.at(a, out, z0), fr.at(a, out, z1), lit(shade(bar, k % 2 == 0 ? 1.0f : 1.3f)));
+            }
+            for (const float z : {z0 + 0.4f, z1}) DrawLineV(fr.at(b0, out, z), fr.at(b1, out, z), lit(bar));
+            if (facing(-1.0f, 0.0f)) {
+                const float b = a0 - 0.03f;
+                for (float c = -w; c <= w; c += 0.03f) DrawLineV(fr.at(b, c, z0), fr.at(b, c, z1), lit(bar));
+                for (const float z : {z0 + 0.4f, z1}) DrawLineV(fr.at(b, -w, z), fr.at(b, w, z), lit(bar));
+            }
+        }
+    }
+}
+
+// An IFV's turret or weapon station: its body by its kind, the side's band
+// round it, hatches and sights, smoke grenade launchers; its gun (the
+// BMP-3's two), its missiles once researched (`kit` & 2). Burnt out, the gun
+// hangs down. The whip aerial is added after, a pixel thin (see bake_sprites).
+Vector2 apc_aerial_foot(const ApcLook& look) { return {-look.turret_r * 0.55f, look.turret_r * 0.5f}; }
+
+void draw_apc_turret(const Frame& tf, const ApcLook& look, Color team, int kit, int wear) {
+    const float z0 = apc_turret_z(look);
+    const float r = look.turret_r;
+    const float h = look.turret_h;
+    const Color paint = look.paint;
+    const Color low = shade(paint, 0.95f);
+    const Color roof = shade(paint, 1.06f);
+    const Color metal{58, 60, 54, 255};
+    const Color launcher{84, 94, 62, 255};
+    const bool missiles = (kit & 2) != 0 && wear < 4;
+    const bool burnt = wear >= 4;
+    const bool gun_front = tf.f.x + tf.f.y > 0.0f;
+    float gun_z = z0 + h * 0.55f;
+    float g0 = r * 0.75f;
+    switch (look.turret) {
+        case ApcTurret::Marder:
+            gun_z = z0 + h + 1.3f;  // on top, outside
+            g0 = -r * 0.2f;
+            break;
+        case ApcTurret::Cupola:
+            gun_z = z0 + h + 0.9f;
+            g0 = r * 0.2f;
+            break;
+        case ApcTurret::Rws:
+            gun_z = z0 + h * 0.75f;
+            g0 = 0.0f;
+            break;
+        case ApcTurret::Bmp1:
+            gun_z = z0 + h * 0.45f;
+            g0 = r * 0.6f;
+            break;
+        default: break;
+    }
+    const bool twin = look.turret == ApcTurret::Bmp3 || look.turret == ApcTurret::Zbd;
+    auto gun = [&] {
+        if (tf.sink > 0.0f && gun_z <= tf.sink) return;  // under
+        const float sag = burnt ? -(gun_z - 1.5f) * 0.8f : 0.0f;  // a burnt-out wreck's gun hanging down
+        const Color tube = look.gun_w >= 2.0f ? shade(paint, 0.62f) : metal;
+        const bool brake = look.turret == ApcTurret::Bmp2 || look.turret == ApcTurret::Btr || look.turret == ApcTurret::Module;
+        barrel(tf, g0, look.gun, twin ? 0.012f : 0.0f, gun_z, sag, look.gun_w, tube, brake);
+        if (twin) barrel(tf, g0, look.gun + 0.04f, -0.04f, gun_z + 0.3f, sag, 1.1f, metal, true);  // the 30 mm beside the 100 mm
+        if (look.turret == ApcTurret::Module) barrel(tf, r * 0.5f, r * 1.4f, r * 0.7f, gun_z - 0.4f, 0.0f, 1.6f, metal);  // the grenade launcher
+        if (look.turret == ApcTurret::Bmp1 && !burnt) {  // the Malyutka's rail over it
+            DrawLineEx(tf.at(g0, 0.0f, z0 + h + 0.2f), tf.at(look.gun * 0.8f, 0.0f, z0 + h + 0.2f), 1.0f, lit(metal));
+        }
+    };
+    if (!gun_front) gun();
+    auto layers = [&](const Vector2* pts, int n, float taper) {
+        poly_solid(tf, pts, n, z0, z0 + h * 0.35f, low);
+        poly_solid(tf, pts, n, z0 + h * 0.35f, z0 + h * 0.6f, team);
+        poly_solid(tf, pts, n, z0 + h * 0.6f, z0 + h, roof, taper);
+    };
+    bool sides = true;  // smoke grenade launchers on its sides
+    switch (look.turret) {
+        case ApcTurret::Bmp2:
+        case ApcTurret::Bmp1:
+        case ApcTurret::Btr: {  // a cone
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.92f, z0, z0 + h * 0.3f, low, 0.0f, 12);
+            round_solid(tf, 0.0f, 0.0f, r, r * 0.92f, z0 + h * 0.3f, z0 + h * 0.55f, team, 0.03f, 12);
+            round_solid(tf, 0.0f, 0.0f, r * 0.97f, r * 0.89f, z0 + h * 0.55f, z0 + h, roof, look.turret == ApcTurret::Bmp1 ? 0.5f : 0.4f, 12);
+            block(tf, r * 0.05f, r * 0.4f, -r * 0.55f, -r * 0.3f, z0 + h * 0.85f, z0 + h + 1.2f, shade(paint, 0.85f));  // the gunner's sight
+            sides = look.turret != ApcTurret::Bmp1;
+            break;
+        }
+        case ApcTurret::Bmp3:
+        case ApcTurret::Zbd: {
+            const Vector2 p[8] = {{r, r * 0.55f},   {r * 0.55f, r},   {-r * 0.8f, r},   {-r, r * 0.65f},
+                                  {-r, -r * 0.65f}, {-r * 0.8f, -r}, {r * 0.55f, -r}, {r, -r * 0.55f}};
+            layers(p, 8, 0.12f);
+            if (look.turret == ApcTurret::Zbd) {  // armor bolted on its sides
+                for (const float sgn : {-1.0f, 1.0f}) {
+                    if (torn(0x820u + (sgn > 0.0f ? 1u : 0u), wear)) continue;
+                    block(tf, -r * 0.6f, r * 0.5f, sgn > 0.0f ? r * 0.95f : -r * 1.12f, sgn > 0.0f ? r * 1.12f : -r * 0.95f, z0 + h * 0.15f,
+                          z0 + h * 0.8f, shade(paint, 1.03f));
+                }
+            }
+            block(tf, r * 0.1f, r * 0.45f, -r * 0.8f, -r * 0.45f, z0 + h, z0 + h + 1.8f, shade(paint, 0.86f));  // the gunner's sight
+            block(tf, -r * 0.5f, -r * 0.2f, r * 0.35f, r * 0.65f, z0 + h, z0 + h + 1.2f, shade(paint, 0.9f));  // the commander's
+            break;
+        }
+        case ApcTurret::Box: {
+            const float b = r * 0.35f;  // its bustle
+            const Vector2 p[8] = {{r * 1.05f, r * 0.5f},  {r * 0.7f, r * 0.92f},  {-r * 0.85f, r * 0.92f},  {-r - b, r * 0.7f},
+                                  {-r - b, -r * 0.7f}, {-r * 0.85f, -r * 0.92f}, {r * 0.7f, -r * 0.92f}, {r * 1.05f, -r * 0.5f}};
+            layers(p, 8, 0.1f);
+            block(tf, -r * 0.45f, -r * 0.1f, r * 0.25f, r * 0.6f, z0 + h, z0 + h + 1.2f, shade(paint, 0.9f));  // the commander's hatch
+            block(tf, r * 0.2f, r * 0.55f, -r * 0.75f, -r * 0.45f, z0 + h, z0 + h + 1.8f, shade(paint, 0.85f));  // the gunner's sight
+            break;
+        }
+        case ApcTurret::Marder: {
+            const Vector2 p[8] = {{r, r * 0.45f},   {r * 0.5f, r},   {-r * 0.7f, r},   {-r, r * 0.55f},
+                                  {-r, -r * 0.55f}, {-r * 0.7f, -r}, {r * 0.5f, -r}, {r, -r * 0.45f}};
+            layers(p, 8, 0.22f);
+            block(tf, -r * 0.35f, r * 0.25f, -r * 0.22f, r * 0.22f, z0 + h, z0 + h + 1.6f, shade(paint, 0.9f));  // the gun's mount on the roof
+            break;
+        }
+        case ApcTurret::Module: {
+            const Vector2 p[6] = {{r * 1.1f, r * 0.45f}, {-r * 0.8f, r * 0.9f}, {-r, r * 0.6f},
+                                  {-r, -r * 0.6f},       {-r * 0.8f, -r * 0.9f}, {r * 1.1f, -r * 0.45f}};
+            layers(p, 6, 0.12f);
+            block(tf, r * 0.1f, r * 0.45f, -r * 0.85f, -r * 0.5f, z0 + h, z0 + h + 1.8f, shade(paint, 0.85f));  // the sight
+            break;
+        }
+        case ApcTurret::Rws: {
+            round_solid(tf, 0.0f, 0.0f, r, r, z0, z0 + h * 0.35f, team, 0.0f, 10);  // its ring in the side's colour
+            block(tf, -r * 0.7f, r * 0.7f, -r * 0.6f, r * 0.6f, z0 + h * 0.35f, z0 + h * 0.95f, low, 0.1f);  // the mount
+            block(tf, -r * 0.5f, r * 0.3f, r * 0.6f, r * 1.2f, z0 + h * 0.45f, z0 + h * 0.9f, shade(paint, 0.8f));  // the ammunition box
+            block(tf, 0.0f, r * 0.55f, -r * 1.2f, -r * 0.6f, z0 + h * 0.6f, z0 + h * 1.25f, shade(paint, 0.7f));  // the sight
+            sides = false;
+            break;
+        }
+        case ApcTurret::Cupola: {
+            round_solid(tf, 0.0f, 0.0f, r, r, z0, z0 + h * 0.5f, team, 0.0f, 10);
+            round_solid(tf, 0.0f, 0.0f, r * 0.95f, r * 0.95f, z0 + h * 0.5f, z0 + h, low, 0.15f, 10);
+            // The shield in front of the gun.
+            block(tf, r * 0.9f, r * 1.1f, -r * 1.3f, r * 1.3f, z0 + h * 0.6f, z0 + h + 2.6f, shade(paint, 0.9f));
+            sides = false;
+            break;
+        }
+        case ApcTurret::Mini: {
+            round_solid(tf, 0.0f, 0.0f, r, r, z0, z0 + h * 0.45f, team, 0.0f, 10);
+            round_solid(tf, 0.0f, 0.0f, r * 0.96f, r * 0.96f, z0 + h * 0.45f, z0 + h, roof, 0.45f, 10);
+            sides = false;
+            break;
+        }
+    }
+    camouflage(tf, look, -r * 0.7f, r * 0.5f, -r * 0.6f, r * 0.5f, z0 + h, 0x71u + static_cast<uint32_t>(r * 1000.0f), 2);
+    scorch(tf, -r * 0.7f, r * 0.5f, -r * 0.6f, r * 0.5f, z0 + h, wear, 0x93u + static_cast<uint32_t>(r * 700.0f));
+    if (sides && !under(tf, z0 + h * 0.6f)) {
+        for (const float sgn : {-1.0f, 1.0f}) {
+            for (int k = 0; k < 3; ++k) disc(tf.at(r * 0.2f - 0.025f * static_cast<float>(k), sgn * r * 0.95f, z0 + h * 0.6f), 0.8f, {50, 52, 44, 255});
+        }
+    }
+    // The missiles, once researched.
+    if (missiles) {
+        switch (look.launcher) {
+            case Launcher::Roof:
+                if (look.turret == ApcTurret::Module) {  // Barrier: two tubes beside the module
+                    for (int k = 0; k < 2; ++k) {
+                        const float c = r * (0.95f + 0.26f * static_cast<float>(k));
+                        block(tf, -r * 0.7f, r * 0.95f, c, c + r * 0.22f, z0 + h * 0.3f, z0 + h * 0.85f, launcher);
+                    }
+                } else {  // Konkurs on the roof
+                    block(tf, -r * 0.1f, r * 0.1f, -r * 0.62f, -r * 0.48f, z0 + h, z0 + h + 0.5f, metal);  // its mount
+                    block(tf, -r * 0.55f, r * 1.05f, -r * 0.72f, -r * 0.38f, z0 + h + 0.5f, z0 + h + 1.9f, launcher);
+                }
+                break;
+            case Launcher::Rail:  // the Malyutka on its rail
+                block(tf, r * 0.6f, look.gun * 0.78f, -0.012f, 0.012f, z0 + h + 0.4f, z0 + h + 1.4f, launcher);
+                break;
+            case Launcher::Box:  // the twin TOW box on the left
+                block(tf, -r * 0.75f, r * 0.45f, r * 0.95f, r * 1.4f, z0 + h * 0.25f, z0 + h * 0.95f, shade(paint, 0.94f), 0.03f);
+                break;
+            case Launcher::Side:
+                if (look.turret == ApcTurret::Marder) {  // Milan on a post at the right
+                    block(tf, -r * 0.1f, r * 0.05f, -r * 1.15f, -r * 1.0f, z0 + h * 0.5f, z0 + h + 0.8f, metal);
+                    block(tf, -r * 0.4f, r * 0.9f, -r * 1.25f, -r * 0.95f, z0 + h + 0.8f, z0 + h + 2.0f, launcher);
+                } else {  // Jyu-MAT at both sides
+                    for (const float sgn : {-1.0f, 1.0f}) {
+                        block(tf, -r * 0.5f, r * 0.75f, sgn > 0.0f ? r * 0.95f : -r * 1.2f, sgn > 0.0f ? r * 1.2f : -r * 0.95f,
+                              z0 + h * 0.4f, z0 + h * 0.85f, launcher);
+                    }
+                }
+                break;
+            default: break;
+        }
+    }
+    const Vector2 af = apc_aerial_foot(look);
+    if (!under(tf, z0 + h)) disc(tf.at(af.x, af.y, z0 + h), 0.9f, shade(paint, 0.6f));  // the aerial's base
+    if (gun_front) gun();
+}
+
 // Makes a drawn frame pixel art: every colour to the nearest of the
 // palette (ramps of the paint, the side's colour, steel, rubber, glass),
 // a line a pixel darker where one part meets another below or to the right,
@@ -5776,15 +6567,15 @@ void WorldRenderer::bake_trees() const {
 }
 
 void WorldRenderer::bake_sprites(const engine::World& world) const {
-    std::vector<engine::PlayerId> owners;
-    for (const engine::Unit& u : world.units()) {
-        if (!engine::unit_type(u.type).tank) continue;
-        if (std::find(owners.begin(), owners.end(), u.owner) == owners.end()) owners.push_back(u.owner);
+    for (size_t p = 0; p < world_era_.size(); ++p) {
+        const auto player = static_cast<engine::PlayerId>(p);
+        world_era_[p] = world.era_level(player);
+        world_kit_[p] = (world.has_upgrade(player, engine::UpgradeId::AddOnArmor) ? 1 : 0) |
+                        (world.has_upgrade(player, engine::UpgradeId::Atgm) ? 2 : 0);
     }
-    for (size_t p = 0; p < world_era_.size(); ++p) world_era_[p] = world.era_level(static_cast<engine::PlayerId>(p));
     struct Wanted {
         engine::PlayerId owner;
-        engine::TankModel model;
+        engine::VehicleModel model;
         int era;   // reactive armor
         int wear;  // 0 whole .. 3 barely going, 4 a wreck, 5 a rusted one
         int sink;  // 0 on firm ground; in a bog 1 to its fenders, 3 to its deck, 4 its hull gone; 2 its turret's top only
@@ -5796,14 +6587,17 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
     std::vector<Wanted> wanted;
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
-        if (!def.tank) continue;
-        const int era = world_era_[u.owner % world_era_.size()];
+        if (!engine::is_armor(def)) continue;
+        const int era = kit(def.model, u.owner);
         // Every wear up front (cheap: a row of directions at once), so a hit never waits for a bake.
         for (int wear = 0; wear <= 5; ++wear) wanted.push_back({u.owner, def.model, wear >= 4 ? 0 : era, wear, 0});  // 5: rusted
         if (terrain_under(to_vector2(u.pos)) == engine::Terrain::Swamp) {  // in a bog: its sunk looks, as it gets worse
             const int now = wear_of(u.hp, def.max_hp);
             for (int wear = now; wear <= std::min(now + 1, 3); ++wear) {
-                for (const int sink : {1, 3, 4}) wanted.push_back({u.owner, def.model, era, wear, sink});
+                for (const int sink : {1, 3, 4}) {
+                    if (def.floats && sink != 1) continue;  // an amphibious one only sits in it
+                    wanted.push_back({u.owner, def.model, era, wear, sink});
+                }
             }
         }
         if (dump_dir()) {  // every kind of armor, to look at
@@ -5811,11 +6605,11 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         }
     }
     for (const Remains& r : remains_) {
-        if (!engine::unit_type(r.type).tank) continue;
-        const engine::TankModel model = engine::unit_type(r.type).model;
+        if (!engine::is_armor(engine::unit_type(r.type))) continue;
+        const engine::VehicleModel model = engine::unit_type(r.type).model;
         const engine::Terrain t = terrain_under(r.ground);
         if (t == engine::Terrain::Water || r.sunk) {  // drowned, or gone under in a bog: not burnt, only its turret's top showing
-            wanted.push_back({r.owner, model, world_era_[r.owner % world_era_.size()], 1, 2});
+            wanted.push_back({r.owner, model, kit(model, r.owner), 1, 2});
             continue;
         }
         const int sink = t == engine::Terrain::Swamp ? 1 : 0;
@@ -5823,19 +6617,33 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         wanted.push_back({r.owner, model, 0, 5, sink});
     }
     for (const auto& [owner, model, era, wear, sink] : wanted) {
-        const int variant = tank_variant(model, era, wear, sink);
-        if (sheets_.count({{static_cast<int>(SpritePart::TankHull), variant}, owner})) continue;
-        const TankLook& look_base = look_of(model);
-        TankLook look = look_base;
-        if (wear == 5) {  // a wreck gone rusty with the weeks
-            look.paint = mix(look_base.paint, {114, 68, 44, 255}, 0.78f);
-            look.camo = Camo::None;
-        } else if (wear == 4) {  // burnt out: the paint gone black and rusty
-            look.paint = mix(look_base.paint, {46, 40, 34, 255}, 0.75f);
-            look.camo = Camo::None;
-        } else if (wear == 3) {
-            look.paint = mix(look_base.paint, {52, 48, 42, 255}, 0.3f);
+        const int variant = armor_variant(model, era, wear, sink);
+        if (sheets_.count({{static_cast<int>(SpritePart::Hull), variant}, owner})) continue;
+        const bool apc = is_apc_model(model);
+        TankLook look = look_of(apc ? engine::VehicleModel::Standard : model);
+        ApcLook carrier = apc_look_of(apc ? model : engine::VehicleModel::Bmp2);
+        if (model == engine::VehicleModel::Bmp2 && engine::axis_of(owner) == engine::Axis::Democratic) {
+            carrier.paint = kUkrainianGreen;  // Ukraine's
         }
+        auto worn = [&](auto& l) {
+            const Color base = l.paint;
+            if (wear == 5) {  // a wreck gone rusty with the weeks
+                l.paint = mix(base, {114, 68, 44, 255}, 0.78f);
+                l.camo = Camo::None;
+            } else if (wear == 4) {  // burnt out: the paint gone black and rusty
+                l.paint = mix(base, {46, 40, 34, 255}, 0.75f);
+                l.camo = Camo::None;
+            } else if (wear == 3) {
+                l.paint = mix(base, {52, 48, 42, 255}, 0.3f);
+            }
+        };
+        worn(look);
+        worn(carrier);
+        const Color paint = apc ? carrier.paint : look.paint;
+        const Camo camo = apc ? carrier.camo : look.camo;
+        const Color camo1 = apc ? carrier.camo1 : look.camo1;
+        const Color camo2 = apc ? carrier.camo2 : look.camo2;
+        const Dims dims = dims_of(model);
         constexpr int kW = 128;
         constexpr int kH = 96;
         constexpr int kDirs = 32;
@@ -5845,11 +6653,10 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             SetTextureFilter(bake_target_.texture, TEXTURE_FILTER_POINT);
         }
         const Color team = wear == 5 ? Color{110, 64, 40, 255} : wear == 4 ? Color{60, 54, 48, 255} : theme::player_color(owner);
-        const Color paint = look.paint;
         std::vector<Color> palette;
         for (const float k : {0.28f, 0.4f, 0.54f, 0.7f, 0.88f, 1.08f, 1.3f, 1.56f}) palette.push_back(shade(paint, k));
-        if (look.camo != Camo::None) {
-            for (const Color c : {look.camo1, look.camo2}) {
+        if (camo != Camo::None) {
+            for (const Color c : {camo1, camo2}) {
                 for (const float k : {0.55f, 0.8f, 1.05f, 1.3f}) palette.push_back(shade(c, k));
             }
         }
@@ -5863,8 +6670,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         }
         const float light = g_light;
         g_light = 1.0f;
-        for (const SpritePart part : {SpritePart::TankHull, SpritePart::TankTurret}) {
-            const int frames = part == SpritePart::TankHull ? 2 : 1;
+        for (const SpritePart part : {SpritePart::Hull, SpritePart::Turret}) {
+            const int frames = part == SpritePart::Hull ? 2 : 1;
             Image atlas = GenImageColor(kW * kDirs, kH * frames, {0, 0, 0, 0});
             for (int frame = 0; frame < frames; ++frame) {
                 BeginTextureMode(bake_target_);
@@ -5879,16 +6686,24 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
                              {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
                     fr.sink = sink == 1   ? 5.0f
-                              : sink == 3 ? look.deck - 0.5f
-                              : sink == 4 ? look.deck + look.turret_h * 0.35f
-                              : sink == 2 ? look.deck + look.turret_h * 0.75f
+                              : sink == 3 ? dims.deck - 0.5f
+                              : sink == 4 ? dims.turret_z + dims.turret_h * 0.35f
+                              : sink == 2 ? dims.turret_z + dims.turret_h * 0.75f
                                           : 0.0f;
-                    if (part == SpritePart::TankHull) {
-                        draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
+                    if (part == SpritePart::Hull) {
+                        if (apc) {
+                            draw_apc_hull(fr, carrier, frame, era, team, std::min(wear, 4));
+                        } else {
+                            draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
+                        }
                     } else {
-                        draw_tank_turret(fr, look, team, era, std::min(wear, 4));
-                        const Vector2 af = aerial_foot(look);
-                        aerials[static_cast<size_t>(d)] = fr.at(af.x, af.y, look.deck + look.turret_h);
+                        if (apc) {
+                            draw_apc_turret(fr, carrier, team, era, std::min(wear, 4));
+                        } else {
+                            draw_tank_turret(fr, look, team, era, std::min(wear, 4));
+                        }
+                        const Vector2 af = apc ? apc_aerial_foot(carrier) : aerial_foot(look);
+                        aerials[static_cast<size_t>(d)] = fr.at(af.x, af.y, dims.turret_z + dims.turret_h);
                     }
                 }
                 EndTextureMode();
@@ -5896,7 +6711,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                 ImageFlipVertical(&img);
                 ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
                 pixelate(img, palette);
-                if (part == SpritePart::TankTurret && (wear < 3 || sink == 2)) {
+                if (part == SpritePart::Turret && (wear < 3 || sink == 2)) {
                     for (const Vector2 foot : aerials) {  // the whip aerial: a pixel thin, no outline, short (shot away when battered)
                         const int x = static_cast<int>(std::lround(foot.x));
                         const int y = static_cast<int>(std::lround(foot.y));
@@ -5924,6 +6739,10 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         }
         g_light = light;
     }
+}
+
+int WorldRenderer::kit(engine::VehicleModel model, engine::PlayerId owner) const {
+    return is_apc_model(model) ? world_kit_[owner % world_kit_.size()] : world_era_[owner % world_era_.size()];
 }
 
 const WorldRenderer::SpriteSheet* WorldRenderer::sheet(SpritePart part, int variant, engine::PlayerId owner) const {
@@ -6068,11 +6887,11 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     if (under == engine::Terrain::Water) {
         // Drowned with the bridge under it: the water over it, only the top
         // of its turret and its aerial showing, rings on the water round them.
-        const int v = tank_variant(def.model, world_era_[r.owner % world_era_.size()], 1, 2);
-        const SpriteSheet* turret = sheet(SpritePart::TankTurret, v, r.owner);
+        const int v = armor_variant(def.model, kit(def.model, r.owner), 1, 2);
+        const SpriteSheet* turret = sheet(SpritePart::Turret, v, r.owner);
         if (!turret) return;
         const Frame fr = make_frame(map, r.ground, unit(r.hull));
-        const Vector2 ring = fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f);
+        const Vector2 ring = ring_at(fr, def.model);
         const float t = static_cast<float>(GetTime());
         for (int k = 0; k < 2; ++k) {
             const float grow = std::fmod(t * 0.4f + static_cast<float>(k) * 0.5f, 1.0f);
@@ -6082,7 +6901,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         // Its hull a dark shape under the water, the gun along it.
         // Soft round blots along it and across it, each faint, darker where
         // they overlap: a rounded shape blurring out at its edges.
-        const Vector2 size = tank_size(def.model);
+        const Vector2 size = armor_size(def.model);
         const float k = kVehicleScale;
         for (int i = 0; i < 9; ++i) {
             const float a = (static_cast<float>(i) / 8.0f - 0.5f) * size.x * 0.9f * k;
@@ -6101,20 +6920,20 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         return;
     }
     if (r.sunk) {
-        const SpriteSheet* turret = sheet(SpritePart::TankTurret, tank_variant(def.model, world_era_[r.owner % world_era_.size()], 1, 2), r.owner);
+        const SpriteSheet* turret = sheet(SpritePart::Turret, armor_variant(def.model, kit(def.model, r.owner), 1, 2), r.owner);
         if (!turret) return;
         const Frame fr = make_frame(map, r.ground, unit(r.hull));
-        const Vector2 size = tank_size(def.model);
+        const Vector2 size = armor_size(def.model);
         mud_halo(fr, {size.x * 0.55f, size.y * 0.7f}, false, r.seed);
-        draw_sprite(*turret, fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f), unit(r.facing), 0);
+        draw_sprite(*turret, ring_at(fr, def.model), unit(r.facing), 0);
         mud_halo(fr, {size.x * 0.55f, size.y * 0.7f}, true, r.seed);
         return;
     }
     const int sink = under == engine::Terrain::Swamp ? 1 : 0;
-    const SpriteSheet* hull = sheet(SpritePart::TankHull, tank_variant(def.model, 0, 4, sink), r.owner);
-    const SpriteSheet* turret = sheet(SpritePart::TankTurret, tank_variant(def.model, 0, 4, sink), r.owner);
-    const SpriteSheet* rust_hull = sheet(SpritePart::TankHull, tank_variant(def.model, 0, 5, sink), r.owner);
-    const SpriteSheet* rust_turret = sheet(SpritePart::TankTurret, tank_variant(def.model, 0, 5, sink), r.owner);
+    const SpriteSheet* hull = sheet(SpritePart::Hull, armor_variant(def.model, 0, 4, sink), r.owner);
+    const SpriteSheet* turret = sheet(SpritePart::Turret, armor_variant(def.model, 0, 4, sink), r.owner);
+    const SpriteSheet* rust_hull = sheet(SpritePart::Hull, armor_variant(def.model, 0, 5, sink), r.owner);
+    const SpriteSheet* rust_turret = sheet(SpritePart::Turret, armor_variant(def.model, 0, 5, sink), r.owner);
     if (!hull || !turret) return;
     const Frame fr = make_frame(map, r.ground, unit(r.hull));
     const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
@@ -6125,7 +6944,8 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     {
         // Blown off it: road wheels lying flat on the ground beside it, like
         // cogs: the rim toothed, the dished disc with its holes, the hub.
-        const TankLook& look = look_of(def.model);
+        const Dims look = dims_of(def.model);
+        const bool wheeled = is_apc_model(def.model) && apc_look_of(def.model).wheeled;
         const float k = kVehicleScale;
         const uint32_t hw = tile_hash(static_cast<int>(r.seed & 0xFFFF), 53);
         const Color steel = mix({74, 76, 64, 255}, {112, 68, 44, 255}, rust);
@@ -6141,6 +6961,13 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
             const float ry = rx * (0.45f + 0.2f * hash_unit(hi >> 12));
             const float turn = hash_unit(hi >> 20) * 6.2831853f;
             DrawEllipse(static_cast<int>(p.x + 1.5f), static_cast<int>(p.y + 1.2f), rx + 1.5f, ry + 1.0f, lit({16, 14, 12, 90}));  // its shadow
+            if (wheeled) {  // a tyre burnt off its rim: the rusty rim, its hub
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.8f + 1.0f, ry * 0.8f + 0.8f, lit(outline));
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.8f, ry * 0.8f, lit(shade(steel, 0.85f)));
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.5f, ry * 0.5f, lit(shade(steel, 1.3f)));
+                DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.18f, ry * 0.18f, lit(outline));
+                continue;
+            }
             // The toothed rim: a ring of teeth, outlined.
             constexpr int kTeeth = 12;
             auto ring = [&](float scale, float tooth, Color color) {
@@ -6168,7 +6995,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         draw(*burnt, lit(WHITE));
         if (rusted && rust > 0.0f) draw(*rusted, ColorAlpha(lit(WHITE), rust));
     };
-    if (sink) mud_halo(fr, tank_size(def.model), false, r.seed);
+    if (sink) mud_halo(fr, armor_size(def.model), false, r.seed);
     both(hull, rust_hull, [&](const SpriteSheet& sh, Color tint) {
         float a = std::atan2(fr.f.y, fr.f.x);
         if (a < 0.0f) a += 6.2831853f;
@@ -6177,7 +7004,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
                        {std::round(fr.o.x - sh.origin.x), std::round(fr.o.y - sh.origin.y), static_cast<float>(sh.w), static_cast<float>(sh.h)},
                        {0.0f, 0.0f}, 0.0f, tint);
     });
-    const Vector2 ring = fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f);
+    const Vector2 ring = ring_at(fr, def.model);
     const bool tossed = def.crew_survives_percent <= 20;
     // Where the turret lies and how: blown off, a tile or so from the hull,
     // turned, tilted and now and then upside down, its own way each time.
@@ -6188,7 +7015,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     float tilt = 0.0f;
     bool flip = false;
     if (tossed) {
-        const float deck = look_of(def.model).deck * kVehicleScale;
+        const float deck = dims_of(def.model).turret_z * kVehicleScale;
         DrawEllipse(static_cast<int>(ring.x), static_cast<int>(ring.y - deck), 7.0f, 3.5f, lit({16, 14, 12, 255}));  // where it sat
         const float a = hash_unit(h1) * 6.2831853f;
         const float dist = 0.95f + 0.3f * hash_unit(h1 >> 16);
@@ -6207,7 +7034,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         const Rectangle src{static_cast<float>(d * sh.w), 0.0f, flip ? -w : w, flip ? -static_cast<float>(sh.h) : static_cast<float>(sh.h)};
         DrawTexturePro(sh.atlas, src, {std::round(at.x), std::round(at.y), w, static_cast<float>(sh.h)}, sh.origin, tilt, tint);
     });
-    if (sink) mud_halo(fr, tank_size(def.model), true, r.seed);
+    if (sink) mud_halo(fr, armor_size(def.model), true, r.seed);
     g_light = light;
 }
 
@@ -6226,17 +7053,17 @@ void WorldRenderer::draw_track_marks(const engine::World& world, Rectangle view)
         if (len <= 0.0f) continue;
         const Vector2 dir{d.x / len, d.y / len};
         const Vector2 side{-dir.y, dir.x};
-        constexpr float kRut = 0.06f;  // half a rut's width
+        const float rut = m.tyres ? 0.035f : 0.06f;  // half a rut's width
         for (const float s : {-1.0f, 1.0f}) {
             const Vector2 o{side.x * m.half * s, side.y * m.half * s};
             auto pt = [&](Vector2 p, float across) { return on_terrain(map, {p.x + o.x + side.x * across, p.y + o.y + side.y * across}); };
-            const Vector2 a0 = pt(m.a, -kRut);
-            const Vector2 a1 = pt(m.a, kRut);
-            const Vector2 b1 = pt(m.b, kRut);
-            const Vector2 b0 = pt(m.b, -kRut);
-            fill_quad(a0, a1, b1, b0, ColorAlpha({52, 42, 30, 255}, 0.42f * fade));
-            // The tread marks across it.
-            for (float t = 0.25f; t < 1.0f; t += 0.5f) {
+            const Vector2 a0 = pt(m.a, -rut);
+            const Vector2 a1 = pt(m.a, rut);
+            const Vector2 b1 = pt(m.b, rut);
+            const Vector2 b0 = pt(m.b, -rut);
+            fill_quad(a0, a1, b1, b0, ColorAlpha({52, 42, 30, 255}, (m.tyres ? 0.34f : 0.42f) * fade));
+            // The tread marks across it (a track's).
+            for (float t = 0.25f; t < 1.0f && !m.tyres; t += 0.5f) {
                 DrawLineV(lerp(a0, b0, t), lerp(a1, b1, t), ColorAlpha(lit({34, 28, 20, 255}), 0.5f * fade));
             }
         }

@@ -163,10 +163,11 @@ struct AbilityDef {
 
 const AbilityDef& ability_def(AbilityId id);
 
-// Which real tank a tank is: its look, drawn by the renderer. The axes'
-// own lines: the Democratic axis (NATO with Ukraine, Japan, Korea, Israel),
-// the Authoritarian one (BRICS with Iran). Standard: not a tank.
-enum class TankModel : uint8_t {
+// Which real tank, IFV or APC an armored vehicle is: its look, drawn by the
+// renderer. The axes' own lines: the Democratic axis (NATO with Ukraine,
+// Japan, Korea, Israel), the Authoritarian one (BRICS with Iran). Standard:
+// none of them.
+enum class VehicleModel : uint8_t {
     Standard,
     T64BV,       // Ukraine
     T64BM,       // Ukraine: Bulat
@@ -182,6 +183,23 @@ enum class TankModel : uint8_t {
     T90M,        // Russia: Proryv
     Type99A,     // China
     Karrar,      // Iran
+    // IFVs and APCs.
+    Bmp2,     // both: Ukraine's and Russia's
+    Bmp1,     // Russia
+    Bmp3,     // Russia
+    Btr82a,   // Russia
+    Mtlb,     // Russia
+    Zbd04a,   // China
+    Ratel20,  // South Africa
+    Boragh,   // Iran
+    Btr4e,    // Ukraine: Bucephalus
+    M113,     // USA
+    Bradley,  // USA: M2A2 ODS
+    Marder,   // Germany: 1A3
+    Stryker,  // USA: M1126
+    Type89,   // Japan
+    K21,      // Korea
+    Namer,    // Israel
     Count,
 };
 
@@ -248,11 +266,16 @@ struct UnitTypeDef {
     // (the men come back); how far along the reactive armor line it can go
     // (0: none bolted on); how it's drawn.
     bool tank = false;
+    // IFVs and APCs, each a real one: the same kinds of difference as the
+    // tanks'; `floats`: amphibious, it swims through a bog (a heavy one that
+    // doesn't sinks in it, as a tank does).
+    bool apc = false;
+    bool floats = false;
     int32_t front_percent = 100;
     int32_t soft_ground_percent = 100;
     int32_t crew_survives_percent = 0;
     int32_t era_max = 0;
-    TankModel model = TankModel::Standard;
+    VehicleModel model = VehicleModel::Standard;
 };
 
 enum class UnitTypeId : uint8_t {
@@ -294,6 +317,22 @@ enum class UnitTypeId : uint8_t {
     T90M,
     Type99A,
     Karrar,
+    // The IFVs and APCs of the axes (Ifv above is the BMP-2, both sides').
+    Bmp1,
+    Bmp3,
+    Btr82a,
+    Mtlb,
+    Zbd04a,
+    Ratel20,
+    Boragh,
+    Btr4e,
+    M113,
+    Bradley,
+    Marder,
+    Stryker,
+    Type89,
+    K21,
+    Namer,
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
@@ -304,6 +343,8 @@ inline MoveClass move_class(const UnitTypeDef& def) {
     if (!def.vehicle) return MoveClass::Foot;
     return def.wheeled ? MoveClass::Wheeled : MoveClass::Vehicle;
 }
+// Tanks, IFVs and APCs: armor, each a real one.
+inline bool is_armor(const UnitTypeDef& def) { return def.tank || def.apc; }
 // Trucks carry no weapon: they never pick fights.
 inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
 // Foot soldiers ride in an IFV; gun crews walk with their guns.

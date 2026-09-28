@@ -100,6 +100,7 @@ private:
         Vector2 b;
         float half;
         float age;
+        bool tyres = false;  // a wheeled one's: narrower, no tread across
     };
     std::vector<TrackMark> track_marks_;
     std::unordered_map<engine::EntityId, Vector2> track_last_;  // where each left its last mark
@@ -132,7 +133,7 @@ private:
         int frames = 0;
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
-    enum class SpritePart : int { TankHull, TankTurret };
+    enum class SpritePart : int { Hull, Turret };  // a tank's or an IFV's
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};
@@ -141,6 +142,9 @@ private:
     mutable RenderTexture2D tree_target_{};
     void bake_trees() const;
     mutable std::array<int, 4> world_era_{};  // each side's reactive armor, as last baked
+    mutable std::array<int, 4> world_kit_{};  // each side's IFV kit: slat cages (1), missiles (2)
+    // Which of its sprites an armored vehicle wears: a tank its side's reactive armor, an IFV its kit.
+    int kit(engine::VehicleModel model, engine::PlayerId owner) const;
     void bake_sprites(const engine::World& world) const;
     const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;
     void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame) const;

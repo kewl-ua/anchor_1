@@ -4769,6 +4769,131 @@ void test_axes_hire_their_own_tanks() {
     CHECK(ours == 2 && theirs == 2);
 }
 
+// The IFVs and APCs of the axes, as their tanks: each side hires its own
+// from the armor barracks (the BMP-2 both); every one carries a squad and
+// is drawn as the real one it is, each armored vehicle its own.
+const UnitTypeId kDemocraticApcs[] = {UnitTypeId::Btr4e,   UnitTypeId::M113,   UnitTypeId::Bradley, UnitTypeId::Marder,
+                                      UnitTypeId::Stryker, UnitTypeId::Type89, UnitTypeId::K21,     UnitTypeId::Namer};
+const UnitTypeId kAuthoritarianApcs[] = {UnitTypeId::Bmp1,   UnitTypeId::Bmp3,    UnitTypeId::Btr82a, UnitTypeId::Mtlb,
+                                         UnitTypeId::Zbd04a, UnitTypeId::Ratel20, UnitTypeId::Boragh};
+
+void test_axes_hire_their_own_apcs() {
+    for (const UnitTypeId t : kDemocraticApcs) {
+        CHECK(unit_type(t).apc && !unit_type(t).tank && unit_type(t).troop_capacity > 0);
+        CHECK(can_train(StructureType::ArmorBarracks, t, Axis::Democratic));
+        CHECK(!can_train(StructureType::ArmorBarracks, t, Axis::Authoritarian));
+    }
+    for (const UnitTypeId t : kAuthoritarianApcs) {
+        CHECK(unit_type(t).apc && !unit_type(t).tank && unit_type(t).troop_capacity > 0);
+        CHECK(can_train(StructureType::ArmorBarracks, t, Axis::Authoritarian));
+        CHECK(!can_train(StructureType::ArmorBarracks, t, Axis::Democratic));
+    }
+    CHECK(unit_type(UnitTypeId::Ifv).apc && is_armor(unit_type(UnitTypeId::Ifv)));
+    std::vector<VehicleModel> models;
+    for (size_t i = 0; i < kUnitTypeCount; ++i) {
+        const UnitTypeDef& d = unit_type(static_cast<UnitTypeId>(i));
+        if (!is_armor(d)) continue;
+        CHECK(d.model != VehicleModel::Standard);
+        CHECK(std::find(models.begin(), models.end(), d.model) == models.end());
+        models.push_back(d.model);
+    }
+    CHECK(models.size() == static_cast<size_t>(VehicleModel::Count) - 1);
+}
+
+// Real IFVs and APCs, from the BMP-2 (= 100). The Namer, on a Merkava's
+// hull, takes an RPG in the face better than a T-72B3; the BMP-2 holds one,
+// the thin M113 doesn't. The MT-LB with its wide tracks is the best of them on soft
+// ground, and the cheapest. The wheeled ones drive as wheels do; the ones
+// that don't swim are lost in a bog as a tank is (their crews get out), the
+// others swim. Only some take the ATGM launchers. The BMP-1 loads HEAT
+// instead of its HE-FRAG, the BMP-3 its 100 mm (no sabot for it: a tank's).
+void test_real_apcs() {
+    auto rpg_in_face = [](UnitTypeId type) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId rpg = w.spawn_unit(0, UnitTypeId::Grenadier, at(10, 10));
+        const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(13, 12));  // to see it
+        w.unit_for_setup(scout)->rounds = 0;
+        const EntityId target = w.spawn_unit(1, type, at(17, 10));
+        w.unit_for_setup(target)->rounds = 0;
+        w.unit_for_setup(target)->hull = {Fixed::from_int(-1), Fixed{}};
+        issue(sim, attack_order(0, {rpg}, target));
+        for (int i = 0; i < 2000; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < unit_type(type).max_hp) return unit_type(type).max_hp - hp_of(sim, target);
+        }
+        return 0;
+    };
+    const int32_t bmp = rpg_in_face(UnitTypeId::Ifv);
+    CHECK(bmp > 0);
+    CHECK(rpg_in_face(UnitTypeId::Namer) < rpg_in_face(UnitTypeId::Tank));
+    CHECK(bmp < unit_type(UnitTypeId::Ifv).max_hp);                                // it holds one
+    CHECK(rpg_in_face(UnitTypeId::M113) == unit_type(UnitTypeId::M113).max_hp);  // it doesn't
+
+    std::vector<UnitTypeId> all{UnitTypeId::Ifv};
+    all.insert(all.end(), std::begin(kDemocraticApcs), std::end(kDemocraticApcs));
+    all.insert(all.end(), std::begin(kAuthoritarianApcs), std::end(kAuthoritarianApcs));
+    const size_t materials = static_cast<size_t>(Resource::Materials);
+    for (const UnitTypeId t : all) {
+        const UnitTypeDef& d = unit_type(t);
+        if (t != UnitTypeId::Mtlb) {
+            CHECK(unit_type(UnitTypeId::Mtlb).soft_ground_percent < d.soft_ground_percent);
+            CHECK(unit_type(UnitTypeId::Mtlb).cost[materials] < d.cost[materials]);
+        }
+        const bool launchers = t == UnitTypeId::Ifv || t == UnitTypeId::Bmp1 || t == UnitTypeId::Bmp3 || t == UnitTypeId::Zbd04a ||
+                               t == UnitTypeId::Btr4e || t == UnitTypeId::Bradley || t == UnitTypeId::Marder || t == UnitTypeId::Type89;
+        CHECK((d.missile_capacity > 0) == launchers);
+        CHECK((ability_slot(d, AbilityId::Atgm) >= 0) == launchers);
+        const bool two_rounds = t == UnitTypeId::Bmp1 || t == UnitTypeId::Bmp3 || t == UnitTypeId::Zbd04a;
+        CHECK((d.alt_weapon.damage > 0) == two_rounds);
+        CHECK((ability_slot(d, AbilityId::SwitchAmmo) >= 0) == two_rounds);
+    }
+    for (const UnitTypeId t : {UnitTypeId::Btr82a, UnitTypeId::Btr4e, UnitTypeId::Stryker, UnitTypeId::Ratel20}) {
+        CHECK(move_class(unit_type(t)) == MoveClass::Wheeled);
+    }
+    CHECK(move_class(unit_type(UnitTypeId::Bradley)) == MoveClass::Vehicle);
+
+    auto lost_in_bog = [](UnitTypeId type) {
+        TileMap map(30, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 0; x < 30; ++x) map.set_terrain(x, y, Terrain::Swamp);
+        }
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        w.set_stock(0, {});
+        const EntityId id = w.spawn_unit(0, type, at(15, 5));
+        for (int i = 0; i < kBogSeconds * kTicksPerSecond * 2; ++i) sim.step();
+        const int32_t men = sim.world().stock(0)[static_cast<size_t>(Resource::Personnel)];
+        return sim.world().find_unit(id) == nullptr && men == unit_type(type).cost[static_cast<size_t>(Resource::Personnel)];
+    };
+    CHECK(lost_in_bog(UnitTypeId::Bradley) && lost_in_bog(UnitTypeId::Namer));
+    CHECK(!lost_in_bog(UnitTypeId::Bmp3) && !lost_in_bog(UnitTypeId::Mtlb) && !lost_in_bog(UnitTypeId::M113));
+
+    // The other round: the first hit on a T-72B3 six tiles off.
+    auto first_hit = [](UnitTypeId type, bool other, bool sabot) {
+        Simulation sim(3, TileMap(30, 20));
+        World& w = sim.world_for_setup();
+        if (sabot) w.upgrade_for_setup(0, UpgradeId::SabotRounds);
+        const EntityId gun = w.spawn_unit(0, type, at(5, 10));
+        const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(11, 10));
+        if (other) sim.schedule(0, use_ability(0, {gun}, AbilityId::SwitchAmmo, 0, 0));
+        sim.schedule(0, make_move(1, {target}, 11, 10));  // stays put, holds its fire for a while
+        int32_t prev = hp_of(sim, target);
+        for (int i = 0; i < 400; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < prev) return prev - hp_of(sim, target);
+            prev = hp_of(sim, target);
+        }
+        return 0;
+    };
+    const int32_t frag = first_hit(UnitTypeId::Bmp1, false, false);
+    CHECK(frag > 0 && first_hit(UnitTypeId::Bmp1, true, false) >= 5 * frag);
+    const int32_t hundred = first_hit(UnitTypeId::Bmp3, true, false);
+    CHECK(hundred > first_hit(UnitTypeId::Bmp3, false, false));
+    CHECK(first_hit(UnitTypeId::Bmp3, true, true) == hundred);
+    CHECK(unit_type(UnitTypeId::Bmp3).alt_weapon.range > unit_type(UnitTypeId::Bmp3).weapon.range);
+}
+
 // Real tanks, not newer = better. Armor in front: of an RPG in the face, a
 // Leopard 2A6 takes less than a T-72B3, a T-62M more. On soft ground the
 // light T-64BV gets on better than the heavy Abrams, though the Abrams is the
@@ -5137,22 +5262,26 @@ void test_armor_upgrades_more() {
     };
     CHECK(drive(true, UnitTypeId::Tank) * 100 > drive(false, UnitTypeId::Tank) * 110);
     CHECK(drive(true, UnitTypeId::Ifv) * 100 > drive(false, UnitTypeId::Ifv) * 110);
+    CHECK(drive(true, UnitTypeId::Btr82a) * 100 > drive(false, UnitTypeId::Btr82a) * 110);
     CHECK(drive(true, UnitTypeId::Truck) == drive(false, UnitTypeId::Truck));  // only the armor
 
-    auto he_hit = [](bool screens) {
+    auto he_hit = [](bool screens, UnitTypeId type = UnitTypeId::Tank) {
         Simulation sim(3, TileMap(30, 20));
         World& w = sim.world_for_setup();
         if (screens) w.upgrade_for_setup(1, UpgradeId::AddOnArmor);
         w.spawn_unit(0, UnitTypeId::Tank, at(5, 10));
-        const EntityId target = w.spawn_unit(1, UnitTypeId::Tank, at(11, 10));
+        const EntityId target = w.spawn_unit(1, type, at(11, 10));
         w.unit_for_setup(target)->rounds = 0;
-        for (int i = 0; i < 400 && hp_of(sim, target) == unit_type(UnitTypeId::Tank).max_hp; ++i) sim.step();
-        return unit_type(UnitTypeId::Tank).max_hp - hp_of(sim, target);
+        for (int i = 0; i < 400 && hp_of(sim, target) == unit_type(type).max_hp; ++i) sim.step();
+        return unit_type(type).max_hp - hp_of(sim, target);
     };
     const int32_t he = unit_type(UnitTypeId::Tank).weapon.damage -
                        unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::Explosive)];
     CHECK(he_hit(false) == he);
     CHECK(he_hit(true) == he * kAddOnArmorPercent / 100);
+    const int32_t he_m113 = unit_type(UnitTypeId::Tank).weapon.damage -
+                            unit_type(UnitTypeId::M113).armor[static_cast<size_t>(DamageType::Explosive)];
+    CHECK(he_hit(true, UnitTypeId::M113) == he_m113 * kAddOnArmorPercent / 100);  // the slat cages
     const auto [rpg, stood] = rpg_hits({Fixed::from_int(-1), Fixed{}}, false, 9, UpgradeId::AddOnArmor);
     CHECK(!rpg.empty() && rpg[0] == unit_type(UnitTypeId::Tank).max_hp / 2);  // the screens don't stop a rocket
 
@@ -5172,6 +5301,7 @@ void test_armor_upgrades_more() {
     CHECK(reload(false, UnitTypeId::Tank) == unit_type(UnitTypeId::Tank).weapon.reload);
     CHECK(reload(true, UnitTypeId::Tank) == unit_type(UnitTypeId::Tank).weapon.reload * kFastReloadPercent / 100);
     CHECK(reload(true, UnitTypeId::Ifv) == unit_type(UnitTypeId::Ifv).weapon.reload * kFastReloadPercent / 100);
+    CHECK(reload(true, UnitTypeId::Stryker) == unit_type(UnitTypeId::Stryker).weapon.reload * kFastReloadPercent / 100);
     CHECK(reload(true, UnitTypeId::Rifleman) == unit_type(UnitTypeId::Rifleman).weapon.reload);
 }
 
@@ -5606,6 +5736,8 @@ int main() {
     test_reactive_armor_line();
     test_axes_hire_their_own_tanks();
     test_real_tanks();
+    test_axes_hire_their_own_apcs();
+    test_real_apcs();
     test_donbas_landmarks();
     test_farmland();
     test_dig_in_the_fields();

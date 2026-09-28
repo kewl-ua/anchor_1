@@ -106,7 +106,7 @@ struct EraLevel {
 inline constexpr EraLevel kEraLevels[] = {{65, 100}, {55, 75}, {45, 60}};  // Kontakt-1, Kontakt-5, Relikt
 inline constexpr int32_t kReactiveArmorPercent = kEraLevels[0].shaped_percent;
 inline constexpr int32_t kMinSoftGroundPercent = 5;  // a heavy tank in a bog still crawls
-// A tank in a bog sinks: a T-72B3 on the move is lost after 45 s, one standing
+// A tank (an IFV that doesn't swim) in a bog sinks: a T-72B3 on the move is lost after 45 s, one standing
 // in half that; a heavier one sooner, a lighter one later (by how it copes
 // with soft ground). Sinking, it slows down, to half its speed at the end.
 // Lost, it's gone for good; its crew gets out.

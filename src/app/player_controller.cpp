@@ -329,7 +329,22 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::T90M: return "T-90M";
         case engine::UnitTypeId::Type99A: return "Type 99A";
         case engine::UnitTypeId::Karrar: return "Karrar";
-        case engine::UnitTypeId::Ifv: return "IFV";
+        case engine::UnitTypeId::Ifv: return "BMP-2";
+        case engine::UnitTypeId::Bmp1: return "BMP-1";
+        case engine::UnitTypeId::Bmp3: return "BMP-3";
+        case engine::UnitTypeId::Btr82a: return "BTR-82A";
+        case engine::UnitTypeId::Mtlb: return "MT-LB";
+        case engine::UnitTypeId::Zbd04a: return "ZBD-04A";
+        case engine::UnitTypeId::Ratel20: return "Ratel";
+        case engine::UnitTypeId::Boragh: return "Boragh";
+        case engine::UnitTypeId::Btr4e: return "BTR-4E";
+        case engine::UnitTypeId::M113: return "M113";
+        case engine::UnitTypeId::Bradley: return "Bradley";
+        case engine::UnitTypeId::Marder: return "Marder";
+        case engine::UnitTypeId::Stryker: return "Stryker";
+        case engine::UnitTypeId::Type89: return "Type 89";
+        case engine::UnitTypeId::K21: return "K21";
+        case engine::UnitTypeId::Namer: return "Namer";
         case engine::UnitTypeId::Worker: return "Rear troop";
         case engine::UnitTypeId::Truck: return "Truck";
         case engine::UnitTypeId::Scout: return "Scout";
@@ -412,19 +427,25 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         // What it hires along the top row, what it researches along the bottom
         // row, then the middle one. What doesn't fit is nested in sections:
         // the tanks of the axis (the armor barracks) behind a "Tanks" button,
-        // on a page of their own with a way back.
+        // its IFVs and APCs behind an "APCs" one, each on a page of its own
+        // with a way back.
         const std::span<const engine::UnitTypeId> roster = engine::roster_of(s->type, engine::axis_of(player_));
-        const auto tanks = std::count_if(roster.begin(), roster.end(), [](engine::UnitTypeId t) { return engine::unit_type(t).tank; });
-        const bool tank_section = tanks > 1;
+        auto in_section = [](engine::UnitTypeId t, uint8_t kind) {
+            return kind == 0 ? engine::unit_type(t).tank : engine::unit_type(t).apc;
+        };
+        bool sectioned[2] = {};
+        for (uint8_t kind = 0; kind < 2; ++kind) {
+            sectioned[kind] = std::count_if(roster.begin(), roster.end(), [&](engine::UnitTypeId t) { return in_section(t, kind); }) > 1;
+        }
         auto hire = [&](size_t slot, engine::UnitTypeId type) {
             const engine::UnitTypeDef& unit = engine::unit_type(type);
             put(slot, Action::Hire, static_cast<uint8_t>(type), unit_label(type), unit.name, unit.cost).enabled =
                 s->queue.size() < engine::kMaxQueue;
         };
-        if (tank_section && section_ == s->id) {
+        if (section_ == s->id && sectioned[section_kind_ % 2]) {
             size_t slot = 0;
             for (const engine::UnitTypeId type : roster) {
-                if (engine::unit_type(type).tank && slot < 14) hire(slot++, type);
+                if (in_section(type, section_kind_ % 2) && slot < 14) hire(slot++, type);
             }
             put(14, Action::Back, 0, "Back", "Back to the barracks");
             return;
@@ -453,9 +474,11 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             }
         }
         size_t slot = 0;
-        if (tank_section) put(slot++, Action::Section, 0, "Tanks >", "The axis's tanks: pick one to hire");
+        if (sectioned[0]) put(slot++, Action::Section, 0, "Tanks >", "The axis's tanks: pick one to hire");
+        if (sectioned[1]) put(slot++, Action::Section, 1, "APCs >", "The axis's IFVs and APCs: pick one to hire");
         for (const engine::UnitTypeId type : roster) {
-            if ((!tank_section || !engine::unit_type(type).tank) && slot < 5) hire(slot++, type);
+            const bool nested = (sectioned[0] && in_section(type, 0)) || (sectioned[1] && in_section(type, 1));
+            if (!nested && slot < 5) hire(slot++, type);
         }
         return;
     }
@@ -579,7 +602,12 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         }
         const char* label = ability.label;
         const bool locked = ability.needs != engine::UpgradeId::Count && !world.has_upgrade(player_, ability.needs);
-        if (id == engine::AbilityId::SwitchAmmo) label = alt_loaded ? "Load HE" : "Load AP";
+        if (id == engine::AbilityId::SwitchAmmo) {  // what goes in instead
+            const engine::WeaponDef& alt = def.alt_weapon;
+            label = def.tank ? (alt_loaded ? "Load HE" : "Load AP")
+                    : alt.damage_type == engine::DamageType::AntiTank ? (alt_loaded ? "Load HE" : "Load HEAT")
+                                                                      : (alt_loaded ? "Load 30mm" : "Load 100mm");
+        }
         if (id == engine::AbilityId::Deploy) label = deployed ? "Pack up" : "Deploy";
         if (id == engine::AbilityId::DigGunPit) label = *lead == engine::UnitTypeId::Mortar ? "Position" : "Capunier";
         if (id == engine::AbilityId::RadioSilence) label = on_air ? "Radio off" : "Radio on";
@@ -664,7 +692,10 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Retrain: order_retrain(lockstep); break;
         case Action::BuildMenu: build_menu_ = true; break;
         case Action::ConvertMenu: convert_menu_ = true; break;
-        case Action::Section: section_ = selected_structure_; break;
+        case Action::Section:
+            section_ = selected_structure_;
+            section_kind_ = cell.param;
+            break;
         case Action::Gather: targeting_ = Targeting::Gather; break;
         case Action::Back:
             build_menu_ = false;

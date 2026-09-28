@@ -52,6 +52,20 @@ struct Options {
     std::string scene;
 };
 
+// A flat open field round a point, to see what stands on it against.
+void flat_field(engine::World& w, engine::FixedVec2 center, int radius) {
+    engine::TileMap& map = w.map_for_setup();
+    const engine::TilePos mid = engine::tile_of(center);
+    const uint8_t level = map.elevation(mid.x, mid.y);
+    for (int y = mid.y - radius; y <= mid.y + radius; ++y) {
+        for (int x = mid.x - radius; x <= mid.x + radius; ++x) {
+            if (!map.contains_tile(x, y)) continue;
+            map.set_terrain(x, y, engine::Terrain::Grass);
+            map.set_elevation(x, y, level);
+        }
+    }
+}
+
 // The scripted part of the smoke test. Returns where the camera should look,
 // if the scene has a spot of its own.
 std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options) {
@@ -402,14 +416,14 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
-    if ((options.scene == "bog" || options.scene == "drowned") && options.mode == Options::Mode::Offline) {
+    if ((options.scene == "bog" || options.scene == "bog_apcs" || options.scene == "drowned") && options.mode == Options::Mode::Offline) {
         // Offline. "bog": three tanks driving across the field into the bog by
         // the pond, leaving their tracks. "drowned": a tank on a side bridge
         // as it goes down, drowned in the river.
         engine::World& w = game.world_for_setup();
         const engine::TileMap& map = w.map();
         const int size = map.width();
-        if (options.scene == "bog") {
+        if (options.scene.starts_with("bog")) {
             engine::TilePos bog{-1, -1};
             for (int y = size - 1; y >= 0 && bog.x < 0; --y) {
                 for (int x = 0; x < size / 2; ++x) {
@@ -433,7 +447,11 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                 }
             }
             bog = {sx / n, sy / n};
-            const engine::UnitTypeId types[] = {engine::UnitTypeId::T64BV, engine::UnitTypeId::Leopard2A6, engine::UnitTypeId::M1A1};
+            // "bog_apcs": a Bradley and a Namer sink as tanks do, a BMP-2 swims.
+            const bool apcs = options.scene == "bog_apcs";
+            const engine::UnitTypeId types[] = {apcs ? engine::UnitTypeId::Bradley : engine::UnitTypeId::T64BV,
+                                                apcs ? engine::UnitTypeId::Ifv : engine::UnitTypeId::Leopard2A6,
+                                                apcs ? engine::UnitTypeId::Namer : engine::UnitTypeId::M1A1};
             std::vector<engine::EntityId> tanks;
             for (int i = 0; i < 3; ++i) {
                 tanks.push_back(w.spawn_unit(me, types[i], engine::tile_center({bog.x - 9 + 2 * i, bog.y + 7})));
@@ -490,11 +508,11 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return look;
     }
 
-    if (options.scene == "damage" && options.mode == Options::Mode::Offline) {
+    if ((options.scene == "damage" || options.scene == "damage_apcs") && options.mode == Options::Mode::Offline) {
         // Offline: T-72B3s and Leopard 2A6s whole, scratched, battered and
         // barely going; two of each knocked out by riflemen (one losing its
         // turret, one not); a T-72B3 firing at the ground ahead: the smoke,
-        // the bursts.
+        // the bursts. "damage_apcs": BMP-1s and BTR-82As, the same.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
         const Vector2 b = render::to_vector2(base);
@@ -502,10 +520,12 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
         };
         engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(12.0f, 0.0f), 10);
         using engine::UnitTypeId;
         const int32_t pct[] = {100, 65, 40, 15};
         for (int row = 0; row < 2; ++row) {
-            const UnitTypeId type = row == 0 ? UnitTypeId::Tank : UnitTypeId::Leopard2A6;
+            const bool apcs = options.scene == "damage_apcs";
+            const UnitTypeId type = row == 0 ? (apcs ? UnitTypeId::Bmp1 : UnitTypeId::Tank) : (apcs ? UnitTypeId::Btr82a : UnitTypeId::Leopard2A6);
             for (int i = 0; i < 4; ++i) {
                 const engine::EntityId id = w.spawn_unit(me, type, ahead(10.0f + 2.5f * static_cast<float>(row), -5.0f + 2.2f * static_cast<float>(i)));
                 engine::Unit* u = w.unit_for_setup(id);
@@ -521,7 +541,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         const engine::EntityId gun = w.spawn_unit(me, UnitTypeId::Tank, ahead(7.0f, 0.0f));
         game.submit({.type = engine::CommandType::AttackGround, .units = {gun}, .target = ahead(15.0f, -1.0f)});
-        return render::to_vector2(ahead(11.0f, 0.0f));
+        return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
     if (options.scene == "tanks" && options.mode == Options::Mode::Offline) {
@@ -550,6 +570,41 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         row(democratic, 10.0f);
         row(authoritarian, 13.0f);
         return render::to_vector2(ahead(11.5f, 0.0f));
+    }
+
+    if ((options.scene == "apcs" || options.scene == "apcs_kit") && options.mode == Options::Mode::Offline) {
+        // Offline: every IFV and APC of both axes on a flat field ahead of the
+        // base, three-quarters on, in two rows across the screen: the
+        // Democratic axis's above, the Authoritarian one's below. "apcs_kit":
+        // with the slat cages and the missiles researched.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        if (options.scene == "apcs_kit") {
+            w.upgrade_for_setup(me, engine::UpgradeId::AddOnArmor);
+            w.upgrade_for_setup(me, engine::UpgradeId::Atgm);
+        }
+        using engine::UnitTypeId;
+        const UnitTypeId democratic[] = {UnitTypeId::Ifv,     UnitTypeId::Btr4e,  UnitTypeId::M113, UnitTypeId::Bradley, UnitTypeId::Marder,
+                                         UnitTypeId::Stryker, UnitTypeId::Type89, UnitTypeId::K21,  UnitTypeId::Namer};
+        const UnitTypeId authoritarian[] = {UnitTypeId::Bmp1, UnitTypeId::Bmp3,   UnitTypeId::Btr82a,  UnitTypeId::Mtlb,
+                                            UnitTypeId::Zbd04a, UnitTypeId::Ratel20, UnitTypeId::Boragh};
+        flat_field(w, ahead(19.0f, 0.0f), 14);
+        auto row = [&](std::span<const UnitTypeId> types, float side, engine::PlayerId owner) {
+            for (size_t i = 0; i < types.size(); ++i) {
+                const engine::EntityId id = w.spawn_unit(owner, types[i], ahead(12.0f + 1.7f * static_cast<float>(i), side));
+                engine::Unit* u = w.unit_for_setup(id);
+                u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
+                u->hull = u->facing;
+            }
+        };
+        row(democratic, -1.5f, me);
+        row(authoritarian, 1.5f, me);
+        return render::to_vector2(ahead(19.0f, 0.0f));
     }
 
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {
@@ -772,7 +827,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(base);
     }
 
-    if (options.scene == "armory" || options.scene == "armory_tanks") {
+    if (options.scene == "armory" || options.scene == "armory_tanks" || options.scene == "armory_apcs") {
         // An armor barracks by the headquarters, its card on the command
         // panel: the axis's tanks in their section, the upgrades.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
@@ -995,7 +1050,7 @@ int main(int argc, char** argv) {
             }
             game->update(GetFrameTime());
             if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally" ||
-                          options->scene == "rear" || options->scene == "armory" || options->scene == "armory_tanks")) {
+                          options->scene == "rear" || options->scene.starts_with("armory"))) {
                 // Show the barracks', the station's, the headquarters' or the hospital's card on the command panel.
                 const engine::StructureType shown = options->scene == "build"       ? engine::StructureType::InfantryBarracks
                                                     : options->scene == "logistics" ? engine::StructureType::Station
@@ -1005,7 +1060,8 @@ int main(int argc, char** argv) {
                 for (const engine::Structure& s : game->world().structures()) {
                     if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);
                 }
-                if (options->scene == "armory_tanks") game->open_section();
+                if (options->scene == "armory_tanks") game->open_section(0);
+                if (options->scene == "armory_apcs") game->open_section(1);
             }
             if (smoke && smoke_look) {
                 if (options->zoom) game->set_camera_zoom(*options->zoom);

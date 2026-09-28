@@ -108,7 +108,7 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
 }
 
 Tick World::reload_ticks(const Unit& u, const WeaponDef& weapon) const {
-    if ((def_of(u).tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::FastReload)) {
+    if (is_armor(def_of(u)) && has_upgrade(u.owner, UpgradeId::FastReload)) {
         return weapon.reload * kFastReloadPercent / 100;
     }
     return weapon.reload;
@@ -888,7 +888,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
     if (hungry(u.owner)) speed = speed * kHungrySpeedPercent / 100;
-    if ((def.tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::TankEngine)) {
+    if (is_armor(def) && has_upgrade(u.owner, UpgradeId::TankEngine)) {
         speed = speed * kEnginePercent / 100;
     }
     // Terrain slows down (forest for infantry, villages for vehicles...);
@@ -1176,7 +1176,7 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     p.target_height = line.height(end);
     p.weapon = weapon;
     // Sabot rounds: the same round, a harder punch.
-    if (&weapon == &def_of(shooter).alt_weapon && has_upgrade(shooter.owner, UpgradeId::SabotRounds)) {
+    if (def_of(shooter).tank && &weapon == &def_of(shooter).alt_weapon && has_upgrade(shooter.owner, UpgradeId::SabotRounds)) {
         p.weapon.damage = weapon.damage * kSabotPercent / 100;
     }
     if (weapon.guided && !missed) p.homing = guide;
@@ -1383,7 +1383,7 @@ void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
 void World::update_bogs() {
     for (Unit& u : units_) {
         const UnitTypeDef& def = def_of(u);
-        if (!def.tank || u.inside) continue;
+        if (!is_armor(def) || def.floats || u.inside) continue;  // an amphibious one swims
         if (map_.terrain_at(u.pos) != Terrain::Swamp) {
             u.mired = 0;  // out on firm ground: free
             continue;
@@ -1463,9 +1463,9 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         from_flank(victim, shot.from)) {
         amount = amount * kFlankHitPercent / 100;  // into the side or the rear
     }
-    // A tank's armor in front: what it lets through of an anti-tank hit there.
+    // A tank's (an IFV's) armor in front: what it lets through of an anti-tank hit there.
     const bool vd_tank = def_of(victim).tank;
-    if (vd_tank && weapon.damage_type == DamageType::AntiTank && !shot.blast && !from_flank(victim, shot.from)) {
+    if (is_armor(def_of(victim)) && weapon.damage_type == DamageType::AntiTank && !shot.blast && !from_flank(victim, shot.from)) {
         amount = amount * def_of(victim).front_percent / 100;
     }
     // What our upgrades take off it.
@@ -1482,8 +1482,7 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         amount = amount * kBodyArmorPercent / 100;
     }
     if (vd.aircraft && has_upgrade(victim.owner, UpgradeId::CockpitArmor)) amount = amount * kCockpitArmorPercent / 100;
-    if ((vd.tank || victim.type == UnitTypeId::Ifv) &&
-        weapon.damage_type != DamageType::AntiTank && has_upgrade(victim.owner, UpgradeId::AddOnArmor)) {
+    if (is_armor(vd) && weapon.damage_type != DamageType::AntiTank && has_upgrade(victim.owner, UpgradeId::AddOnArmor)) {
         amount = amount * kAddOnArmorPercent / 100;
     }
 
@@ -1543,9 +1542,9 @@ void World::apply_damage_and_remove_dead() {
                                                 .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
     }
-    // A tank knocked out: its crew may get out (the men come back to the pool).
+    // A tank (an IFV) knocked out: its crew may get out (the men come back to the pool).
     for (const Unit& u : units_) {
-        if (u.hp > 0 || !def_of(u).tank || u.owner >= kMaxPlayers) continue;
+        if (u.hp > 0 || !is_armor(def_of(u)) || u.owner >= kMaxPlayers) continue;
         // Sunk in a bog, slowly: the crew gets out. Knocked out: as its armour lets them.
         if (u.mired >= kBogLimit || static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];

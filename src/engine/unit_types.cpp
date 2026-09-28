@@ -63,7 +63,7 @@ constexpr UnitTypeDef kT72B3 = {
         .tank = true,
         .crew_survives_percent = 15,  // the rounds in the carousel under the turret go up
         .era_max = 3,
-        .model = TankModel::T72B3,
+        .model = VehicleModel::T72B3,
     };
 
 // A real tank, from the T-72B3 (= 100): its speed, its armor in front,
@@ -73,7 +73,7 @@ constexpr UnitTypeDef kT72B3 = {
 struct TankSpec {
     const char* name;
     const char* short_name;
-    TankModel model;
+    VehicleModel model;
     int32_t speed;
     int32_t front;      // armor in front: 150 lets through two thirds of what the T-72B3's does
     int32_t far_aim;    // fire control: the effective range, percent
@@ -106,19 +106,190 @@ constexpr UnitTypeDef tank_def(const TankSpec& t) {
 
 //                  name            short   model                  speed front aim thirst crew price soft  AP  ERA
 constexpr TankSpec kTankSpecs[] = {
-    {"T-64BV",        "T64", TankModel::T64BV,      100,   90,  90, 100, 40,  80, 130, 125, 1},
-    {"T-64BM Bulat",  "BLT", TankModel::T64BM,       95,  110, 110, 100, 40, 110, 120, 130, 3},
-    {"Leopard 1A5",   "LEO1", TankModel::Leopard1A5, 110,  60, 120,  90, 25,  70, 120, 115, 0},
-    {"Leopard 2A6",   "LEO2", TankModel::Leopard2A6, 105, 140, 150, 120, 45, 170,  85, 140, 0},
-    {"M1A1 Abrams",   "M1",  TankModel::M1A1,       105,  150, 140, 200, 60, 190,  75, 135, 2},
-    {"Type 10",       "T10", TankModel::Type10,     110,  120, 150, 100, 40, 150, 125, 135, 0},
-    {"K2 Black Panther", "K2", TankModel::K2,       110,  135, 160, 110, 45, 180, 100, 140, 0},
-    {"Merkava Mk4",   "MRK", TankModel::Merkava4,    90,  150, 140, 110, 70, 180,  80, 135, 0},
-    {"T-62M",         "T62", TankModel::T62M,        95,   60,  60, 100, 10,  50, 100, 110, 1},
-    {"T-80BVM",       "T80", TankModel::T80BVM,     120,  110, 110, 200, 15, 130, 115, 130, 3},
-    {"T-90M Proryv",  "T90", TankModel::T90M,       100,  140, 140, 110, 25, 170, 100, 135, 3},
-    {"Type 99A",      "99A", TankModel::Type99A,    100,  140, 150, 120, 25, 180,  90, 135, 3},
-    {"Karrar",        "KRR", TankModel::Karrar,     100,  110, 115, 100, 15, 110, 100, 130, 3},
+    {"T-64BV",        "T64", VehicleModel::T64BV,      100,   90,  90, 100, 40,  80, 130, 125, 1},
+    {"T-64BM Bulat",  "BLT", VehicleModel::T64BM,       95,  110, 110, 100, 40, 110, 120, 130, 3},
+    {"Leopard 1A5",   "LEO1", VehicleModel::Leopard1A5, 110,  60, 120,  90, 25,  70, 120, 115, 0},
+    {"Leopard 2A6",   "LEO2", VehicleModel::Leopard2A6, 105, 140, 150, 120, 45, 170,  85, 140, 0},
+    {"M1A1 Abrams",   "M1",  VehicleModel::M1A1,       105,  150, 140, 200, 60, 190,  75, 135, 2},
+    {"Type 10",       "T10", VehicleModel::Type10,     110,  120, 150, 100, 40, 150, 125, 135, 0},
+    {"K2 Black Panther", "K2", VehicleModel::K2,       110,  135, 160, 110, 45, 180, 100, 140, 0},
+    {"Merkava Mk4",   "MRK", VehicleModel::Merkava4,    90,  150, 140, 110, 70, 180,  80, 135, 0},
+    {"T-62M",         "T62", VehicleModel::T62M,        95,   60,  60, 100, 10,  50, 100, 110, 1},
+    {"T-80BVM",       "T80", VehicleModel::T80BVM,     120,  110, 110, 200, 15, 130, 115, 130, 3},
+    {"T-90M Proryv",  "T90", VehicleModel::T90M,       100,  140, 140, 110, 25, 170, 100, 135, 3},
+    {"Type 99A",      "99A", VehicleModel::Type99A,    100,  140, 150, 120, 25, 180,  90, 135, 3},
+    {"Karrar",        "KRR", VehicleModel::Karrar,     100,  110, 115, 100, 15, 110, 100, 130, 3},
+};
+
+// The BMP-2: the IFV the others are measured against, both sides have it.
+constexpr WeaponDef k30mm = {.name = "30mm autocannon", .damage = 14, .damage_type = DamageType::Bullet,
+                             .range = tiles(6), .reload = seconds(3, 5), .projectile_speed = tiles_per_second(25),
+                             .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1)};
+constexpr UnitTypeDef kBmp2 = {
+        .name = "BMP-2",
+        .short_name = "BMP2",
+        .max_hp = 220,
+        .armor = {8, 8, 5},
+        .speed = tiles_per_second(7, 5),
+        .radius = tiles(2, 5),
+        .sight = tiles(8),
+        .mass = 15,
+        .vehicle = true,
+        .weapon = k30mm,
+        .cost = {3, 0, 100, 60, 80},
+        .train_time = seconds(30),
+        .fuel_capacity = tiles(180),
+        .rounds_capacity = 150,
+        .rounds_per_supply = 5,
+        .troop_capacity = 7,
+        .missile_capacity = 4,
+        .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade, AbilityId::RadioSilence, AbilityId::CallSupply,
+                      AbilityId::Atgm},
+        .ability_count = 5,
+        .emitter = true,
+        .apc = true,
+        .floats = true,
+        .soft_ground_percent = 100 * 100 / 120,
+        .crew_survives_percent = 30,
+        .model = VehicleModel::Bmp2,
+    };
+
+// What an IFV or APC fires: a machine gun, an autocannon, the BMP-1's
+// low-pressure 73 mm gun (HE-FRAG, or HEAT loaded instead), the 30 mm with
+// the 100 mm beside it (the BMP-3's, the ZBD-04A's).
+enum class ApcGun : uint8_t { Pkt, Hmg, Auto20, Auto25, Auto30, Auto35, Auto40, Grom, Gun100 };
+
+struct ApcGunDef {
+    WeaponDef weapon;
+    WeaponDef alt;  // damage 0: none
+    int32_t rounds;
+    int32_t per_supply;  // rounds a unit of ammunition
+};
+
+constexpr ApcGunDef apc_gun(ApcGun gun) {
+    auto auto_cannon = [](const char* name, int32_t damage, int32_t range, Tick reload, uint8_t accuracy) {
+        return WeaponDef{.name = name, .damage = damage, .damage_type = DamageType::Bullet, .range = tiles(range),
+                         .reload = reload, .projectile_speed = tiles_per_second(25), .splash_radius = kNoSplash,
+                         .accuracy = accuracy, .miss_spread = tiles(1)};
+    };
+    switch (gun) {
+        case ApcGun::Pkt:
+            return {{.name = "7.62mm PKT", .damage = 4, .damage_type = DamageType::Bullet, .range = tiles(6),
+                     .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash, .accuracy = 55,
+                     .miss_spread = tiles(1)},
+                    {}, 1500, 50};
+        case ApcGun::Hmg:
+            return {{.name = "12.7mm machine gun", .damage = 8, .damage_type = DamageType::Bullet, .range = tiles(7),
+                     .reload = seconds(3, 10), .projectile_speed = kInstantHit, .splash_radius = kNoSplash, .accuracy = 60,
+                     .miss_spread = tiles(1)},
+                    {}, 600, 20};
+        case ApcGun::Auto20: return {auto_cannon("20mm autocannon", 11, 6, seconds(1, 2), 70), {}, 250, 8};
+        case ApcGun::Auto25: return {auto_cannon("25mm Bushmaster", 13, 7, seconds(11, 20), 75), {}, 200, 6};
+        case ApcGun::Auto30: return {k30mm, {}, 150, 5};
+        case ApcGun::Auto35: return {auto_cannon("35mm autocannon", 17, 7, seconds(7, 10), 72), {}, 120, 4};
+        case ApcGun::Auto40: return {auto_cannon("40mm autocannon", 20, 7, seconds(4, 5), 72), {}, 100, 3};
+        case ApcGun::Grom:
+            return {{.name = "73mm HE-FRAG", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(7),
+                     .reload = seconds(3), .projectile_speed = tiles_per_second(10), .splash_radius = tiles(2, 5),
+                     .accuracy = 70, .miss_spread = tiles(1)},
+                    {.name = "73mm HEAT", .damage = 110, .damage_type = DamageType::AntiTank, .range = tiles(7),
+                     .reload = seconds(3), .projectile_speed = tiles_per_second(10), .splash_radius = kNoSplash,
+                     .accuracy = 70, .miss_spread = tiles(1), .structure_damage = 60},
+                    40, 1};
+        case ApcGun::Gun100:
+            return {k30mm,
+                    {.name = "100mm HE-FRAG", .damage = 50, .damage_type = DamageType::Explosive, .range = tiles(9),
+                     .reload = seconds(4), .projectile_speed = tiles_per_second(12), .splash_radius = tiles(1, 2),
+                     .accuracy = 75, .miss_spread = tiles(1)},
+                    150, 5};
+    }
+    return {k30mm, {}, 150, 5};
+}
+
+// A real IFV or APC: wheels or tracks, whether it swims, its speed (the
+// BMP-2 = 100), its hit points and armor {bullet, explosive, anti-tank},
+// its armor in front (as a tank's), its gun, the men it carries, its price
+// (the BMP-2 = 100) and crew, how it copes with soft ground, its thirst,
+// how its crew fares, whether it takes the ATGM launchers, whether it has
+// a grenade launcher.
+struct ApcSpec {
+    const char* name;
+    const char* short_name;
+    VehicleModel model;
+    bool wheeled;
+    bool floats;
+    int32_t speed;
+    int32_t hp;
+    std::array<int32_t, kDamageTypeCount> armor;
+    int32_t front;
+    ApcGun gun;
+    int32_t troops;
+    int32_t price;
+    int32_t men;
+    int32_t soft;
+    int32_t thirst;
+    int32_t crew;
+    bool atgm;
+    bool grenades;
+};
+
+constexpr UnitTypeDef apc_def(const ApcSpec& a) {
+    UnitTypeDef d = kBmp2;
+    d.name = a.name;
+    d.short_name = a.short_name;
+    d.model = a.model;
+    d.wheeled = a.wheeled;
+    d.floats = a.floats;
+    d.speed = Fixed::from_raw(kBmp2.speed.raw * a.speed / 100);
+    d.max_hp = a.hp;
+    d.armor = a.armor;
+    d.front_percent = 100 * 100 / a.front;
+    d.mass = kBmp2.mass * a.hp / kBmp2.max_hp;
+    d.radius = Fixed::from_raw(kBmp2.radius.raw * (180 + a.hp / 10) / 202);  // the heavy ones are bigger
+    const ApcGunDef gun = apc_gun(a.gun);
+    d.weapon = gun.weapon;
+    d.alt_weapon = gun.alt;
+    d.rounds_capacity = gun.rounds;
+    d.rounds_per_supply = gun.per_supply;
+    d.troop_capacity = a.troops;
+    d.cost[static_cast<size_t>(Resource::Personnel)] = a.men;
+    for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = kBmp2.cost[r] * a.price / 100;
+    d.train_time = kBmp2.train_time * (50 + a.price / 2) / 100;
+    d.soft_ground_percent = 100 * 100 / a.soft;
+    d.fuel_capacity = Fixed::from_raw(kBmp2.fuel_capacity.raw * 100 / a.thirst);
+    d.crew_survives_percent = a.crew;
+    d.missile_capacity = a.atgm ? 4 : 0;
+    uint8_t n = 0;
+    d.abilities = {};
+    d.abilities[n++] = AbilityId::MgSweep;
+    if (a.grenades) d.abilities[n++] = AbilityId::LobGrenade;
+    if (gun.alt.damage > 0) d.abilities[n++] = AbilityId::SwitchAmmo;
+    d.abilities[n++] = AbilityId::RadioSilence;
+    d.abilities[n++] = AbilityId::CallSupply;
+    if (a.atgm) d.abilities[n++] = AbilityId::Atgm;
+    d.ability_count = n;
+    return d;
+}
+
+//   name               short   model                  wheels floats spd  hp   armor         front gun           men> troops price crew soft thirst survive ATGM  grenades
+constexpr ApcSpec kApcSpecs[] = {
+    // The Authoritarian axis.
+    {"BMP-1",            "BMP1", VehicleModel::Bmp1,    false, true,  100, 190, {6, 6, 3},    100, ApcGun::Grom,   8,  65, 3, 120, 100, 20, true,  false},
+    {"BMP-3",            "BMP3", VehicleModel::Bmp3,    false, true,  105, 240, {8, 8, 5},    100, ApcGun::Gun100, 7, 150, 3, 110, 110, 25, true,  false},
+    {"BTR-82A",          "BTR",  VehicleModel::Btr82a,  true,  true,  110, 210, {6, 6, 4},    100, ApcGun::Auto30, 7,  90, 3,  80,  80, 30, false, false},
+    {"MT-LB",            "MTLB", VehicleModel::Mtlb,    false, true,   90, 150, {4, 5, 2},    100, ApcGun::Pkt,   11,  45, 2, 150,  80, 30, false, false},
+    {"ZBD-04A",          "Z04",  VehicleModel::Zbd04a,  false, true,  100, 250, {8, 10, 6},   105, ApcGun::Gun100, 7, 160, 3, 110, 110, 30, true,  false},
+    {"Ratel 20",         "RTL",  VehicleModel::Ratel20, true,  false, 110, 210, {6, 6, 4},    100, ApcGun::Auto20, 8,  80, 4,  75,  70, 35, false, false},
+    {"Boragh",           "BRG",  VehicleModel::Boragh,  false, true,   95, 200, {5, 6, 3},    100, ApcGun::Hmg,    8,  60, 2, 115, 100, 25, false, false},
+    // The Democratic axis.
+    {"BTR-4E Bucephalus", "BTR4", VehicleModel::Btr4e,  true,  true,  105, 230, {8, 8, 5},    100, ApcGun::Auto30, 8, 110, 3,  80,  80, 35, true,  true},
+    {"M113A3",           "M113", VehicleModel::M113,    false, true,   95, 170, {5, 6, 3},    100, ApcGun::Hmg,   11,  55, 2, 110,  90, 30, false, false},
+    {"M2A2 Bradley",     "BRD",  VehicleModel::Bradley, false, false,  95, 300, {10, 12, 8},  115, ApcGun::Auto25, 6, 170, 3,  90, 130, 55, true,  false},
+    {"Marder 1A3",       "MRD",  VehicleModel::Marder,  false, false,  95, 280, {10, 12, 6},  110, ApcGun::Auto20, 6, 130, 3,  95, 110, 50, true,  false},
+    {"Stryker",          "STR",  VehicleModel::Stryker, true,  false, 110, 240, {8, 8, 5},    100, ApcGun::Hmg,    9, 120, 2,  75,  80, 45, false, true},
+    {"Type 89",          "T89",  VehicleModel::Type89,  false, false, 100, 270, {10, 10, 6},  105, ApcGun::Auto35, 7, 160, 3, 100, 110, 45, true,  false},
+    {"K21",              "K21",  VehicleModel::K21,     false, true,  105, 270, {10, 12, 7},  110, ApcGun::Auto40, 9, 170, 3, 110, 110, 45, false, false},
+    {"Namer",            "NMR",  VehicleModel::Namer,   false, false,  85, 420, {16, 25, 20}, 140, ApcGun::Hmg,    9, 220, 3,  70, 150, 70, false, true},
 };
 
 constexpr UnitTypeDef kUnitTypes[] = {
@@ -180,31 +351,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .rounds_capacity = 6,
     },
     kT72B3,
-    {
-        .name = "IFV",
-        .short_name = "IFV",
-        .max_hp = 220,
-        .armor = {8, 8, 5},
-        .speed = tiles_per_second(7, 5),
-        .radius = tiles(2, 5),
-        .sight = tiles(8),
-        .mass = 15,
-        .vehicle = true,
-        .weapon = {.name = "30mm autocannon", .damage = 14, .damage_type = DamageType::Bullet,
-                   .range = tiles(6), .reload = seconds(3, 5), .projectile_speed = tiles_per_second(25),
-                   .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1)},
-        .cost = {3, 0, 100, 60, 80},
-        .train_time = seconds(30),
-        .fuel_capacity = tiles(180),
-        .rounds_capacity = 150,
-        .rounds_per_supply = 5,
-        .troop_capacity = 7,
-        .missile_capacity = 4,
-        .abilities = {AbilityId::MgSweep, AbilityId::LobGrenade, AbilityId::RadioSilence, AbilityId::CallSupply,
-                      AbilityId::Atgm},
-        .ability_count = 5,
-        .emitter = true,
-    },
+    kBmp2,
     {
         .name = "Rear trooper",
         .short_name = "REAR",
@@ -638,6 +785,21 @@ constexpr UnitTypeDef kUnitTypes[] = {
     tank_def(kTankSpecs[10]),
     tank_def(kTankSpecs[11]),
     tank_def(kTankSpecs[12]),
+    apc_def(kApcSpecs[0]),
+    apc_def(kApcSpecs[1]),
+    apc_def(kApcSpecs[2]),
+    apc_def(kApcSpecs[3]),
+    apc_def(kApcSpecs[4]),
+    apc_def(kApcSpecs[5]),
+    apc_def(kApcSpecs[6]),
+    apc_def(kApcSpecs[7]),
+    apc_def(kApcSpecs[8]),
+    apc_def(kApcSpecs[9]),
+    apc_def(kApcSpecs[10]),
+    apc_def(kApcSpecs[11]),
+    apc_def(kApcSpecs[12]),
+    apc_def(kApcSpecs[13]),
+    apc_def(kApcSpecs[14]),
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -654,7 +816,7 @@ constexpr AbilityDef kAbilities[] = {
                 .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
                 .splash_radius = tiles(5, 4), .accuracy = 85, .miss_spread = tiles(1),
                 .effective_range = tiles(15)}},
-    {.name = "Switch rounds: HE / armor-piercing (reloads the gun)", .label = "HE / AP",
+    {.name = "Switch rounds (reloads the gun): a tank's HE / AP, a BMP-1's HE / HEAT, the 30 mm / the 100 mm", .label = "HE / AP",
      .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
     // Fired along the front, not aimed at anyone: whoever is in the way gets it.
     {.name = "Machine gun along the front", .label = "MG sweep", .target = AbilityTarget::Direction,
@@ -722,9 +884,9 @@ constexpr AbilityDef kAbilities[] = {
     {.name = "Call supply by radio: the nearest free tanker / ammunition truck comes over to top it up",
      .label = "Supply", .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = seconds(5)},
     // Wire-guided: slow, but it flies after the vehicle it's aimed at.
-    {.name = "ATGM (Konkurs): a guided missile at an enemy vehicle, 25 tiles (needs the launchers)",
+    {.name = "ATGM: a guided missile at an enemy vehicle, 25 tiles (needs the launchers)",
      .label = "ATGM", .target = AbilityTarget::Point, .range = tiles(25), .cooldown = seconds(10),
-     .weapon = {.name = "9M113 Konkurs", .damage = 200, .damage_type = DamageType::AntiTank, .range = tiles(25),
+     .weapon = {.name = "ATGM", .damage = 200, .damage_type = DamageType::AntiTank, .range = tiles(25),
                 .reload = seconds(4), .projectile_speed = tiles_per_second(5), .splash_radius = kNoSplash,
                 .accuracy = 90, .miss_spread = tiles(2), .structure_damage = 80, .guided = true},
      .needs = UpgradeId::Atgm},
@@ -823,13 +985,18 @@ static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::C
 const StructureDef& structure_type(StructureType type) { return kStructureTypes[static_cast<size_t>(type)]; }
 
 std::span<const UnitTypeId> roster_of(StructureType building, Axis axis) {
-    // The armor barracks: each axis's own tanks, and the IFV.
-    static constexpr UnitTypeId kDemocratic[] = {UnitTypeId::T64BV,      UnitTypeId::T64BM, UnitTypeId::Leopard1A5,
-                                                 UnitTypeId::Leopard2A6, UnitTypeId::M1A1,  UnitTypeId::Type10,
-                                                 UnitTypeId::K2,         UnitTypeId::Merkava4, UnitTypeId::Ifv};
-    static constexpr UnitTypeId kAuthoritarian[] = {UnitTypeId::T62M, UnitTypeId::Tank,    UnitTypeId::T80BVM,
-                                                    UnitTypeId::T90M, UnitTypeId::Type99A, UnitTypeId::Karrar,
-                                                    UnitTypeId::Ifv};
+    // The armor barracks: each axis's own tanks, IFVs and APCs (the BMP-2 both have).
+    static constexpr UnitTypeId kDemocratic[] = {UnitTypeId::T64BV,      UnitTypeId::T64BM,   UnitTypeId::Leopard1A5,
+                                                 UnitTypeId::Leopard2A6, UnitTypeId::M1A1,    UnitTypeId::Type10,
+                                                 UnitTypeId::K2,         UnitTypeId::Merkava4, UnitTypeId::Ifv,
+                                                 UnitTypeId::Btr4e,      UnitTypeId::M113,    UnitTypeId::Bradley,
+                                                 UnitTypeId::Marder,     UnitTypeId::Stryker, UnitTypeId::Type89,
+                                                 UnitTypeId::K21,        UnitTypeId::Namer};
+    static constexpr UnitTypeId kAuthoritarian[] = {UnitTypeId::T62M,   UnitTypeId::Tank,    UnitTypeId::T80BVM,
+                                                    UnitTypeId::T90M,   UnitTypeId::Type99A, UnitTypeId::Karrar,
+                                                    UnitTypeId::Bmp1,   UnitTypeId::Ifv,     UnitTypeId::Bmp3,
+                                                    UnitTypeId::Btr82a, UnitTypeId::Mtlb,    UnitTypeId::Zbd04a,
+                                                    UnitTypeId::Ratel20, UnitTypeId::Boragh};
     if (building == StructureType::ArmorBarracks) {
         return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocratic) : std::span<const UnitTypeId>(kAuthoritarian);
     }
@@ -863,8 +1030,10 @@ constexpr UpgradeDef kUpgrades[] = {
     {.name = "Fire control system", .label = "FCS",
      .description = "Tank guns keep their aim far out: 65% of it at 50 tiles instead of 35%",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 120, 60, 0}, .time = seconds(60)},
-    {.name = "ATGM launchers (Konkurs)", .label = "ATGM",
-     .description = "IFVs fire a guided anti-tank missile, 25 tiles; 4 aboard, ammunition trucks bring more",
+    {.name = "ATGM launchers", .label = "ATGM",
+     .description = "IFVs fire a guided anti-tank missile, 25 tiles (Konkurs, Malyutka, Arkan, Barrier, TOW, Milan, "
+                    "Jyu-MAT, HJ-73; not the BTR-82A, MT-LB, Ratel, Boragh, M113, Stryker, K21, Namer); 4 aboard, "
+                    "ammunition trucks bring more",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 100, 150, 0}, .time = seconds(60)},
     {.name = "Firing tables", .label = "Tables",
      .description = "Ranging in goes faster: 30/70/95% on target instead of 17/50/95%",
@@ -896,12 +1065,13 @@ constexpr UpgradeDef kUpgrades[] = {
      .building = StructureType::AirDefenseBarracks, .cost = {0, 0, 100, 50, 0}, .time = seconds(50)},
     {.name = "Cockpit armor", .label = "Armor", .description = "Su-25s take 30% less damage (about 40% tougher)",
      .building = StructureType::Airfield, .cost = {0, 0, 150, 0, 50}, .time = seconds(60)},
-    {.name = "Tuned engines", .label = "Engine", .description = "Tanks and IFVs drive 15% faster",
+    {.name = "Tuned engines", .label = "Engine", .description = "Tanks, IFVs and APCs drive 15% faster",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 100, 0, 80}, .time = seconds(45)},
     {.name = "Add-on armor", .label = "Screens",
-     .description = "Tanks and IFVs take 20% less from shells, fragments and bullets (reactive armor is for the anti-tank ones)",
+     .description = "Tanks, IFVs and APCs take 20% less from shells, fragments and bullets (slat cages on the IFVs "
+                    "and APCs; reactive armor is for the anti-tank ones)",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 150, 0, 0}, .time = seconds(50)},
-    {.name = "Loading drills", .label = "Reload", .description = "Tank and IFV guns reload 25% faster",
+    {.name = "Loading drills", .label = "Reload", .description = "Tank, IFV and APC guns reload 25% faster",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 80, 100, 0}, .time = seconds(50)},
     {.name = "Incendiary shells", .label = "Incend.",
      .description = "Shells and rockets that set the ground on fire for 15 s: men, a garrison, buildings in it burn",
