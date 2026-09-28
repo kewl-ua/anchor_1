@@ -4434,6 +4434,10 @@ void test_crater_kinds() {
     CHECK(rockets >= 2 && rocket[static_cast<size_t>(CraterKind::Rocket)] == rockets);
     CHECK(fire(UnitTypeId::Howitzer, 4, CraterKind::Small).second >= 2);  // deeper over the small ones
     CHECK(fire(UnitTypeId::Mortar, 12, CraterKind::Heavy).second == 0);   // the big ones stay
+    const auto [pion, pions] = fire(UnitTypeId::Pion, 4, CraterKind::None);
+    CHECK(pions >= 2 && pion[static_cast<size_t>(CraterKind::Heavy)] == pions);  // the 203 mm's
+    const auto [m777, m777s] = fire(UnitTypeId::M777, 4, CraterKind::None);
+    CHECK(m777s >= 2 && m777[static_cast<size_t>(CraterKind::Shell)] == m777s);
 
     const TileMap map = make_demo_map();
     std::array<int, 5> old{};
@@ -4792,7 +4796,8 @@ void test_axes_hire_their_own_apcs() {
     std::vector<VehicleModel> models;
     for (size_t i = 0; i < kUnitTypeCount; ++i) {
         const UnitTypeDef& d = unit_type(static_cast<UnitTypeId>(i));
-        if (!is_armor(d)) continue;
+        CHECK(is_armor(d) == (d.family == Family::Tank || d.family == Family::Apc));
+        if (d.family == Family::None) continue;  // tanks, IFVs, guns, AA guns, aircraft: each a real one
         CHECK(d.model != VehicleModel::Standard);
         CHECK(std::find(models.begin(), models.end(), d.model) == models.end());
         models.push_back(d.model);
@@ -4892,6 +4897,112 @@ void test_real_apcs() {
     CHECK(hundred > first_hit(UnitTypeId::Bmp3, false, false));
     CHECK(first_hit(UnitTypeId::Bmp3, true, true) == hundred);
     CHECK(unit_type(UnitTypeId::Bmp3).alt_weapon.range > unit_type(UnitTypeId::Bmp3).weapon.range);
+}
+
+// The rest of the axes' real vehicles, as their tanks: each side hires its
+// own SPGs and towed howitzers from the artillery barracks, AA guns from the
+// air defence barracks, aircraft from the airfield (the 2S1, 2S3, D-30 and
+// Su-25 both sides); each of a family, grouped in the command grid by it.
+void test_axes_hire_their_own_guns() {
+    struct Line {
+        StructureType building;
+        Family family;
+        std::vector<UnitTypeId> democratic;
+        std::vector<UnitTypeId> authoritarian;
+        std::vector<UnitTypeId> both;
+    };
+    const Line lines[] = {
+        {StructureType::ArtilleryBarracks, Family::Spg, {UnitTypeId::M109, UnitTypeId::PzH2000, UnitTypeId::Caesar, UnitTypeId::K9},
+         {UnitTypeId::MstaS, UnitTypeId::Pion, UnitTypeId::Plz05}, {UnitTypeId::Spg, UnitTypeId::Akatsiya}},
+        {StructureType::ArtilleryBarracks, Family::Gun, {UnitTypeId::M777, UnitTypeId::Fh70}, {UnitTypeId::MstaB, UnitTypeId::Giatsint},
+         {UnitTypeId::Howitzer}},
+        {StructureType::AirDefenseBarracks, Family::AntiAir, {UnitTypeId::Gepard, UnitTypeId::Type87, UnitTypeId::K30},
+         {UnitTypeId::Shilka, UnitTypeId::Tunguska, UnitTypeId::Pantsir, UnitTypeId::Pgz09}, {}},
+        {StructureType::Airfield, Family::Aircraft, {UnitTypeId::A10}, {UnitTypeId::Su34}, {UnitTypeId::Su25}},
+    };
+    for (const Line& line : lines) {
+        for (const UnitTypeId t : line.democratic) {
+            CHECK(unit_type(t).family == line.family);
+            CHECK(can_train(line.building, t, Axis::Democratic) && !can_train(line.building, t, Axis::Authoritarian));
+        }
+        for (const UnitTypeId t : line.authoritarian) {
+            CHECK(unit_type(t).family == line.family);
+            CHECK(can_train(line.building, t, Axis::Authoritarian) && !can_train(line.building, t, Axis::Democratic));
+        }
+        for (const UnitTypeId t : line.both) {
+            CHECK(unit_type(t).family == line.family);
+            CHECK(can_train(line.building, t, Axis::Authoritarian) && can_train(line.building, t, Axis::Democratic));
+        }
+    }
+    // Mortars, AGS, rocket launchers, MANPADS and the radar stay as they were, for both.
+    for (const UnitTypeId t : {UnitTypeId::Mortar, UnitTypeId::Ags, UnitTypeId::Mlrs}) {
+        CHECK(can_train(StructureType::ArtilleryBarracks, t, Axis::Democratic) && can_train(StructureType::ArtilleryBarracks, t, Axis::Authoritarian));
+    }
+    for (const UnitTypeId t : {UnitTypeId::Manpads, UnitTypeId::AirRadar}) {
+        CHECK(can_train(StructureType::AirDefenseBarracks, t, Axis::Democratic) && can_train(StructureType::AirDefenseBarracks, t, Axis::Authoritarian));
+    }
+}
+
+// Real guns, from the 2S1 (the D-30, the Shilka, the Su-25): the PzH 2000
+// reloads fastest of the SPGs, CAESAR drives on wheels, the Pion's 203 mm
+// hits hardest and digs the biggest craters; the 2S1 swims through a bog, a
+// 2S19 sinks in it as a tank does and its crew gets out; long-range charges
+// carry every tube gun farther, not a rocket launcher; every AA gun shoots
+// at aircraft, the Pantsir farthest; the Su-34's bombs hit hardest, the A-10
+// is the toughest.
+void test_real_guns() {
+    const UnitTypeId spgs[] = {UnitTypeId::Spg, UnitTypeId::Akatsiya, UnitTypeId::MstaS, UnitTypeId::Pion, UnitTypeId::Plz05,
+                               UnitTypeId::M109, UnitTypeId::PzH2000, UnitTypeId::Caesar, UnitTypeId::K9};
+    for (const UnitTypeId t : spgs) {
+        CHECK(unit_type(t).weapon.indirect && is_tube_artillery(unit_type(t)));
+        if (t != UnitTypeId::PzH2000) CHECK(unit_type(UnitTypeId::PzH2000).weapon.reload < unit_type(t).weapon.reload);
+        if (t != UnitTypeId::Pion) CHECK(unit_type(UnitTypeId::Pion).weapon.damage > unit_type(t).weapon.damage);
+    }
+    CHECK(move_class(unit_type(UnitTypeId::Caesar)) == MoveClass::Wheeled);
+    CHECK(unit_type(UnitTypeId::MstaS).weapon.range > unit_type(UnitTypeId::Spg).weapon.range);
+
+    auto lost_in_bog = [](UnitTypeId type) {
+        TileMap map(30, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 0; x < 30; ++x) map.set_terrain(x, y, Terrain::Swamp);
+        }
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        w.set_stock(0, {});
+        const EntityId id = w.spawn_unit(0, type, at(15, 5));
+        for (int i = 0; i < kBogSeconds * kTicksPerSecond * 2; ++i) sim.step();
+        const int32_t men = sim.world().stock(0)[static_cast<size_t>(Resource::Personnel)];
+        return sim.world().find_unit(id) == nullptr && men == unit_type(type).cost[static_cast<size_t>(Resource::Personnel)];
+    };
+    CHECK(lost_in_bog(UnitTypeId::MstaS) && lost_in_bog(UnitTypeId::Shilka));
+    CHECK(!lost_in_bog(UnitTypeId::Spg));
+
+    // A shot a little past its reach: it fires from where it stands only with the charges.
+    auto far_shot = [](UnitTypeId type, bool charges) {
+        const int32_t range = unit_type(type).weapon.range.raw / Fixed::kOneRaw;
+        Simulation sim(1, TileMap(range + 20, 20));
+        if (charges) sim.world_for_setup().upgrade_for_setup(0, UpgradeId::LongRangeCharges);
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, type, at(5, 10));
+        issue(sim, fire_at(0, {gun}, 5 + range + 3, 10));
+        for (Tick i = 0; i < unit_type(type).deploy_time + unit_type(type).weapon.reload + 100; ++i) sim.step();
+        const Unit* u = sim.world().find_unit(gun);
+        return (u->pos - at(5, 10)).length() < Fixed::from_int(1) && u->last_shot_tick != kNeverFired;
+    };
+    for (const UnitTypeId t : {UnitTypeId::M777, UnitTypeId::Giatsint, UnitTypeId::PzH2000, UnitTypeId::Caesar, UnitTypeId::Mortar}) {
+        CHECK(far_shot(t, true) && !far_shot(t, false));
+    }
+    CHECK(!far_shot(UnitTypeId::Mlrs, true));
+
+    const UnitTypeId aa[] = {UnitTypeId::Shilka, UnitTypeId::Tunguska, UnitTypeId::Pantsir, UnitTypeId::Pgz09,
+                             UnitTypeId::Gepard, UnitTypeId::Type87, UnitTypeId::K30};
+    for (const UnitTypeId t : aa) {
+        CHECK(unit_type(t).weapon.anti_air && !unit_type(t).weapon.air_only);
+        if (t != UnitTypeId::Pantsir) CHECK(unit_type(UnitTypeId::Pantsir).weapon.range > unit_type(t).weapon.range);
+    }
+    for (const UnitTypeId t : {UnitTypeId::Su25, UnitTypeId::Su34, UnitTypeId::A10}) CHECK(unit_type(t).aircraft);
+    CHECK(unit_type(UnitTypeId::Su34).weapon.damage > unit_type(UnitTypeId::Su25).weapon.damage);
+    CHECK(unit_type(UnitTypeId::A10).max_hp > unit_type(UnitTypeId::Su25).max_hp &&
+          unit_type(UnitTypeId::A10).max_hp > unit_type(UnitTypeId::Su34).max_hp);
 }
 
 // Real tanks, not newer = better. Armor in front: of an RPG in the face, a
@@ -5738,6 +5849,8 @@ int main() {
     test_real_tanks();
     test_axes_hire_their_own_apcs();
     test_real_apcs();
+    test_axes_hire_their_own_guns();
+    test_real_guns();
     test_donbas_landmarks();
     test_farmland();
     test_dig_in_the_fields();

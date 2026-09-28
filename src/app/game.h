@@ -43,7 +43,7 @@ public:
     // Development helpers for --smoke-test.
     void submit(engine::Command cmd) { lockstep_.submit(std::move(cmd)); }
     void select_structure(engine::EntityId id) { controller_.select_structure(id); }
-    void open_section(uint8_t kind = 0) { controller_.open_section(kind); }
+    void open_section(engine::Family kind) { controller_.open_section(kind); }
     void select_units(std::vector<engine::EntityId> ids) { controller_.select_units(std::move(ids)); }
     void set_tick_limit(engine::Tick limit) { tick_limit_ = limit; }
     void set_time_scale(float scale) { time_scale_ = scale; }

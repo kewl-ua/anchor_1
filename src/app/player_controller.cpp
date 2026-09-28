@@ -1,6 +1,7 @@
 #include "app/player_controller.h"
 
 #include <algorithm>
+#include <array>
 #include <span>
 #include <cmath>
 #include <optional>
@@ -12,6 +13,21 @@
 namespace app {
 
 namespace {
+
+// A section of a building's grid: its button's label and tooltip.
+std::pair<const char*, const char*> section_label(engine::Family family) {
+    switch (family) {
+        case engine::Family::Tank: return {"Tanks >", "The axis's tanks: pick one to hire"};
+        case engine::Family::Apc: return {"APCs >", "The axis's IFVs and APCs: pick one to hire"};
+        case engine::Family::Spg: return {"SPGs >", "The axis's self-propelled guns: pick one to hire"};
+        case engine::Family::Gun: return {"Guns >", "The axis's towed howitzers: pick one to hire"};
+        case engine::Family::AntiAir: return {"AA >", "The axis's anti-aircraft guns: pick one to hire"};
+        case engine::Family::Aircraft: return {"Aircraft >", "The axis's attack aircraft: pick one to hire"};
+        case engine::Family::None: break;
+    }
+    return {"More >", ""};
+}
+
 
 constexpr float kDragThreshold = 6.0f;  // screen pixels
 
@@ -345,6 +361,26 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Type89: return "Type 89";
         case engine::UnitTypeId::K21: return "K21";
         case engine::UnitTypeId::Namer: return "Namer";
+        case engine::UnitTypeId::Akatsiya: return "2S3";
+        case engine::UnitTypeId::MstaS: return "Msta-S";
+        case engine::UnitTypeId::Pion: return "Pion";
+        case engine::UnitTypeId::Plz05: return "PLZ-05";
+        case engine::UnitTypeId::M109: return "M109A6";
+        case engine::UnitTypeId::PzH2000: return "PzH 2000";
+        case engine::UnitTypeId::Caesar: return "CAESAR";
+        case engine::UnitTypeId::K9: return "K9";
+        case engine::UnitTypeId::Tunguska: return "Tunguska";
+        case engine::UnitTypeId::Pantsir: return "Pantsir";
+        case engine::UnitTypeId::Pgz09: return "PGZ-09";
+        case engine::UnitTypeId::Gepard: return "Gepard";
+        case engine::UnitTypeId::Type87: return "Type 87";
+        case engine::UnitTypeId::K30: return "K30";
+        case engine::UnitTypeId::MstaB: return "Msta-B";
+        case engine::UnitTypeId::Giatsint: return "Giatsint";
+        case engine::UnitTypeId::M777: return "M777";
+        case engine::UnitTypeId::Fh70: return "FH70";
+        case engine::UnitTypeId::Su34: return "Su-34";
+        case engine::UnitTypeId::A10: return "A-10C";
         case engine::UnitTypeId::Worker: return "Rear troop";
         case engine::UnitTypeId::Truck: return "Truck";
         case engine::UnitTypeId::Scout: return "Scout";
@@ -352,11 +388,11 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::FuelTanker: return "Tanker";
         case engine::UnitTypeId::AmmoTruck: return "Ammo truck";
         case engine::UnitTypeId::Mortar: return "Mortar";
-        case engine::UnitTypeId::Howitzer: return "Howitzer";
+        case engine::UnitTypeId::Howitzer: return "D-30";
         case engine::UnitTypeId::Ags: return "AGS";
         case engine::UnitTypeId::Mlrs: return "MLRS";
         case engine::UnitTypeId::Sapper: return "Sapper";
-        case engine::UnitTypeId::Spg: return "SPG";
+        case engine::UnitTypeId::Spg: return "2S1";
         case engine::UnitTypeId::Signaler: return "Signaller";
         case engine::UnitTypeId::FieldHq: return "Cmd vehicle";
         case engine::UnitTypeId::DfStation: return "DF station";
@@ -426,26 +462,23 @@ void PlayerController::rebuild_grid(const engine::World& world) {
         }
         // What it hires along the top row, what it researches along the bottom
         // row, then the middle one. What doesn't fit is nested in sections:
-        // the tanks of the axis (the armor barracks) behind a "Tanks" button,
-        // its IFVs and APCs behind an "APCs" one, each on a page of its own
-        // with a way back.
+        // the axis's real vehicles of a kind (its tanks, its IFVs and APCs,
+        // its towed guns, its SPGs, its AA guns) behind a button of their
+        // own, each on a page of its own with a way back.
         const std::span<const engine::UnitTypeId> roster = engine::roster_of(s->type, engine::axis_of(player_));
-        auto in_section = [](engine::UnitTypeId t, uint8_t kind) {
-            return kind == 0 ? engine::unit_type(t).tank : engine::unit_type(t).apc;
+        auto family = [](engine::UnitTypeId t) { return static_cast<uint8_t>(engine::unit_type(t).family); };
+        auto sectioned = [&](uint8_t kind) {
+            return kind != 0 && std::count_if(roster.begin(), roster.end(), [&](engine::UnitTypeId t) { return family(t) == kind; }) > 1;
         };
-        bool sectioned[2] = {};
-        for (uint8_t kind = 0; kind < 2; ++kind) {
-            sectioned[kind] = std::count_if(roster.begin(), roster.end(), [&](engine::UnitTypeId t) { return in_section(t, kind); }) > 1;
-        }
         auto hire = [&](size_t slot, engine::UnitTypeId type) {
             const engine::UnitTypeDef& unit = engine::unit_type(type);
             put(slot, Action::Hire, static_cast<uint8_t>(type), unit_label(type), unit.name, unit.cost).enabled =
                 s->queue.size() < engine::kMaxQueue;
         };
-        if (section_ == s->id && sectioned[section_kind_ % 2]) {
+        if (section_ == s->id && sectioned(section_kind_)) {
             size_t slot = 0;
             for (const engine::UnitTypeId type : roster) {
-                if (in_section(type, section_kind_ % 2) && slot < 14) hire(slot++, type);
+                if (family(type) == section_kind_ && slot < 14) hire(slot++, type);
             }
             put(14, Action::Back, 0, "Back", "Back to the barracks");
             return;
@@ -473,12 +506,20 @@ void PlayerController::rebuild_grid(const engine::World& world) {
                 b.cooldown = 1.0f - static_cast<float>(s->research_progress) / static_cast<float>(up.time);
             }
         }
+        // In the roster's order: a section's button where its first one would be.
         size_t slot = 0;
-        if (sectioned[0]) put(slot++, Action::Section, 0, "Tanks >", "The axis's tanks: pick one to hire");
-        if (sectioned[1]) put(slot++, Action::Section, 1, "APCs >", "The axis's IFVs and APCs: pick one to hire");
+        std::array<bool, 8> placed{};
         for (const engine::UnitTypeId type : roster) {
-            const bool nested = (sectioned[0] && in_section(type, 0)) || (sectioned[1] && in_section(type, 1));
-            if (!nested && slot < 5) hire(slot++, type);
+            if (slot >= 5) break;
+            const uint8_t kind = family(type);
+            if (!sectioned(kind)) {
+                hire(slot++, type);
+                continue;
+            }
+            if (placed[kind % placed.size()]) continue;
+            placed[kind % placed.size()] = true;
+            const auto [label, tooltip] = section_label(static_cast<engine::Family>(kind));
+            put(slot++, Action::Section, kind, label, tooltip);
         }
         return;
     }

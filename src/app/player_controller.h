@@ -74,10 +74,10 @@ public:
         selection_.clear();
         selected_structure_ = id;
     }
-    // The selected building's grid opened at a section: its tanks (0), its IFVs and APCs (1).
-    void open_section(uint8_t kind = 0) {
+    // The selected building's grid opened at a section: its real vehicles of a kind (its tanks, ...).
+    void open_section(engine::Family kind) {
         section_ = selected_structure_;
-        section_kind_ = kind;
+        section_kind_ = static_cast<uint8_t>(kind);
     }
     void select_units(std::vector<engine::EntityId> ids) {
         std::sort(ids.begin(), ids.end());
@@ -171,7 +171,7 @@ private:
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
     bool convert_menu_ = false;  // rear troops: what depot to make of a village building
-    // A building's grid opened at a section (its tanks, or its IFVs and APCs), for this building.
+    // A building's grid opened at a section (a Family: its tanks, its IFVs and APCs...), for this building.
     engine::EntityId section_ = 0;
     uint8_t section_kind_ = 0;
     const char* hint_ = "";      // see cursor_hint()

@@ -197,6 +197,7 @@ inline constexpr int32_t kBarrelWearPercent = 1;
 // Craters: a heavy shell or rocket bursting on open ground or a road leaves
 // one this often (percent), a medium one (a mortar bomb) less often.
 inline constexpr Fixed kHeavyBurst = Fixed::from_ratio(6, 5);
+inline constexpr Fixed kHeavyShellBurst = Fixed::from_int(2);  // a 203 mm shell's: the biggest craters
 inline constexpr Fixed kMediumBurst = Fixed::from_int(1);
 inline constexpr int32_t kHeavyCraterPercent = 60;
 inline constexpr int32_t kMediumCraterPercent = 25;

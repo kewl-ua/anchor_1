@@ -200,8 +200,40 @@ enum class VehicleModel : uint8_t {
     Type89,   // Japan
     K21,      // Korea
     Namer,    // Israel
+    // Self-propelled guns.
+    Gvozdika,  // both: 2S1
+    Akatsiya,  // Russia: 2S3
+    MstaS,     // Russia: 2S19
+    Pion,      // Russia: 2S7
+    Plz05,     // China
+    M109,      // USA: M109A6 Paladin
+    PzH2000,   // Germany
+    Caesar,    // France: on wheels
+    K9,        // Korea: Thunder
+    // Self-propelled anti-aircraft guns.
+    Shilka,    // Russia: ZSU-23-4
+    Tunguska,  // Russia: 2K22
+    Pantsir,   // Russia: Pantsir-S1, on wheels
+    Pgz09,     // China
+    Gepard,    // Germany
+    Type87,    // Japan
+    K30,       // Korea: Biho
+    // Towed howitzers.
+    D30,       // both
+    MstaB,     // Russia: 2A65
+    Giatsint,  // Russia: 2A36 Giatsint-B
+    M777,      // USA
+    Fh70,      // Germany and Britain
+    // Attack aircraft.
+    Su25,      // both
+    Su34,      // Russia
+    A10,       // USA: A-10C
     Count,
 };
+
+// What a unit is among the axes' real vehicles, for grouping them in the
+// command grid (each group of a building's in a section of its own).
+enum class Family : uint8_t { None, Tank, Apc, Spg, Gun, AntiAir, Aircraft };
 
 // The two sides: the first player is always the Democratic axis, the second
 // the Authoritarian one. Each has its own tanks.
@@ -276,6 +308,7 @@ struct UnitTypeDef {
     int32_t crew_survives_percent = 0;
     int32_t era_max = 0;
     VehicleModel model = VehicleModel::Standard;
+    Family family = Family::None;
 };
 
 enum class UnitTypeId : uint8_t {
@@ -333,6 +366,30 @@ enum class UnitTypeId : uint8_t {
     Type89,
     K21,
     Namer,
+    // The self-propelled guns of the axes (Spg above is the 2S1, both sides').
+    Akatsiya,
+    MstaS,
+    Pion,
+    Plz05,
+    M109,
+    PzH2000,
+    Caesar,
+    K9,
+    // The self-propelled anti-aircraft guns (Shilka above).
+    Tunguska,
+    Pantsir,
+    Pgz09,
+    Gepard,
+    Type87,
+    K30,
+    // The towed howitzers (Howitzer above is the D-30, both sides').
+    MstaB,
+    Giatsint,
+    M777,
+    Fh70,
+    // The attack aircraft (Su25 above, both sides').
+    Su34,
+    A10,
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);
@@ -345,6 +402,13 @@ inline MoveClass move_class(const UnitTypeDef& def) {
 }
 // Tanks, IFVs and APCs: armor, each a real one.
 inline bool is_armor(const UnitTypeDef& def) { return def.tank || def.apc; }
+// Heavy tracks that don't swim: in a bog they sink (tanks, some IFVs, SPGs, AA guns).
+inline bool sinks_in_bog(const UnitTypeDef& def) {
+    return (def.family == Family::Tank || def.family == Family::Apc || def.family == Family::Spg || def.family == Family::AntiAir) &&
+           !def.wheeled && !def.floats;
+}
+// Tube artillery: mortars, howitzers, SPGs (not a rocket launcher's salvo).
+bool is_tube_artillery(const UnitTypeDef& def);
 // Trucks carry no weapon: they never pick fights.
 inline bool is_armed(const UnitTypeDef& def) { return def.weapon.damage > 0; }
 // Foot soldiers ride in an IFV; gun crews walk with their guns.

@@ -19,7 +19,7 @@ Tick World::deploy_ticks(const Unit& u) const {
 
 // Long-range charges: howitzers, SPGs and mortars reach farther.
 Fixed World::gun_reach(const Unit& u, const WeaponDef& weapon) const {
-    const bool charges = u.type == UnitTypeId::Howitzer || u.type == UnitTypeId::Spg || u.type == UnitTypeId::Mortar;
+    const bool charges = is_tube_artillery(unit_type(u.type));
     if (charges && has_upgrade(u.owner, UpgradeId::LongRangeCharges)) return weapon.range * kLongRangePercent / 100;
     return weapon.range;
 }

@@ -654,6 +654,49 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(30.0f, 0.5f));
     }
 
+    if (options.scene == "guns" && options.mode == Options::Mode::Offline) {
+        // Offline: the SPGs of both axes, some set up with their guns raised;
+        // the AA guns; the towed howitzers, packed and set up; on a flat field
+        // well ahead of the base, three-quarters on.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(30.0f, 0.0f), 16);
+        using engine::UnitTypeId;
+        struct Shown {
+            UnitTypeId type;
+            bool set_up;
+        };
+        auto row = [&](std::initializer_list<Shown> units, float side) {
+            float d = 23.0f;
+            for (const Shown& s : units) {
+                const engine::EntityId id = w.spawn_unit(me, s.type, ahead(d, side));
+                engine::Unit* u = w.unit_for_setup(id);
+                u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
+                u->hull = u->facing;
+                u->deployed = s.set_up;
+                d += 2.3f;
+            }
+        };
+        row({{UnitTypeId::Spg, false}, {UnitTypeId::Akatsiya, false}, {UnitTypeId::M109, false}, {UnitTypeId::PzH2000, false},
+             {UnitTypeId::Caesar, false}, {UnitTypeId::K9, false}},
+            -3.4f);
+        row({{UnitTypeId::MstaS, false}, {UnitTypeId::Pion, false}, {UnitTypeId::Plz05, false}, {UnitTypeId::Spg, true},
+             {UnitTypeId::PzH2000, true}, {UnitTypeId::Pion, true}},
+            -1.0f);
+        row({{UnitTypeId::Shilka, false}, {UnitTypeId::Tunguska, false}, {UnitTypeId::Pantsir, false}, {UnitTypeId::Pgz09, false},
+             {UnitTypeId::Gepard, false}, {UnitTypeId::Type87, false}, {UnitTypeId::K30, false}},
+            1.4f);
+        row({{UnitTypeId::Howitzer, false}, {UnitTypeId::MstaB, false}, {UnitTypeId::Giatsint, false}, {UnitTypeId::M777, false},
+             {UnitTypeId::Fh70, false}, {UnitTypeId::Howitzer, true}, {UnitTypeId::M777, true}},
+            3.8f);
+        return render::to_vector2(ahead(30.0f, 0.2f));
+    }
+
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {
         // Offline: one of every kind of unit ahead of the base, to look at:
         // a row of riflemen facing all eight ways, the rest of the infantry,
@@ -797,9 +840,10 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     }
 
     if (options.scene == "air" && options.mode == Options::Mode::Offline) {
-        // Offline: an airfield behind our base with two attack aircraft on
-        // it; both fly a mission at the ground ahead of the army, where the
-        // enemy's air defence waits: a MANPADS crew, a Shilka and a radar.
+        // Offline: an airfield behind our base with three attack aircraft on
+        // it (a Su-25, an A-10C, a Su-34); they fly a mission at the ground
+        // ahead of the army, where the enemy's air defence waits: a MANPADS
+        // crew, a Shilka and a radar.
         // The camera follows the lead aircraft.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
@@ -818,8 +862,9 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         if (!origin) return std::nullopt;
         w.place_structure(engine::StructureType::Airfield, me, *origin, 6, 3);
         std::vector<engine::EntityId> planes;
-        for (int i = 0; i < 2; ++i) {
-            planes.push_back(w.spawn_unit(me, engine::UnitTypeId::Su25, engine::tile_center({origin->x + i, origin->y})));
+        const engine::UnitTypeId kinds[] = {engine::UnitTypeId::Su25, engine::UnitTypeId::A10, engine::UnitTypeId::Su34};
+        for (int i = 0; i < 3; ++i) {
+            planes.push_back(w.spawn_unit(me, kinds[i], engine::tile_center({origin->x + 2 * i, origin->y + 1})));
         }
         const engine::PlayerId enemy = me == 0 ? 1 : 0;
         w.spawn_unit(enemy, engine::UnitTypeId::Manpads, ahead(24.0f, 2.0f));
@@ -874,13 +919,14 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(base);
     }
 
-    if (options.scene == "armory" || options.scene == "armory_tanks" || options.scene == "armory_apcs") {
+    if (options.scene.starts_with("armory")) {
         // An armor barracks by the headquarters, its card on the command
         // panel: the axis's tanks in their section, the upgrades.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const engine::TilePos b = engine::tile_of(base);
         const int32_t fwd = me == 0 ? 1 : -1;
-        game.world_for_setup().place_structure(engine::StructureType::ArmorBarracks, me, {b.x + 5 * fwd, b.y - 7 * fwd}, 3, 3);
+        game.world_for_setup().place_structure(options.scene == "armory_artillery" ? engine::StructureType::ArtilleryBarracks : engine::StructureType::ArmorBarracks, me,
+                                               {b.x + 5 * fwd, b.y - 7 * fwd}, 3, 3);
         return render::to_vector2(base);
     }
 
@@ -1102,13 +1148,14 @@ int main(int argc, char** argv) {
                 const engine::StructureType shown = options->scene == "build"       ? engine::StructureType::InfantryBarracks
                                                     : options->scene == "logistics" ? engine::StructureType::Station
                                                     : options->scene == "rear"      ? engine::StructureType::Hospital
+                                                    : options->scene == "armory_artillery" ? engine::StructureType::ArtilleryBarracks
                                                     : options->scene.starts_with("armory") ? engine::StructureType::ArmorBarracks
                                                                                     : engine::StructureType::Headquarters;
                 for (const engine::Structure& s : game->world().structures()) {
                     if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);
                 }
-                if (options->scene == "armory_tanks") game->open_section(0);
-                if (options->scene == "armory_apcs") game->open_section(1);
+                if (options->scene == "armory_tanks") game->open_section(engine::Family::Tank);
+                if (options->scene == "armory_apcs") game->open_section(engine::Family::Apc);
             }
             if (smoke && smoke_look) {
                 if (options->zoom) game->set_camera_zoom(*options->zoom);

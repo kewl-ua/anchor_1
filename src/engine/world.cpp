@@ -1383,7 +1383,7 @@ void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
 void World::update_bogs() {
     for (Unit& u : units_) {
         const UnitTypeDef& def = def_of(u);
-        if (!is_armor(def) || def.floats || u.inside) continue;  // an amphibious one swims
+        if (!sinks_in_bog(def) || u.inside) continue;  // an amphibious one swims, wheels don't get in
         if (map_.terrain_at(u.pos) != Terrain::Swamp) {
             u.mired = 0;  // out on firm ground: free
             continue;
@@ -1405,14 +1405,13 @@ void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& wea
     if (static_cast<int32_t>(rng_.next_below(100)) >= chance) return;
     // Its size by what made it; a bigger one swallows a smaller one.
     CraterKind kind = CraterKind::Small;
-    switch (p.shooter_type) {
-        case UnitTypeId::Mlrs:
-        case UnitTypeId::Su25: kind = CraterKind::Rocket; break;
-        case UnitTypeId::Howitzer:
-        case UnitTypeId::Spg: kind = CraterKind::Shell; break;
-        default:
-            if (unit_type(p.shooter_type).tank) kind = weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small;
-            break;
+    const UnitTypeDef& shooter = unit_type(p.shooter_type);
+    if (shooter.aircraft || (shooter.weapon.indirect && !is_tube_artillery(shooter))) {
+        kind = CraterKind::Rocket;  // rockets, bombs
+    } else if (is_tube_artillery(shooter)) {
+        kind = weapon.splash_radius >= kHeavyShellBurst ? CraterKind::Heavy : weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small;
+    } else if (shooter.tank) {
+        kind = weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small;
     }
     if (ground == Terrain::Crater && crater_cover(map_.crater_kind(t.x, t.y)) >= crater_cover(kind)) return;
     map_.set_terrain(t.x, t.y, Terrain::Crater);  // passable for all: no route goes stale
@@ -1542,9 +1541,9 @@ void World::apply_damage_and_remove_dead() {
                                                 .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
     }
-    // A tank (an IFV) knocked out: its crew may get out (the men come back to the pool).
+    // A tank (an IFV, a gun, an aircraft) knocked out: its crew may get out (the men come back to the pool).
     for (const Unit& u : units_) {
-        if (u.hp > 0 || !is_armor(def_of(u)) || u.owner >= kMaxPlayers) continue;
+        if (u.hp > 0 || def_of(u).family == Family::None || u.owner >= kMaxPlayers) continue;
         // Sunk in a bog, slowly: the crew gets out. Knocked out: as its armour lets them.
         if (u.mired >= kBogLimit || static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];

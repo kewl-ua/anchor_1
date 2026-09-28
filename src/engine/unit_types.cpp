@@ -64,6 +64,7 @@ constexpr UnitTypeDef kT72B3 = {
         .crew_survives_percent = 15,  // the rounds in the carousel under the turret go up
         .era_max = 3,
         .model = VehicleModel::T72B3,
+        .family = Family::Tank,
     };
 
 // A real tank, from the T-72B3 (= 100): its speed, its armor in front,
@@ -152,6 +153,7 @@ constexpr UnitTypeDef kBmp2 = {
         .soft_ground_percent = 100 * 100 / 120,
         .crew_survives_percent = 30,
         .model = VehicleModel::Bmp2,
+        .family = Family::Apc,
     };
 
 // What an IFV or APC fires: a machine gun, an autocannon, the BMP-1's
@@ -291,6 +293,284 @@ constexpr ApcSpec kApcSpecs[] = {
     {"K21",              "K21",  VehicleModel::K21,     false, true,  105, 270, {10, 12, 7},  110, ApcGun::Auto40, 9, 170, 3, 110, 110, 45, false, false},
     {"Namer",            "NMR",  VehicleModel::Namer,   false, false,  85, 420, {16, 25, 20}, 140, ApcGun::Hmg,    9, 220, 3,  70, 150, 70, false, true},
 };
+
+// The 2S1 Gvozdika: the SPG the others are measured against, both sides have it.
+constexpr UnitTypeDef kGvozdika = {
+        // A howitzer on tracks: sets up in moments, shoots and scoots.
+        .name = "2S1 Gvozdika",
+        .short_name = "SPG",
+        .max_hp = 200,
+        .armor = {15, 15, 20},
+        .speed = tiles_per_second(6, 5),
+        .radius = tiles(9, 20),
+        .sight = tiles(6),
+        .mass = 14,
+        .vehicle = true,
+        .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
+                   .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
+                   .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
+                   .min_range = tiles(4)},
+        .cost = {4, 0, 200, 60, 60},
+        .train_time = seconds(40),
+        .fuel_capacity = tiles(160),
+        .rounds_capacity = 40,
+        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence,
+                      AbilityId::CallSupply},
+        .ability_count = 5,
+        .deploy_time = seconds(2),
+        .emitter = true,
+        .floats = true,
+        .soft_ground_percent = 100 * 100 / 140,
+        .crew_survives_percent = 30,
+        .model = VehicleModel::Gvozdika,
+        .family = Family::Spg,
+    };
+
+// The D-30: the towed howitzer the others are measured against, both sides have it.
+constexpr UnitTypeDef kD30 = {
+        // Far-reaching and blind: it hits what someone else sees for it.
+        .name = "D-30",
+        .short_name = "HOW",
+        .max_hp = 160,
+        .armor = {8, 10, 10},
+        .speed = tiles_per_second(1),
+        .radius = tiles(2, 5),
+        .sight = tiles(5),
+        .mass = 12,
+        .vehicle = true,
+        .wheeled = true,  // towed
+        .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
+                   .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
+                   .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
+                   .min_range = tiles(5)},
+        .cost = {4, 0, 150, 60, 30},
+        .train_time = seconds(40),
+        .rounds_capacity = 30,
+        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence,
+                      AbilityId::CallSupply},
+        .ability_count = 5,
+        .deploy_time = seconds(8),
+        .emitter = true,
+        .crew_survives_percent = 60,
+        .model = VehicleModel::D30,
+        .family = Family::Gun,
+    };
+
+// The ZSU-23-4 Shilka: the AA gun the others are measured against.
+constexpr UnitTypeDef kShilka = {
+        // Four radar-laid 23mm barrels: aircraft first, and murder on infantry.
+        // Its radar is on the air; switched off, it aims by eye.
+        .name = "ZSU-23-4 Shilka",
+        .short_name = "ZSU",
+        .max_hp = 220,
+        .armor = {15, 10, 10},
+        .speed = tiles_per_second(6, 5),
+        .radius = tiles(9, 20),
+        .sight = tiles(8),
+        .mass = 20,
+        .vehicle = true,
+        .weapon = {.name = "23mm quad AA guns", .damage = 14, .damage_type = DamageType::Bullet, .range = tiles(7),
+                   .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true},
+        .cost = {3, 0, 150, 80, 60},
+        .train_time = seconds(35),
+        .fuel_capacity = tiles(150),
+        .rounds_capacity = 200,
+        .rounds_per_supply = 10,
+        .abilities = {AbilityId::RadioSilence, AbilityId::CallSupply},
+        .ability_count = 2,
+        .emitter = true,
+        .crew_survives_percent = 20,
+        .model = VehicleModel::Shilka,
+        .family = Family::AntiAir,
+    };
+
+// The Su-25: the attack aircraft the others are measured against, both sides fly it. Its pilot ejects.
+constexpr UnitTypeDef kSu25 = {
+        // Flies only on missions: a rocket run at the target, back to the
+        // airfield, rearmed from the stock. Tough: takes two missile hits.
+        .name = "Su-25",
+        .short_name = "SU25",
+        .max_hp = 300,
+        .armor = {5, 15, 15},
+        .speed = tiles_per_second(5),
+        .radius = tiles(1, 2),
+        .sight = tiles(9),
+        .mass = 20,
+        .vehicle = true,
+        .weapon = {.name = "S-8 rockets", .damage = 60, .damage_type = DamageType::Explosive, .range = tiles(9),
+                   .reload = 0, .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5),
+                   .accuracy = 100, .miss_spread = tiles(0)},
+        .cost = {1, 0, 250, 80, 120},
+        .train_time = seconds(60),
+        .fuel_capacity = tiles(240),
+        .rounds_capacity = 16,
+        .aircraft = true,
+        .crew_survives_percent = 50,
+        .model = VehicleModel::Su25,
+        .family = Family::Aircraft,
+    };
+
+// A real SPG or towed howitzer, from the 2S1 (the D-30): its speed, hit
+// points and armor, its shell (damage, burst in tenths of a tile), its
+// reach, its reload (tenths of a second), rounds aboard, price, crew, how
+// long it takes to set up (tenths of a second), soft ground, thirst, how
+// its crew fares.
+struct GunSpec {
+    const char* name;
+    const char* short_name;
+    VehicleModel model;
+    bool wheeled;
+    bool floats;
+    int32_t speed;
+    int32_t hp;
+    std::array<int32_t, kDamageTypeCount> armor;
+    int32_t damage;
+    int32_t burst;
+    int32_t range;
+    int32_t reload;
+    int32_t rounds;
+    int32_t price;
+    int32_t men;
+    int32_t deploy;
+    int32_t soft;
+    int32_t thirst;
+    int32_t crew;
+};
+
+constexpr UnitTypeDef gun_def(const UnitTypeDef& base, const GunSpec& g) {
+    UnitTypeDef d = base;
+    d.name = g.name;
+    d.short_name = g.short_name;
+    d.model = g.model;
+    d.wheeled = g.wheeled;
+    d.floats = g.floats;
+    d.speed = Fixed::from_raw(base.speed.raw * g.speed / 100);
+    d.max_hp = g.hp;
+    d.armor = g.armor;
+    d.mass = base.mass * g.hp / base.max_hp;
+    d.weapon.damage = g.damage;
+    d.weapon.splash_radius = tiles(g.burst, 10);
+    d.weapon.range = tiles(g.range);
+    d.weapon.reload = seconds(g.reload, 10);
+    d.rounds_capacity = g.rounds;
+    d.cost[static_cast<size_t>(Resource::Personnel)] = g.men;
+    for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = base.cost[r] * g.price / 100;
+    d.train_time = base.train_time * (50 + g.price / 2) / 100;
+    d.deploy_time = seconds(g.deploy, 10);
+    d.soft_ground_percent = 100 * 100 / g.soft;
+    if (base.fuel_capacity.raw > 0) d.fuel_capacity = Fixed::from_raw(base.fuel_capacity.raw * 100 / g.thirst);
+    d.crew_survives_percent = g.crew;
+    return d;
+}
+
+//   name                short   model                    wheels floats spd  hp   armor         dmg burst range reload rounds price men deploy soft thirst crew
+constexpr GunSpec kSpgSpecs[] = {
+    // The Authoritarian axis (and the Democratic one: the 2S3 both).
+    {"2S3 Akatsiya",      "2S3",  VehicleModel::Akatsiya, false, false, 100, 240, {18, 18, 22}, 150, 18, 63, 75, 46, 140, 4, 30, 110, 110, 25},
+    {"2S19 Msta-S",       "MSTA", VehicleModel::MstaS,    false, false, 100, 300, {20, 20, 25}, 150, 18, 72, 50, 50, 200, 5, 30, 100, 130, 30},
+    {"2S7 Pion",          "PION", VehicleModel::Pion,     false, false,  90, 260, {10, 10, 10}, 230, 24, 87, 120, 8, 250, 6, 60,  95, 140, 40},
+    {"PLZ-05",            "PLZ",  VehicleModel::Plz05,    false, false, 105, 300, {20, 20, 25}, 150, 18, 88, 50, 30, 210, 5, 30, 100, 120, 30},
+    // The Democratic axis.
+    {"M109A6 Paladin",    "M109", VehicleModel::M109,     false, false, 100, 280, {18, 18, 22}, 150, 18, 71, 70, 39, 180, 4, 20, 100, 110, 45},
+    {"PzH 2000",          "PZH",  VehicleModel::PzH2000,  false, false, 110, 320, {22, 22, 28}, 150, 18, 90, 30, 60, 260, 5, 20,  95, 130, 50},
+    {"CAESAR",            "CSR",  VehicleModel::Caesar,   true,  false, 140, 160, {8, 8, 5},    150, 18, 92, 60, 18, 170, 5, 10,  75,  70, 50},
+    {"K9 Thunder",        "K9",   VehicleModel::K9,       false, false, 115, 300, {20, 20, 25}, 150, 18, 90, 40, 48, 230, 5, 20, 105, 115, 45},
+};
+
+//   name                short   model                    wheels floats spd  hp   armor         dmg burst range reload rounds price men deploy soft thirst crew
+constexpr GunSpec kGunSpecs[] = {
+    {"2A65 Msta-B",       "MSTB", VehicleModel::MstaB,    true,  false,  85, 190, {8, 10, 10},  150, 18, 72, 70, 30, 150, 5, 100, 100, 100, 60},
+    {"2A36 Giatsint-B",   "GIA",  VehicleModel::Giatsint, true,  false,  80, 200, {8, 10, 10},  150, 18, 87, 80, 30, 170, 5, 120, 100, 100, 60},
+    {"M777",              "M777", VehicleModel::M777,     true,  false, 100, 150, {8, 10, 10},  150, 18, 71, 60, 30, 170, 5,  60, 100, 100, 60},
+    {"FH70",              "FH70", VehicleModel::Fh70,     true,  false,  90, 180, {8, 10, 10},  150, 18, 71, 60, 30, 150, 5,  90, 100, 100, 60},
+};
+
+// A real self-propelled AA gun, from the Shilka: its speed, hit points and
+// armor, its guns (damage a round, reach, reload in hundredths of a second,
+// accuracy), rounds aboard, price, soft ground, thirst, how its crew fares.
+struct AaSpec {
+    const char* name;
+    const char* short_name;
+    VehicleModel model;
+    bool wheeled;
+    int32_t speed;
+    int32_t hp;
+    std::array<int32_t, kDamageTypeCount> armor;
+    int32_t damage;
+    int32_t range;
+    int32_t reload;
+    uint8_t accuracy;
+    int32_t rounds;
+    int32_t price;
+    int32_t soft;
+    int32_t thirst;
+    int32_t crew;
+};
+
+constexpr UnitTypeDef aa_def(const AaSpec& a) {
+    UnitTypeDef d = kShilka;
+    d.name = a.name;
+    d.short_name = a.short_name;
+    d.model = a.model;
+    d.wheeled = a.wheeled;
+    d.speed = Fixed::from_raw(kShilka.speed.raw * a.speed / 100);
+    d.max_hp = a.hp;
+    d.armor = a.armor;
+    d.mass = kShilka.mass * a.hp / kShilka.max_hp;
+    d.weapon.damage = a.damage;
+    d.weapon.range = tiles(a.range);
+    d.weapon.reload = seconds(a.reload, 100);
+    d.weapon.accuracy = a.accuracy;
+    d.rounds_capacity = a.rounds;
+    for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = kShilka.cost[r] * a.price / 100;
+    d.train_time = kShilka.train_time * (50 + a.price / 2) / 100;
+    d.soft_ground_percent = 100 * 100 / a.soft;
+    d.fuel_capacity = Fixed::from_raw(kShilka.fuel_capacity.raw * 100 / a.thirst);
+    d.crew_survives_percent = a.crew;
+    return d;
+}
+
+//   name                    short   model                    wheels spd  hp   armor         dmg range reload acc rounds price soft thirst crew
+constexpr AaSpec kAaSpecs[] = {
+    {"2K22 Tunguska",        "TUN",  VehicleModel::Tunguska, false, 110, 280, {15, 12, 10}, 20, 10, 30, 60, 180, 220, 100, 110, 25},
+    {"Pantsir-S1",           "PNT",  VehicleModel::Pantsir,  true,  130, 220, {8, 6, 4},    22, 12, 35, 62, 160, 260,  75,  90, 30},
+    {"PGZ-09",               "PGZ",  VehicleModel::Pgz09,    false, 105, 280, {18, 14, 14}, 22,  9, 30, 60, 160, 180, 100, 110, 30},
+    {"Gepard",               "GEP",  VehicleModel::Gepard,   false, 110, 280, {18, 14, 14}, 22,  9, 30, 60, 160, 180, 110, 110, 40},
+    {"Type 87",              "T87",  VehicleModel::Type87,   false, 110, 270, {18, 14, 14}, 22,  9, 30, 60, 160, 190, 105, 110, 40},
+    {"K30 Biho",             "K30",  VehicleModel::K30,      false, 115, 240, {15, 12, 10}, 18,  8, 25, 58, 200, 160, 110, 100, 40},
+};
+
+// The other attack aircraft: the A-10C, low and slow and tough, many
+// rockets; the Su-34, fast, a few heavy bombs.
+constexpr UnitTypeDef su25_like(const char* name, const char* short_name, VehicleModel model, int32_t hp,
+                                std::array<int32_t, kDamageTypeCount> armor, int32_t speed, WeaponDef weapon, int32_t rounds,
+                                int32_t price, int32_t fuel, int32_t crew) {
+    UnitTypeDef d = kSu25;
+    d.name = name;
+    d.short_name = short_name;
+    d.model = model;
+    d.max_hp = hp;
+    d.armor = armor;
+    d.speed = Fixed::from_raw(kSu25.speed.raw * speed / 100);
+    d.weapon = weapon;
+    d.rounds_capacity = rounds;
+    for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = kSu25.cost[r] * price / 100;
+    d.train_time = kSu25.train_time * (50 + price / 2) / 100;
+    d.fuel_capacity = Fixed::from_raw(static_cast<int32_t>(static_cast<int64_t>(kSu25.fuel_capacity.raw) * fuel / 100));
+    d.crew_survives_percent = crew;
+    return d;
+}
+constexpr UnitTypeDef kSu34 =
+    su25_like("Su-34", "SU34", VehicleModel::Su34, 380, {5, 15, 15}, 130,
+              {.name = "FAB-500 bombs", .damage = 220, .damage_type = DamageType::Explosive, .range = tiles(9), .reload = 0,
+               .projectile_speed = tiles_per_second(8), .splash_radius = tiles(12, 5), .accuracy = 100, .miss_spread = tiles(0)},
+              6, 170, 150, 50);
+constexpr UnitTypeDef kA10 =
+    su25_like("A-10C Thunderbolt II", "A10", VehicleModel::A10, 420, {8, 20, 20}, 90,
+              {.name = "Hydra 70 rockets", .damage = 60, .damage_type = DamageType::Explosive, .range = tiles(9), .reload = 0,
+               .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5), .accuracy = 100, .miss_spread = tiles(0)},
+              19, 150, 125, 70);
 
 constexpr UnitTypeDef kUnitTypes[] = {
     {
@@ -498,31 +778,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .deploy_time = seconds(3),
         .emitter = true,
     },
-    {
-        // Far-reaching and blind: it hits what someone else sees for it.
-        .name = "Howitzer D-30",
-        .short_name = "HOW",
-        .max_hp = 160,
-        .armor = {8, 10, 10},
-        .speed = tiles_per_second(1),
-        .radius = tiles(2, 5),
-        .sight = tiles(5),
-        .mass = 12,
-        .vehicle = true,
-        .wheeled = true,  // towed
-        .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
-                   .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
-                   .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                   .min_range = tiles(5)},
-        .cost = {4, 0, 150, 60, 30},
-        .train_time = seconds(40),
-        .rounds_capacity = 30,
-        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence,
-                      AbilityId::CallSupply},
-        .ability_count = 5,
-        .deploy_time = seconds(8),
-        .emitter = true,
-    },
+    kD30,
     {
         // Grenades lobbed by the belt: over parapets, into trenches.
         .name = "AGS-17 crew",
@@ -590,31 +846,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
                       AbilityId::PlaceHedgehogs, AbilityId::BuildPillbox, AbilityId::Demolish},
         .ability_count = 7,
     },
-    {
-        // A howitzer on tracks: sets up in moments, shoots and scoots.
-        .name = "SPG 2S1",
-        .short_name = "SPG",
-        .max_hp = 200,
-        .armor = {15, 15, 20},
-        .speed = tiles_per_second(6, 5),
-        .radius = tiles(9, 20),
-        .sight = tiles(6),
-        .mass = 14,
-        .vehicle = true,
-        .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
-                   .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
-                   .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                   .min_range = tiles(4)},
-        .cost = {4, 0, 200, 60, 60},
-        .train_time = seconds(40),
-        .fuel_capacity = tiles(160),
-        .rounds_capacity = 40,
-        .abilities = {AbilityId::Deploy, AbilityId::DigGunPit, AbilityId::Camouflage, AbilityId::RadioSilence,
-                      AbilityId::CallSupply},
-        .ability_count = 5,
-        .deploy_time = seconds(2),
-        .emitter = true,
-    },
+    kGvozdika,
     {
         // A radio on his back: silent units near him still get their orders at once.
         .name = "Signaller",
@@ -685,27 +917,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .deploy_time = seconds(5),
         .df_range = tiles(35),
     },
-    {
-        // Flies only on missions: a rocket run at the target, back to the
-        // airfield, rearmed from the stock. Tough: takes two missile hits.
-        .name = "Su-25 attack aircraft",
-        .short_name = "SU25",
-        .max_hp = 300,
-        .armor = {5, 15, 15},
-        .speed = tiles_per_second(5),
-        .radius = tiles(1, 2),
-        .sight = tiles(9),
-        .mass = 20,
-        .vehicle = true,
-        .weapon = {.name = "S-8 rockets", .damage = 60, .damage_type = DamageType::Explosive, .range = tiles(9),
-                   .reload = 0, .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5),
-                   .accuracy = 100, .miss_spread = tiles(0)},
-        .cost = {1, 0, 250, 80, 120},
-        .train_time = seconds(60),
-        .fuel_capacity = tiles(240),
-        .rounds_capacity = 16,
-        .aircraft = true,
-    },
+    kSu25,
     {
         // A missile on the shoulder: deadly to aircraft, useless on the ground.
         .name = "MANPADS crew (Igla)",
@@ -724,30 +936,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .train_time = seconds(20),
         .rounds_capacity = 4,
     },
-    {
-        // Four radar-laid 23mm barrels: aircraft first, and murder on infantry.
-        // Its radar is on the air; switched off, it aims by eye.
-        .name = "ZSU-23-4 Shilka",
-        .short_name = "ZSU",
-        .max_hp = 220,
-        .armor = {15, 10, 10},
-        .speed = tiles_per_second(6, 5),
-        .radius = tiles(9, 20),
-        .sight = tiles(8),
-        .mass = 20,
-        .vehicle = true,
-        .weapon = {.name = "23mm quad AA guns", .damage = 14, .damage_type = DamageType::Bullet, .range = tiles(7),
-                   .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
-                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true},
-        .cost = {3, 0, 150, 80, 60},
-        .train_time = seconds(35),
-        .fuel_capacity = tiles(150),
-        .rounds_capacity = 200,
-        .rounds_per_supply = 10,
-        .abilities = {AbilityId::RadioSilence, AbilityId::CallSupply},
-        .ability_count = 2,
-        .emitter = true,
-    },
+    kShilka,
     {
         // Sees aircraft far out for the whole air defence, and is heard as
         // far: the loudest thing on the air.
@@ -800,6 +989,26 @@ constexpr UnitTypeDef kUnitTypes[] = {
     apc_def(kApcSpecs[12]),
     apc_def(kApcSpecs[13]),
     apc_def(kApcSpecs[14]),
+    gun_def(kGvozdika, kSpgSpecs[0]),
+    gun_def(kGvozdika, kSpgSpecs[1]),
+    gun_def(kGvozdika, kSpgSpecs[2]),
+    gun_def(kGvozdika, kSpgSpecs[3]),
+    gun_def(kGvozdika, kSpgSpecs[4]),
+    gun_def(kGvozdika, kSpgSpecs[5]),
+    gun_def(kGvozdika, kSpgSpecs[6]),
+    gun_def(kGvozdika, kSpgSpecs[7]),
+    aa_def(kAaSpecs[0]),
+    aa_def(kAaSpecs[1]),
+    aa_def(kAaSpecs[2]),
+    aa_def(kAaSpecs[3]),
+    aa_def(kAaSpecs[4]),
+    aa_def(kAaSpecs[5]),
+    gun_def(kD30, kGunSpecs[0]),
+    gun_def(kD30, kGunSpecs[1]),
+    gun_def(kD30, kGunSpecs[2]),
+    gun_def(kD30, kGunSpecs[3]),
+    kSu34,
+    kA10,
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -1000,6 +1209,30 @@ std::span<const UnitTypeId> roster_of(StructureType building, Axis axis) {
     if (building == StructureType::ArmorBarracks) {
         return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocratic) : std::span<const UnitTypeId>(kAuthoritarian);
     }
+    // The artillery barracks: mortars, AGS, the towed howitzers, the SPGs, the rocket launchers.
+    static constexpr UnitTypeId kDemocraticGuns[] = {UnitTypeId::Mortar, UnitTypeId::Ags,     UnitTypeId::Howitzer, UnitTypeId::M777,
+                                                     UnitTypeId::Fh70,   UnitTypeId::Spg,     UnitTypeId::Akatsiya, UnitTypeId::M109,
+                                                     UnitTypeId::PzH2000, UnitTypeId::Caesar, UnitTypeId::K9,       UnitTypeId::Mlrs};
+    static constexpr UnitTypeId kAuthoritarianGuns[] = {UnitTypeId::Mortar, UnitTypeId::Ags,   UnitTypeId::Howitzer, UnitTypeId::MstaB,
+                                                        UnitTypeId::Giatsint, UnitTypeId::Spg, UnitTypeId::Akatsiya, UnitTypeId::MstaS,
+                                                        UnitTypeId::Pion,   UnitTypeId::Plz05, UnitTypeId::Mlrs};
+    if (building == StructureType::ArtilleryBarracks) {
+        return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocraticGuns) : std::span<const UnitTypeId>(kAuthoritarianGuns);
+    }
+    // The air defence barracks: MANPADS, the axis's AA guns, the radar.
+    static constexpr UnitTypeId kDemocraticAa[] = {UnitTypeId::Manpads, UnitTypeId::Gepard, UnitTypeId::Type87, UnitTypeId::K30,
+                                                   UnitTypeId::AirRadar};
+    static constexpr UnitTypeId kAuthoritarianAa[] = {UnitTypeId::Manpads, UnitTypeId::Shilka, UnitTypeId::Tunguska, UnitTypeId::Pantsir,
+                                                      UnitTypeId::Pgz09,   UnitTypeId::AirRadar};
+    if (building == StructureType::AirDefenseBarracks) {
+        return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocraticAa) : std::span<const UnitTypeId>(kAuthoritarianAa);
+    }
+    // The airfield: the Su-25 both, and each axis's own.
+    static constexpr UnitTypeId kDemocraticAir[] = {UnitTypeId::Su25, UnitTypeId::A10};
+    static constexpr UnitTypeId kAuthoritarianAir[] = {UnitTypeId::Su25, UnitTypeId::Su34};
+    if (building == StructureType::Airfield) {
+        return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocraticAir) : std::span<const UnitTypeId>(kAuthoritarianAir);
+    }
     const StructureDef& def = structure_type(building);
     return {def.roster.data(), def.roster_size};
 }
@@ -1061,9 +1294,9 @@ constexpr UpgradeDef kUpgrades[] = {
      .description = "The headquarters and command vehicles relay orders 50% farther",
      .building = StructureType::SignalsBarracks, .cost = {0, 0, 80, 0, 20}, .time = seconds(45)},
     {.name = "Radar tracking", .label = "Tracking",
-     .description = "Shilkas and MANPADS are 20% more accurate against aircraft",
+     .description = "Self-propelled AA guns and MANPADS are 20% more accurate against aircraft",
      .building = StructureType::AirDefenseBarracks, .cost = {0, 0, 100, 50, 0}, .time = seconds(50)},
-    {.name = "Cockpit armor", .label = "Armor", .description = "Su-25s take 30% less damage (about 40% tougher)",
+    {.name = "Cockpit armor", .label = "Armor", .description = "Attack aircraft take 30% less damage (about 40% tougher)",
      .building = StructureType::Airfield, .cost = {0, 0, 150, 0, 50}, .time = seconds(60)},
     {.name = "Tuned engines", .label = "Engine", .description = "Tanks, IFVs and APCs drive 15% faster",
      .building = StructureType::ArmorBarracks, .cost = {0, 0, 100, 0, 80}, .time = seconds(45)},
@@ -1095,5 +1328,7 @@ static_assert(std::size(kUpgrades) == kUpgradeCount);
 }  // namespace
 
 const UpgradeDef& upgrade_def(UpgradeId id) { return kUpgrades[static_cast<size_t>(id)]; }
+
+bool is_tube_artillery(const UnitTypeDef& def) { return def.weapon.indirect && ability_slot(def, AbilityId::Salvo) < 0; }
 
 }  // namespace engine

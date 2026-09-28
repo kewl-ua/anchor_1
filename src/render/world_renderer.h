@@ -136,7 +136,7 @@ private:
         int frames = 0;
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
-    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop };  // a tank's or an IFV's; a truck's and its radar
+    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop, Gun, Plane };  // a tank's or an IFV's; a truck's and its radar; a towed gun; an aircraft
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};
@@ -150,7 +150,7 @@ private:
     int kit(engine::VehicleModel model, engine::PlayerId owner) const;
     void bake_sprites(const engine::World& world) const;
     const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;
-    void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame) const;
+    void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint = WHITE) const;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;
     static constexpr int kRemembered = 1;  // explored, not in view now
