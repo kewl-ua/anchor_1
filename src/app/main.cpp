@@ -16,6 +16,7 @@
 #include "net/enet_session.h"
 #include "net/protocol.h"
 #include "render/convert.h"
+#include "theme/input.h"
 #include "theme/palette.h"
 
 namespace {
@@ -35,6 +36,9 @@ struct Options {
     // point (in tiles) instead of following the army.
     std::optional<Vector2> look;
     std::optional<float> zoom;  // smoke screenshots: camera zoom
+    // `--mouse x,y`: the smoke test's mouse held at this screen point (pixels):
+    // shows the cursor there and what hovering there does.
+    std::optional<Vector2> mouse;
     // `--reveal`: no fog of war on screen (the game itself still plays by it).
     bool reveal = false;
     // `--ticks n`: take the smoke screenshot at this tick.
@@ -556,6 +560,42 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const engine::EntityId gun = w.spawn_unit(me, UnitTypeId::Tank, ahead(7.0f, 0.0f));
         game.submit({.type = engine::CommandType::AttackGround, .units = {gun}, .target = ahead(15.0f, -1.0f)});
         return render::to_vector2(ahead(11.0f, 1.5f));
+    }
+
+    if (options.scene.starts_with("controls") && options.mode == Options::Mode::Offline) {
+        // Offline, out in the field: riflemen given a way with Shift (their
+        // queued orders' flags along it), a tank of ours by them, or
+        // (`controls_enemy`) an enemy truck. With --mouse over it: its
+        // outline, the cursor.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            d += 28.0f;
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(12.0f, 0.0f), 10);
+        const bool enemy = options.scene == "controls_enemy";
+        const float near = enemy ? 2.0f : 0.0f;  // (close enough to see it)
+        std::vector<engine::EntityId> men;
+        for (int i = 0; i < 4; ++i) {
+            men.push_back(w.spawn_unit(me, engine::UnitTypeId::Rifleman, ahead(9.0f + near, -4.5f + near + 0.8f * static_cast<float>(i))));
+        }
+        const engine::EntityId other = w.spawn_unit(enemy ? 1 - me : me, enemy ? engine::UnitTypeId::Truck : engine::UnitTypeId::Tank, ahead(12.0f, 0.0f));
+        engine::Unit* t = w.unit_for_setup(other);
+        t->facing = render::to_fixed_vec2({0.0f, -fwd});
+        t->hull = t->facing;
+        game.select_units(men);
+        game.submit({.type = engine::CommandType::Move, .units = men, .target = ahead(11.0f, -4.0f + near)});  // (a move: no shooting)
+        if (!enemy) {
+            const engine::FixedVec2 way[] = {ahead(14.0f, -3.0f), ahead(15.0f, 1.5f), ahead(12.0f, 3.5f)};
+            for (size_t i = 0; i < 3; ++i) {
+                game.submit({.type = i == 2 ? engine::CommandType::AttackMove : engine::CommandType::Move, .units = men,
+                             .target = way[i], .queued = true});
+            }
+        }
+        return render::to_vector2(ahead(12.0f, 0.0f));
     }
 
     if (options.scene == "tanks" && options.mode == Options::Mode::Offline) {
@@ -1739,6 +1779,16 @@ std::optional<Options> parse_args(int argc, char** argv) {
                 return std::nullopt;
             }
             opt.look = Vector2{static_cast<float>(x), static_cast<float>(y)};
+        } else if (arg == "--mouse" && has_next) {
+            const std::string xy = argv[++i];
+            const size_t comma = xy.find(',');
+            long x = 0;
+            long y = 0;
+            if (comma == std::string::npos || !parse_int(xy.substr(0, comma).c_str(), 0, 10000, x) ||
+                !parse_int(xy.substr(comma + 1).c_str(), 0, 10000, y)) {
+                return std::nullopt;
+            }
+            opt.mouse = Vector2{static_cast<float>(x), static_cast<float>(y)};
         } else if (arg == "--reveal") {
             opt.reveal = true;
         } else if (arg == "--scene" && has_next) {
@@ -1794,6 +1844,9 @@ int main(int argc, char** argv) {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
     InitWindow(1280, 720, "Anchor RTS");
     SetExitKey(KEY_F10);  // Esc is reserved for in-game cancel/menu
+    HideCursor();         // ours is drawn instead: its shape tells what a click would do
+    if (options->mouse) theme::g_fake_mouse = options->mouse;
+    const bool show_cursor = !smoke || options->mouse.has_value();
 
     // The session must outlive the game, which uses it as its transport.
     std::unique_ptr<net::EnetSession> session;
@@ -1802,6 +1855,7 @@ int main(int argc, char** argv) {
         case Options::Mode::Offline:
             game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr);
             game->set_reveal(options->reveal);
+            game->set_show_cursor(show_cursor);
             break;
         case Options::Mode::Host: session = net::EnetSession::host(options->port, seed, options->map_size); break;
         case Options::Mode::Join: session = net::EnetSession::join(options->address, options->port); break;
@@ -1818,6 +1872,7 @@ int main(int argc, char** argv) {
                 game.emplace(session->seed(), session->map_size(), session->local_player(), session->player_count(),
                              session.get());
                 game->set_reveal(options->reveal);
+                game->set_show_cursor(show_cursor);
             }
         }
 
@@ -1871,6 +1926,7 @@ int main(int argc, char** argv) {
             game->draw(net);
         } else {
             hud::draw_lobby_screen(session ? session->status() : std::string());
+            if (show_cursor && IsCursorOnScreen()) hud::draw_cursor(hud::Cursor::Arrow, theme::mouse_position());
         }
         EndDrawing();
 

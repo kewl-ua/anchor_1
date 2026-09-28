@@ -1,3 +1,4 @@
+#include "theme/input.h"
 #include "hud/hud.h"
 
 #include <algorithm>
@@ -239,29 +240,26 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
         DrawRectangleLinesEx(state.drag_rect, 1.0f, theme::kSelection);
     }
 
-    if (!state.targeting.empty()) {
-        const Vector2 m = GetMousePosition();
-        DrawCircleLinesV(m, 9.0f, theme::kDanger);
-        DrawLineV({m.x - 13, m.y}, {m.x + 13, m.y}, theme::kDanger);
-        DrawLineV({m.x, m.y - 13}, {m.x, m.y + 13}, theme::kDanger);
-        draw_text(TextFormat("%.*s", static_cast<int>(state.targeting.size()), state.targeting.data()), m.x + 14,
-                  m.y + 8, kSmallFontSize, theme::kDanger);
+    if (!state.targeting.empty()) {  // (the cursor's crosshairs show where)
+        const Vector2 m = theme::mouse_position();
+        draw_text(TextFormat("%.*s", static_cast<int>(state.targeting.size()), state.targeting.data()), m.x + 26,
+                  m.y + 16, kSmallFontSize, theme::kDanger);
     }
     if (!state.cursor_hint.empty()) {
         // By the cursor, like AoE's cursor changing over a tree or a mine.
-        const Vector2 m = GetMousePosition();
+        const Vector2 m = theme::mouse_position();
         const char* hint = TextFormat("%.*s", static_cast<int>(state.cursor_hint.size()), state.cursor_hint.data());
         const float w = static_cast<float>(MeasureText(hint, kCardFontSize));
-        const float x = std::min(m.x + 16, static_cast<float>(GetScreenWidth()) - w - 12);
-        const float y = m.y + (state.targeting.empty() ? 18.0f : 30.0f);
+        const float x = std::min(m.x + 30, static_cast<float>(GetScreenWidth()) - w - 12);  // clear of the cursor
+        const float y = m.y + (state.targeting.empty() ? 30.0f : 42.0f);
         DrawRectangleRec({x - 5, y - 3, w + 10, kCardFontSize + 6.0f}, {16, 18, 20, 210});
         draw_text(hint, x, y, kCardFontSize, theme::kText);
     }
     if (!state.placing.empty()) {
-        const Vector2 m = GetMousePosition();
+        const Vector2 m = theme::mouse_position();
         draw_text(TextFormat("%.*s: LMB to place, Shift for more, RMB cancels", static_cast<int>(state.placing.size()),
                              state.placing.data()),
-                  m.x + 16, m.y + 16, kSmallFontSize, theme::kText);
+                  m.x + 28, m.y + 22, kSmallFontSize, theme::kText);
     }
 
     const Layout l = layout();
@@ -269,6 +267,8 @@ void Hud::draw(const engine::World& world, const HudState& state) const {
     draw_banner(state.net);
     draw_bottom_panel(world, state, l);
     draw_minimap(world, state, l);
+    // Over everything: the cursor, its shape by what a click would do (over the panels, the arrow).
+    if (state.show_cursor && (theme::g_fake_mouse || IsCursorOnScreen())) draw_cursor(captures_point(theme::mouse_position()) ? Cursor::Arrow : state.cursor, theme::mouse_position());
 }
 
 namespace {
@@ -348,7 +348,7 @@ void Hud::draw_top_bar(const engine::World& world, const HudState& state, Rectan
 
     const float y = area.y + (area.height - kSmallFontSize) * 0.5f;
     float x = area.x + kPadding;
-    const Vector2 mouse = GetMousePosition();
+    const Vector2 mouse = theme::mouse_position();
 
     // Our stockpile first: it's what the player looks at most. Next to each
     // resource: the freight waiting for it at the station and the trucks on
@@ -573,7 +573,7 @@ std::optional<size_t> Hud::button_at(Vector2 p) const {
 // The grid: every cell with its hotkey in the corner; a cell cooling down
 // darkens from the top and clears as it gets ready.
 void Hud::draw_grid(const HudState& state, const engine::Stock& stock) const {
-    const Vector2 mouse = GetMousePosition();
+    const Vector2 mouse = theme::mouse_position();
     const CommandButton* hovered = nullptr;
     for (size_t slot = 0; slot < kGridSlots; ++slot) {
         const Rectangle r = button_rect(slot);
@@ -615,7 +615,7 @@ void Hud::draw_tooltip(const CommandButton& b, const engine::Stock& stock) const
     const float w = std::max(title_w, price_w) + 2 * 8;
     const float h = price[0] ? 44.0f : 28.0f;
     const Layout l = layout();
-    const float x = std::clamp(GetMousePosition().x - w * 0.5f, 4.0f, static_cast<float>(GetScreenWidth()) - w - 4);
+    const float x = std::clamp(theme::mouse_position().x - w * 0.5f, 4.0f, static_cast<float>(GetScreenWidth()) - w - 4);
     const Rectangle r{x, l.bottom_panel.y - h - 6, w, h};
     draw_panel(r);
     draw_text(title, r.x + 8, r.y + 7, kCardFontSize, theme::kText);

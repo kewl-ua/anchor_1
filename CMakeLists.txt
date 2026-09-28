@@ -119,6 +119,7 @@ target_link_libraries(render PUBLIC engine raylib PRIVATE theme)
 anchor_target_defaults(render)
 
 add_library(hud STATIC
+    src/hud/cursors.cpp
     src/hud/hud.cpp
 )
 target_link_libraries(hud PUBLIC engine raylib PRIVATE theme)

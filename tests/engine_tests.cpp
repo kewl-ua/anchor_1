@@ -5204,6 +5204,100 @@ void test_every_building_has_a_road() {
     }
 }
 
+// Shift, as in AoE II: orders queued after the one a unit is doing are done
+// in turn; the units given one together go together; an order without
+// Shift clears the queue; queued with nothing to do, it's done at once.
+void test_orders_queue_up() {
+    Simulation sim(1, TileMap(60, 30));
+    World& w = sim.world_for_setup();
+    const EntityId a = w.spawn_unit(0, UnitTypeId::Rifleman, at(5, 5));
+    const EntityId b = w.spawn_unit(0, UnitTypeId::Rifleman, at(5, 6));
+    issue(sim, make_move(0, {a, b}, 15, 5));
+    Command second = make_move(0, {a, b}, 15, 20);
+    second.queued = true;
+    Command third = make_move(0, {a}, 30, 20);
+    third.queued = true;
+    issue(sim, second);
+    issue(sim, third);
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->queued.size() == 2 && sim.world().find_unit(b)->queued.size() == 1);
+    // First to (15, 5), then (15, 20), then (30, 20); b stops at (15, 20).
+    bool first = false;
+    bool then = false;
+    for (int i = 0; i < 2000; ++i) {
+        sim.step();
+        const Unit* u = sim.world().find_unit(a);
+        if ((u->pos - at(15, 5)).length() < Fixed::from_int(2)) first = true;
+        if (first && (u->pos - at(15, 20)).length() < Fixed::from_int(2)) then = true;
+    }
+    CHECK(first && then);
+    CHECK((sim.world().find_unit(a)->pos - at(30, 20)).length() < Fixed::from_int(2));
+    CHECK((sim.world().find_unit(b)->pos - at(15, 20)).length() < Fixed::from_int(2));
+    CHECK(sim.world().find_unit(a)->queued.empty());
+
+    // A queued order to a unit with nothing to do: at once.
+    Command now = make_move(0, {b}, 20, 25);
+    now.queued = true;
+    issue(sim, now);
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(b)->order == Order::Move && sim.world().find_unit(b)->queued.empty());
+
+    // Without Shift: the queue's gone.
+    issue(sim, make_move(0, {a}, 40, 5));
+    Command more = make_move(0, {a}, 45, 5);
+    more.queued = true;
+    issue(sim, more);
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->queued.size() == 1);
+    issue(sim, make_move(0, {a}, 40, 25));
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->queued.empty());
+    for (int i = 0; i < 2000; ++i) sim.step();
+    CHECK((sim.world().find_unit(a)->pos - at(40, 25)).length() < Fixed::from_int(2));
+
+    // Stop: the queue's gone too.
+    issue(sim, make_move(0, {a}, 10, 25));
+    Command after = make_move(0, {a}, 10, 5);
+    after.queued = true;
+    issue(sim, after);
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->queued.size() == 1);
+    Command stop;
+    stop.type = CommandType::Stop;
+    stop.player = 0;
+    stop.units = {a};
+    issue(sim, stop);
+    for (int i = 0; i < 4; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->queued.empty() && sim.world().find_unit(a)->order == Order::Idle);
+}
+
+// Foundations laid with Shift go down at once; the rear trooper builds them one after the other.
+void test_queued_foundations() {
+    Simulation sim(1, TileMap(60, 30));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {10, 2000, 2000, 2000, 2000});
+    const EntityId worker = w.spawn_unit(0, UnitTypeId::Worker, at(10, 10));
+    auto site = [&](int x, int y) {
+        Command c = make_order(CommandType::Build, 0, {worker}, x, y);
+        c.structure_type = static_cast<uint8_t>(StructureType::Quarters);
+        c.queued = true;
+        return c;
+    };
+    issue(sim, site(14, 10));
+    issue(sim, site(20, 10));
+    for (int i = 0; i < 4; ++i) sim.step();
+    std::vector<EntityId> sites;
+    for (const Structure& s : sim.world().structures()) {
+        if (s.type == StructureType::Quarters) sites.push_back(s.id);
+    }
+    CHECK(sites.size() == 2);
+    if (sites.size() != 2) return;
+    CHECK(sim.world().find_unit(worker)->order == Order::Build && sim.world().find_unit(worker)->order_target == sites[0]);
+    CHECK(sim.world().find_unit(worker)->queued.size() == 1);
+    for (int i = 0; i < 6000 && !sim.world().find_structure(sites[1])->built; ++i) sim.step();
+    CHECK(sim.world().find_structure(sites[0])->built && sim.world().find_structure(sites[1])->built);
+}
+
 // A building put up by the rear troops gets a dirt track to it from the
 // nearest road, over the field (round a parapet in the way); none if the
 // nearest road's too far off.
@@ -6831,6 +6925,8 @@ int main() {
     test_highway_and_bridges();
     test_every_building_has_a_road();
     test_new_buildings_get_a_track();
+    test_orders_queue_up();
+    test_queued_foundations();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
     test_group_moves_at_slowest_speed();

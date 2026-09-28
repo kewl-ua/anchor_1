@@ -325,6 +325,8 @@ inline constexpr Fixed kTowerDfRange = Fixed::from_int(45);
 inline constexpr Tick kPostWork = 10 * kTicksPerSecond;
 // A building put up gets a dirt track to it from the nearest road this near.
 inline constexpr int32_t kTrackReach = 30;
+// Orders a unit can have queued up at most.
+inline constexpr size_t kMaxQueuedOrders = 20;
 inline constexpr int32_t kTreePostRange = 4;
 inline constexpr Fixed kTreePostEye = Fixed::from_int(2);
 inline constexpr uint8_t kUpperFloorLevels = 2;
@@ -485,6 +487,14 @@ struct Unit {
     std::vector<EntityId> passengers;
     std::vector<EntityId> riders;
     EntityId riding = 0;
+    // Orders queued after the one it's doing (Shift, as in AoE II), in turn:
+    // each the command as given (all the units it was given to, for the
+    // formation), its `group` the same for all of them.
+    struct Queued {
+        uint32_t group = 0;
+        Command cmd;
+    };
+    std::vector<Queued> queued;
 
     // Rear troops and trucks at work.
     TilePos gather_tile{};  // the forest or rock being worked
@@ -788,6 +798,13 @@ private:
     Structure* find_structure_mut(EntityId id);
     // A command carried out now: apply() has already sent couriers off.
     void deliver(const Command& cmd);
+    // What a command does, now (deliver() queues or clears the queues first).
+    void execute(const Command& cmd);
+    // Units done with what they were doing take their next queued order, those given it together together.
+    void take_queued_orders();
+    uint32_t queue_group_ = 0;
+    // Lays a building's foundation, paid (Build at a point); its id, 0 if it can't be.
+    EntityId lay_foundation(const Command& cmd);
     void apply_group_move(const Command& cmd, Order order);
     void apply_attack(const Command& cmd);
     void apply_attack_ground(const Command& cmd);

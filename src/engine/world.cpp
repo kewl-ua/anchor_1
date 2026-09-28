@@ -534,7 +534,62 @@ void World::apply(const Command& cmd) {
     deliver(cmd);
 }
 
+// As in AoE II: an order given with Shift is done after what the unit is
+// doing (and what's queued before it); given without, it clears the queue.
+// A foundation laid with Shift goes down at once, its builders queued to it.
 void World::deliver(const Command& cmd) {
+    // A new order (not Shift-queued) replaces what they had queued; so does Stop.
+    if (cmd.type == CommandType::Stop || (!cmd.queued && queueable(cmd.type))) {
+        for (EntityId id : cmd.units) {
+            if (Unit* u = find_unit_mut(id); u && u->owner == cmd.player) u->queued.clear();
+        }
+    }
+    if (cmd.units.empty() || !queueable(cmd.type) || !cmd.queued) return execute(cmd);
+    Command later = cmd;
+    later.queued = false;
+    if (cmd.type == CommandType::Build && cmd.target_unit == 0) {
+        bool builders = false;
+        for (EntityId id : cmd.units) {
+            const Unit* u = find_unit(id);
+            builders = builders || (u && u->owner == cmd.player && (unit_type(u->type).worker || unit_type(u->type).engineer));
+        }
+        if (!builders) return;
+        const EntityId site = lay_foundation(cmd);
+        if (site == 0) return;
+        later.target_unit = site;  // (to help build it, when it's their turn)
+    }
+    const uint32_t group = ++queue_group_;
+    Command now = later;
+    now.units.clear();
+    for (EntityId id : cmd.units) {
+        Unit* u = find_unit_mut(id);
+        if (!u || u->owner != cmd.player) continue;
+        if (u->order == Order::Idle && u->queued.empty()) {
+            now.units.push_back(id);
+        } else if (u->queued.size() < kMaxQueuedOrders) {
+            u->queued.push_back({group, later});
+        }
+    }
+    if (!now.units.empty()) execute(now);
+}
+
+void World::take_queued_orders() {
+    for (size_t i = 0; i < units_.size(); ++i) {
+        const Unit& first = units_[i];
+        if (first.queued.empty() || first.order != Order::Idle || first.hp <= 0) continue;
+        const uint32_t group = first.queued.front().group;
+        Command cmd = first.queued.front().cmd;
+        cmd.units.clear();
+        for (Unit& u : units_) {  // everyone given it together who's ready for it too
+            if (u.queued.empty() || u.order != Order::Idle || u.queued.front().group != group) continue;
+            cmd.units.push_back(u.id);
+            u.queued.erase(u.queued.begin());
+        }
+        execute(cmd);
+    }
+}
+
+void World::execute(const Command& cmd) {
     switch (cmd.type) {
         case CommandType::Move: apply_group_move(cmd, Order::Move); break;
         case CommandType::AttackMove: apply_group_move(cmd, Order::AttackMove); break;
@@ -681,6 +736,7 @@ void World::apply_stop(const Command& cmd) {
 
 void World::step() {
     update_couriers();
+    take_queued_orders();
     update_trains();
     update_rations();
     update_production();
@@ -1826,6 +1882,13 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.riders.size()));
         for (EntityId id : u.riders) mix(id);
         mix(u.riding);
+        mix(static_cast<uint32_t>(u.queued.size()));
+        for (const Unit::Queued& q : u.queued) {
+            mix(q.group);
+            mix(static_cast<uint32_t>(q.cmd.type));
+            mix_vec(q.cmd.target);
+            mix(q.cmd.target_unit);
+        }
         mix(static_cast<uint32_t>(u.gather_tile.x));
         mix(static_cast<uint32_t>(u.gather_tile.y));
         mix(static_cast<uint32_t>(u.carrying));

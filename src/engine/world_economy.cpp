@@ -233,18 +233,8 @@ void World::apply_build(const Command& cmd) {
             return;
         }
     } else {
-        // Lay a new foundation: paid up front, like in AoE II.
-        if (cmd.structure_type >= kStructureTypeCount) return;
-        const auto type = static_cast<StructureType>(cmd.structure_type);
-        const StructureDef& def = structure_type(type);
-        const TilePos origin = tile_of(cmd.target);
-        Stock& stock = stock_[cmd.player % kMaxPlayers];
-        if (!can_place(type, origin) || !can_afford(stock, def.cost)) return;
-        pay(stock, def.cost);
-        site = place_structure(type, cmd.player, origin, def.width, def.height);
-        Structure* s = find_structure_mut(site);
-        s->built = false;
-        s->hp = 1;
+        site = lay_foundation(cmd);
+        if (site == 0) return;
     }
 
     const Structure* s = find_structure(site);
@@ -260,6 +250,22 @@ void World::apply_build(const Command& cmd) {
         u->engaged = 0;
         u->work = 0;
     }
+}
+
+// A new foundation: paid up front, like in AoE II.
+EntityId World::lay_foundation(const Command& cmd) {
+    if (cmd.structure_type >= kStructureTypeCount) return 0;
+    const auto type = static_cast<StructureType>(cmd.structure_type);
+    const StructureDef& def = structure_type(type);
+    const TilePos origin = tile_of(cmd.target);
+    Stock& stock = stock_[cmd.player % kMaxPlayers];
+    if (!can_place(type, origin) || !can_afford(stock, def.cost)) return 0;
+    pay(stock, def.cost);
+    const EntityId site = place_structure(type, cmd.player, origin, def.width, def.height);
+    Structure* s = find_structure_mut(site);
+    s->built = false;
+    s->hp = 1;
+    return site;
 }
 
 void World::apply_train(const Command& cmd) {

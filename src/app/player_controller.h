@@ -92,6 +92,8 @@ public:
     // What a right click would do on whatever is under the cursor, for a
     // hint by it ("RMB: cut timber"); empty if nothing special.
     const char* cursor_hint() const { return hint_; }
+    // The cursor's shape for it, as AoE II's: a sword, an axe, a hammer...
+    hud::Cursor cursor() const { return cursor_; }
     bool targeting() const { return targeting_ != Targeting::None; }
     // The command grid for the current selection, for the HUD to draw.
     std::span<const hud::CommandButton> command_buttons() const { return buttons_; }
@@ -175,6 +177,13 @@ private:
     engine::EntityId section_ = 0;
     uint8_t section_kind_ = 0;
     const char* hint_ = "";      // see cursor_hint()
+    hud::Cursor cursor_ = hud::Cursor::Arrow;  // see cursor()
+    // Shift held: the orders given go to the end of the units' queues (AoE II's waypoints).
+    bool queue_next_ = false;
+    void send(net::Lockstep& lockstep, engine::Command cmd);
+    // What's under the cursor, outlined as AoE II does.
+    render::WorldRenderer::Hover hover_at(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse,
+                                          float alpha) const;
     void update_hint(const engine::World& world, const render::RtsCamera& camera, Vector2 mouse, float alpha);
     engine::StructureType converting_ = engine::StructureType::Warehouse;  // Targeting::Convert
     std::optional<Vector2> line_start_;  // a line skill being dragged: where it started

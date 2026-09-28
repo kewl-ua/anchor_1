@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <utility>
@@ -43,6 +44,18 @@ public:
     // Whose eyes the world is drawn through. `reveal` lifts the fog of war
     // (development and replays; it changes nothing in the game).
     void set_viewer(engine::PlayerId viewer, bool reveal);
+
+    // What's under the cursor, as in AoE II: drawn with a glowing outline
+    // round it (ours light, the enemy's red, the neutral ground's gold).
+    struct Hover {
+        engine::EntityId unit = 0;
+        engine::EntityId structure = 0;
+        std::optional<engine::TilePos> tile;  // a tree's, a rock's
+        Color color{255, 255, 255, 255};
+        Vector2 at{};  // the cursor on screen: the outline is worked out round it
+        bool any() const { return unit != 0 || structure != 0 || tile.has_value(); }
+    };
+    void set_hover(const Hover& hover) { hover_ = hover; }
 
     // Spawns effects for what happened since the last frame (impacts, deaths)
     // and ages them. Call once per frame after the simulation advanced.
@@ -368,6 +381,10 @@ private:
     // Yards of a village (not of the town or the works): earth and grass,
     // fences, woodpiles, wells, fruit trees. One per tile, found once per map.
     std::vector<uint8_t> village_;
+    Hover hover_{};
+    mutable RenderTexture2D hover_target_{};
+    mutable Shader outline_{};
+    mutable int outline_texel_loc_ = -1;
     // Each village's bus stop, on a yard by the road where it comes in,
     // facing the road (a kiosk by some); the house by it drawn as the
     // village shop.

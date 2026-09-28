@@ -9,6 +9,7 @@
 
 #include <raylib.h>
 
+#include "hud/cursors.h"
 #include "engine/world.h"
 
 namespace hud {
@@ -57,6 +58,8 @@ struct HudState {
     std::array<Vector2, 4> view_ground{};
     NetStatus net;
     bool reveal = false;  // fog of war lifted (development)
+    Cursor cursor = Cursor::Arrow;  // its shape: what a click would do there
+    bool show_cursor = true;        // (off for smoke tests' screenshots, unless the mouse is set)
 };
 
 // Screen-space UI. Reads the game state, never changes it: whatever a HUD

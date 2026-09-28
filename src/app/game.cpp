@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <optional>
 
+#include "theme/input.h"
 #include "engine/scenario.h"
 #include "render/convert.h"
 #include "render/iso.h"
@@ -79,7 +80,7 @@ void Game::update(float dt) {
 
     // Holding the left button on the minimap drags the camera around.
     // (With attack-move armed the click is an order instead.)
-    const Vector2 mouse = GetMousePosition();
+    const Vector2 mouse = theme::mouse_position();
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         minimap_drag_ = !controller_.targeting() && hud_.minimap_to_ground(mouse).has_value();
     }
@@ -128,6 +129,8 @@ void Game::draw(hud::NetStatus net) const {
         .view_ground = {ground_at({0, 0}), ground_at({w, 0}), ground_at({w, h}), ground_at({0, h})},
         .net = net,
         .reveal = reveal_,
+        .cursor = controller_.cursor(),
+        .show_cursor = show_cursor_,
     });
 }
 

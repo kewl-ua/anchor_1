@@ -50,6 +50,8 @@ public:
     void select_army_and_attack_move(Vector2 ground);
     // Lifts the fog of war on screen (the game itself still plays by it).
     void set_reveal(bool reveal);
+    // Our own cursor drawn (the system's hidden); off for smoke screenshots.
+    void set_show_cursor(bool show) { show_cursor_ = show; }
     // Offline smoke scenes only: a peer changing the world directly would desync.
     engine::World& world_for_setup() { return sim_.world_for_setup(); }
 
@@ -66,6 +68,7 @@ private:
     float stall_time_ = 0.0f;
     float time_scale_ = 1.0f;
     bool reveal_ = false;
+    bool show_cursor_ = true;
     bool minimap_drag_ = false;  // left button went down on the minimap
     engine::Tick tick_limit_ = std::numeric_limits<engine::Tick>::max();
 };

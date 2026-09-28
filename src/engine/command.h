@@ -52,6 +52,17 @@ struct Command {
     FixedVec2 target_end{};      // Ability along a line: its other end
     uint8_t upgrade = 0;         // Research: an UpgradeId
     uint8_t cargo = 0;           // Haul: kHaulKeep, kHaulAuto or haul_code(Resource) (economy.h)
+    // Shift held, as in AoE II: the units do it after what they're doing and
+    // what's queued before it, not instead (see World::deliver).
+    bool queued = false;
 };
+
+// Orders a unit can have queued up (the rest are done at once).
+inline bool queueable(CommandType t) {
+    return t == CommandType::Move || t == CommandType::AttackMove || t == CommandType::Attack ||
+           t == CommandType::AttackGround || t == CommandType::Garrison || t == CommandType::Gather ||
+           t == CommandType::Build || t == CommandType::Haul || t == CommandType::Observe || t == CommandType::Ability ||
+           t == CommandType::Supply || t == CommandType::Collect || t == CommandType::Retrain || t == CommandType::Unload;
+}
 
 }  // namespace engine

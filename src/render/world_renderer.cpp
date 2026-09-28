@@ -89,6 +89,31 @@ void main() {
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
 )";
+// The glowing outline round what's under the cursor: drawn over the screen
+// from a texture the thing alone was drawn into, where its silhouette isn't
+// but is close by: a bright line a couple of pixels wide, a glow fading out
+// beyond it. Its colour is the tint's.
+constexpr const char* kOutlineFragment = R"(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+uniform sampler2D texture0;
+uniform vec2 texel;
+out vec4 finalColor;
+void main() {
+    if (texture(texture0, fragTexCoord).a > 0.5) { finalColor = vec4(0.0); return; }
+    float nearest = 99.0;
+    for (int y = -5; y <= 5; ++y) {
+        for (int x = -5; x <= 5; ++x) {
+            float d = length(vec2(float(x), float(y)));
+            if (d > 5.5 || d >= nearest) continue;
+            if (texture(texture0, fragTexCoord + vec2(float(x), float(y)) * texel).a > 0.5) nearest = d;
+        }
+    }
+    float a = nearest <= 2.1 ? 1.0 : nearest > 5.5 ? 0.0 : 0.55 * (1.0 - (nearest - 2.1) / 3.4);
+    finalColor = vec4(fragColor.rgb, a * fragColor.a);
+}
+)";
+
 constexpr const char* kGrainFragment = R"(#version 330
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -7984,6 +8009,19 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
         grain_zoom_loc_ = GetShaderLocation(grain_, "zoom");
     }
+    if (hover_.any()) {  // (outside the 2D mode) the texture the hovered thing is drawn into, cleared
+        if (hover_target_.id == 0 || hover_target_.texture.width != GetScreenWidth() || hover_target_.texture.height != GetScreenHeight()) {
+            if (hover_target_.id != 0) UnloadRenderTexture(hover_target_);
+            hover_target_ = LoadRenderTexture(GetScreenWidth(), GetScreenHeight());
+        }
+        BeginTextureMode(hover_target_);
+        ClearBackground({0, 0, 0, 0});
+        EndTextureMode();
+    }
+    if (outline_.id == 0) {
+        outline_ = LoadShaderFromMemory(nullptr, kOutlineFragment);
+        outline_texel_loc_ = GetShaderLocation(outline_, "texel");
+    }
     bake_sprites(world);  // outside the 2D mode: it draws into a texture
     bake_trees();
     bake_buildings(world);
@@ -8278,7 +8316,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
         return -1;
     };
-    for (const Drawable& d : drawables) {
+    auto draw_drawable = [&](const Drawable& d) {
         g_light = d.light;
         set_grain(d.unit || d.projectile ? Grain{} : kObjectGrain);
         if (d.unit) {
@@ -8417,6 +8455,38 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             g_leaf = 1.0f;
             g_bare = 0.0f;
         }
+    };
+    // The one under the cursor: drawn again into a texture of its own, for its outline (after the rest).
+    auto hovered = [&](const Drawable& d) {
+        if (!hover_.any()) return false;
+        if (d.unit) return d.unit->id == hover_.unit;
+        const engine::Structure* s = d.barn ? d.barn : d.building ? d.building : d.post;
+        if (s) return s->id == hover_.structure;
+        if (!hover_.tile) return false;
+        if (d.rock) return d.house_x == hover_.tile->x && d.house_y == hover_.tile->y;
+        if (d.house_x < 0 && !d.projectile && !d.car && !d.wreck && !d.stop && !d.falling && !d.yard) {  // a tree
+            return static_cast<int>(std::floor(d.tree.ground.x)) == hover_.tile->x && static_cast<int>(std::floor(d.tree.ground.y)) == hover_.tile->y;
+        }
+        return false;
+    };
+    bool outlined = false;
+    auto into_hover = [&](const auto& draw_it) {
+        EndShaderMode();
+        EndMode2D();
+        BeginTextureMode(hover_target_);
+        BeginMode2D(camera.camera2d());
+        const float light = g_light;
+        draw_it();
+        g_light = light;
+        EndMode2D();
+        EndTextureMode();
+        BeginMode2D(camera.camera2d());
+        BeginShaderMode(grain_);
+        outlined = true;
+    };
+    for (const Drawable& d : drawables) {
+        draw_drawable(d);
+        if (hovered(d)) into_hover([&] { draw_drawable(d); });
     }
     g_light = 1.0f;
     set_grain({});
@@ -8429,7 +8499,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
 
     // Aircraft in the air: a shadow on the ground, the aircraft high above it.
     for (const engine::Unit& u : world.units()) {
-        if (u.airborne && shows(world, u)) draw_aircraft(map, u, alpha);
+        if (!u.airborne || !shows(world, u)) continue;
+        draw_aircraft(map, u, alpha);
+        if (u.id == hover_.unit) into_hover([&] { draw_aircraft(map, u, alpha); });
     }
     for (const Remains& r : remains_) {  // aircraft brought down, falling on fire, tumbling
         if (r.fell <= 0.0f) continue;
@@ -8487,6 +8559,23 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
 
     EndShaderMode();
     EndMode2D();
+    if (outlined) {  // the glow round what's under the cursor, pulsing a little
+        const auto sw = static_cast<float>(hover_target_.texture.width);
+        const auto sh = static_cast<float>(hover_target_.texture.height);
+        const float texel[2] = {1.0f / sw, 1.0f / sh};
+        SetShaderValue(outline_, outline_texel_loc_, texel, SHADER_UNIFORM_VEC2);
+        BeginShaderMode(outline_);
+        const float pulse = 0.78f + 0.22f * std::sin(static_cast<float>(GetTime()) * 5.0f);
+        // Worked out only round the cursor (the thing is under it): as far as the biggest
+        // building reaches at this zoom. (The texture's rows run bottom up: flipped.)
+        const float reach = 300.0f * camera.camera2d().zoom + 12.0f;
+        const float x0 = std::clamp(hover_.at.x - reach, 0.0f, sw);
+        const float x1 = std::clamp(hover_.at.x + reach, 0.0f, sw);
+        const float y0 = std::clamp(hover_.at.y - reach, 0.0f, sh);
+        const float y1 = std::clamp(hover_.at.y + reach, 0.0f, sh);
+        DrawTextureRec(hover_target_.texture, {x0, sh - y1, x1 - x0, -(y1 - y0)}, {x0, y0}, ColorAlpha(hover_.color, pulse));
+        EndShaderMode();
+    }
 }
 
 float WorldRenderer::corner_light(int cx, int cy) const {
@@ -9367,6 +9456,47 @@ void WorldRenderer::draw_orders(const engine::World& world, const engine::Unit& 
         }
         case engine::Order::Idle:
             break;
+    }
+    // Its queued orders (Shift, as in AoE II): a dotted way from where this
+    // one ends to each in turn, a little flag at each: green to go, red to
+    // fight, gold to work.
+    if (u.queued.empty()) return;
+    auto where = [&](const engine::Command& c) -> std::optional<Vector2> {
+        if (c.target_unit != 0) {
+            if (const engine::Structure* s = world.find_structure(c.target_unit)) return to_vector2(s->center);
+            if (const engine::Unit* t = world.find_unit(c.target_unit); t && shows(world, *t)) return unit_ground_pos(*t, alpha);
+        }
+        if (c.type == engine::CommandType::Unload || c.type == engine::CommandType::Retrain) return std::nullopt;
+        return to_vector2(c.target);
+    };
+    Vector2 last = unit_ground_pos(u, alpha);
+    if (u.order == engine::Order::Move || u.order == engine::Order::AttackMove || u.order == engine::Order::AttackGround ||
+        u.order == engine::Order::Observe || u.order == engine::Order::Collect || u.order == engine::Order::Ability) {
+        last = to_vector2(u.order_point);
+    } else if (const engine::Structure* s = world.find_structure(u.order_target);
+               s && (u.order == engine::Order::Build || u.order == engine::Order::Garrison)) {
+        last = to_vector2(s->center);
+    }
+    int n = 0;
+    for (const engine::Unit::Queued& q : u.queued) {
+        const std::optional<Vector2> at = where(q.cmd);
+        if (!at) continue;
+        const bool fight = q.cmd.type == engine::CommandType::Attack || q.cmd.type == engine::CommandType::AttackMove ||
+                           q.cmd.type == engine::CommandType::AttackGround;
+        const bool work = q.cmd.type == engine::CommandType::Build || q.cmd.type == engine::CommandType::Gather ||
+                          q.cmd.type == engine::CommandType::Collect || q.cmd.type == engine::CommandType::Haul;
+        const Color color = fight ? theme::kDanger : work ? Color{232, 190, 70, 255} : theme::kSelection;
+        const float len = std::hypot(at->x - last.x, at->y - last.y);
+        for (float t = 0.0f; t < len; t += 0.5f) {
+            const Vector2 a = lerp(last, *at, t / std::max(0.01f, len));
+            const Vector2 b = lerp(last, *at, std::min(len, t + 0.25f) / std::max(0.01f, len));
+            DrawLineV(on_terrain(map, a), on_terrain(map, b), ColorAlpha(color, 0.55f));
+        }
+        const Vector2 foot = on_terrain(map, *at);
+        DrawLineEx(foot, {foot.x, foot.y - 12.0f}, 1.4f, {60, 50, 40, 255});  // the flag
+        DrawTriangle({foot.x + 0.5f, foot.y - 12.0f}, {foot.x + 0.5f, foot.y - 7.0f}, {foot.x + 7.0f, foot.y - 9.5f}, color);
+        DrawText(TextFormat("%d", ++n), static_cast<int>(foot.x - 7.0f), static_cast<int>(foot.y - 13.0f), 8, {240, 240, 234, 255});
+        last = *at;
     }
 }
 

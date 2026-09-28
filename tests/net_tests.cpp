@@ -131,7 +131,7 @@ Command make_move(std::vector<EntityId> units, int32_t x, int32_t y) {
 bool same_command(const Command& a, const Command& b) {
     return a.type == b.type && a.units == b.units && a.target == b.target && a.target_unit == b.target_unit &&
            a.unit_type == b.unit_type && a.structure_type == b.structure_type && a.ability == b.ability &&
-           a.target_end == b.target_end && a.upgrade == b.upgrade && a.cargo == b.cargo;
+           a.target_end == b.target_end && a.upgrade == b.upgrade && a.cargo == b.cargo && a.queued == b.queued;
 }
 
 // --- Protocol ----------------------------------------------------------------
@@ -203,6 +203,7 @@ TickInput sample_input() {
     input.commands.push_back(shell);
     Command post = make_move({19}, 60, 61);
     post.type = CommandType::Observe;
+    post.queued = true;  // (Shift: after what they're doing)
     input.commands.push_back(post);
     Command skill = make_move({20, 21}, 62, 63);
     skill.type = CommandType::Ability;

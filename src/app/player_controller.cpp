@@ -7,6 +7,8 @@
 #include <optional>
 #include <utility>
 
+#include "theme/palette.h"
+#include "theme/input.h"
 #include "render/convert.h"
 #include "render/iso.h"
 
@@ -46,9 +48,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                               render::WorldRenderer& renderer, float alpha) {
     prune_selection(world);
 
-    const Vector2 mouse = GetMousePosition();
+    const Vector2 mouse = theme::mouse_position();
     const bool over_hud = hud.captures_point(mouse);
     const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    queue_next_ = shift;
 
     if (IsKeyPressed(KEY_ESCAPE)) {
         targeting_ = Targeting::None;
@@ -152,7 +155,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                    engine::structure_type(building->type).roster_size > 0 && (!over_hud || minimap_ground)) {
             // The building's rally point, like in AoE II: the units it hires go there.
             const Vector2 ground = over_hud ? *minimap_ground : ground_under(world, camera, mouse);
-            lockstep.submit({.type = engine::CommandType::Rally, .target = render::to_fixed_vec2(ground),
+            send(lockstep, {.type = engine::CommandType::Rally, .target = render::to_fixed_vec2(ground),
                              .target_unit = building->id});
             renderer.add_order_ping(ground, false);
         } else if (over_hud) {
@@ -182,8 +185,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                     if (!u) continue;
                     (engine::unit_type(u->type).supplies == engine::Resource::Ammo ? stock : move).units.push_back(id);
                 }
-                if (!stock.units.empty()) lockstep.submit(std::move(stock));
-                if (!move.units.empty()) lockstep.submit(std::move(move));
+                if (!stock.units.empty()) send(lockstep, std::move(stock));
+                if (!move.units.empty()) send(lockstep, std::move(move));
                 renderer.add_order_ping(render::to_vector2(structure->center), false);
             } else if (resource && !structure && (has_workers(world) || has_trucks(world))) {
                 // Rear troops go to work; anyone else selected just goes there.
@@ -206,9 +209,9 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                         (u->type == engine::UnitTypeId::Truck ? haul : move).units.push_back(id);
                     }
                 }
-                if (!refill.units.empty()) lockstep.submit(std::move(refill));
-                if (!haul.units.empty()) lockstep.submit(std::move(haul));
-                if (!move.units.empty()) lockstep.submit(std::move(move));
+                if (!refill.units.empty()) send(lockstep, std::move(refill));
+                if (!haul.units.empty()) send(lockstep, std::move(haul));
+                if (!move.units.empty()) send(lockstep, std::move(move));
                 renderer.add_order_ping(ground, false);
             } else if (structure && structure->owner == player_ && is_supply_point(engine::role_of(*structure)) &&
                        (has_trucks(world) ||
@@ -218,13 +221,11 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             } else if (structure && structure->type == engine::StructureType::Hospital && structure->owner == player_ &&
                        structure->built && has_foot_soldiers(world)) {
                 order_garrison(lockstep, structure->id);  // the wounded to their beds
+            } else if (structure && structure->owner != engine::kNoOwner && structure->owner != player_) {
+                // The enemy's (a house or dugout he holds, his headquarters...): shelled, as AoE II attacks a building.
+                order_attack_ground(lockstep, renderer, render::to_vector2(structure->center));
             } else if (structure && engine::is_shelter(engine::role_of(*structure))) {
-                // Our infantry moves in; a house or dugout the enemy holds gets shelled.
-                if (structure->owner == engine::kNoOwner || structure->owner == player_) {
-                    order_garrison(lockstep, structure->id);
-                } else {
-                    order_attack_ground(lockstep, renderer, render::to_vector2(structure->center));
-                }
+                order_garrison(lockstep, structure->id);  // our infantry moves in
             } else {
                 order_move(lockstep, renderer, ground);
             }
@@ -233,7 +234,48 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
     if (IsKeyPressed(KEY_F2)) select_army(world);
     rebuild_grid(world);  // what the HUD shows this frame
     hint_ = "";
-    if (!over_hud && !placing_) update_hint(world, camera, mouse, alpha);
+    cursor_ = hud::Cursor::Arrow;
+    render::WorldRenderer::Hover hover;
+    if (!over_hud && !placing_) {
+        update_hint(world, camera, mouse, alpha);
+        if (!dragging()) hover = hover_at(world, camera, mouse, alpha);
+    }
+    renderer.set_hover(hover);
+}
+
+void PlayerController::send(net::Lockstep& lockstep, engine::Command cmd) {
+    cmd.queued = queue_next_;
+    lockstep.submit(std::move(cmd));
+}
+
+render::WorldRenderer::Hover PlayerController::hover_at(const engine::World& world, const render::RtsCamera& camera,
+                                                        Vector2 mouse, float alpha) const {
+    constexpr Color kOurs{205, 255, 205, 255};
+    constexpr Color kTheirs = theme::kDanger;
+    constexpr Color kNobodys{236, 200, 90, 255};  // a village house, a tree, a rock
+    render::WorldRenderer::Hover hover;
+    hover.at = mouse;
+    const engine::Unit* u = unit_at(world, camera, mouse, alpha, false);
+    if (u && !u->inside) {
+        hover.color = u->owner == engine::kNoOwner ? kNobodys : kTheirs;
+    } else {
+        u = unit_at(world, camera, mouse, alpha, true);
+        hover.color = kOurs;
+    }
+    if (u && !u->inside) {
+        hover.unit = u->riding != 0 ? u->riding : u->id;  // one riding on the armor: with it
+        return hover;
+    }
+    if (const engine::Structure* s = render::structure_on_screen(camera, world, mouse)) {
+        hover.structure = s->id;
+        hover.color = s->owner == player_ ? kOurs : s->owner == engine::kNoOwner ? kNobodys : kTheirs;
+        return hover;
+    }
+    if (const std::optional<engine::TilePos> tile = render::resource_on_screen(camera, world, mouse)) {
+        hover.tile = *tile;
+        hover.color = kNobodys;
+    }
+    return hover;
 }
 
 // Like AoE's cursors: what a right click (or, aiming, a left click) would
@@ -242,6 +284,7 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
                                    float alpha) {
     const engine::Structure* s = render::structure_on_screen(camera, world, mouse);
     if (targeting_ == Targeting::Convert) {
+        cursor_ = s && world.can_convert(*s, player_) ? hud::Cursor::Build : hud::Cursor::Forbidden;
         if (!s) return;
         hint_ = world.can_convert(*s, player_)
                     ? TextFormat("Click: make it a %s", engine::structure_type(converting_).name)
@@ -249,7 +292,11 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
         return;
     }
     const std::optional<engine::TilePos> resource = render::resource_on_screen(camera, world, mouse);
+    auto tool_for = [&](engine::TilePos tile) {
+        return world.map().terrain(tile) == engine::Terrain::Rock ? hud::Cursor::Pick : hud::Cursor::Axe;
+    };
     if (targeting_ == Targeting::Gather) {
+        cursor_ = resource ? tool_for(*resource) : hud::Cursor::Forbidden;
         if (resource) {
             hint_ = TextFormat("Click: %s (%d left)",
                                world.map().terrain(*resource) == engine::Terrain::Rock ? "quarry stone" : "cut timber",
@@ -257,39 +304,50 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
         }
         return;
     }
-    if (targeting() || selection_.empty()) return;
+    if (targeting()) {
+        cursor_ = hud::Cursor::Target;
+        return;
+    }
+    if (selection_.empty()) return;
     if (const engine::Unit* enemy = unit_at(world, camera, mouse, alpha, false); enemy && !enemy->inside) {
         hint_ = "RMB: attack";
+        cursor_ = hud::Cursor::Attack;
         return;
     }
     const engine::Unit* own = unit_at(world, camera, mouse, alpha, true);
     if (own && engine::unit_type(own->type).troop_capacity > 0 && has_riders(world)) {
         hint_ = TextFormat("RMB: mount up (%d / %d aboard, %d / %d on the armor)", static_cast<int>(own->passengers.size()),
                            engine::unit_type(own->type).troop_capacity, static_cast<int>(own->riders.size()), engine::kRidersOnArmor);
+        cursor_ = hud::Cursor::Enter;
         return;
     }
     if (own && !own->inside && has_service_vehicles(world) &&
         !std::binary_search(selection_.begin(), selection_.end(), own->id)) {
         hint_ = TextFormat("RMB: attach to this %s: follow it, keep it supplied", engine::unit_type(own->type).name);
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     if (s && s->owner == player_ && !s->built && (has_workers(world) || has_engineers(world))) {
         hint_ = "RMB: help build";
+        cursor_ = hud::Cursor::Build;
         return;
     }
     if (s && has_ammo_trucks(world) && world.can_stock(*s, player_)) {
         hint_ = TextFormat("RMB: keep this %s stocked with ammunition (%d / %d)", engine::structure_type(s->type).name,
                            s->cache, engine::structure_type(s->type).cache_capacity);
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     const engine::StructureType role = s ? engine::role_of(*s) : engine::StructureType::Count;
     if (s && s->owner == player_ && refills_at(world, role)) {
         hint_ = "RMB: load up here from the stock";
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     if (s && s->type == engine::StructureType::Station && s->owner == player_ && !has_trucks(world) &&
         has_service_vehicles(world)) {
         hint_ = "RMB: haul what they carry from the station to the depots (the rail run)";
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     if (s && s->owner == player_ && is_supply_point(role) && has_trucks(world)) {
@@ -297,29 +355,40 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
         hint_ = cargo ? TextFormat("RMB: haul %s from the station to this %s", engine::resource_name(*cargo),
                                    engine::structure_type(role).name)
                       : "RMB: back on the supply run";
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     if (s && s->type == engine::StructureType::Hospital && s->owner == player_ && s->built && has_foot_soldiers(world)) {
         hint_ = TextFormat("RMB: into the hospital beds (%d / %d): healed, out when well",
                            static_cast<int>(s->garrison.size()), engine::structure_type(s->type).capacity);
+        cursor_ = hud::Cursor::Enter;
         return;
     }
     if (s && s->type == engine::StructureType::Workshop && s->owner == player_ && s->built && has_vehicles(world)) {
         hint_ = "RMB: to the workshop: parked by it, vehicles get repaired (a material a second each)";
+        cursor_ = hud::Cursor::Build;
+        return;
+    }
+    if (s && s->owner != engine::kNoOwner && s->owner != player_) {
+        hint_ = "RMB: shell it";
+        cursor_ = hud::Cursor::Attack;
         return;
     }
     if (s && engine::is_shelter(role)) {
-        hint_ = s->owner == engine::kNoOwner || s->owner == player_ ? "RMB: go in" : "RMB: shell it";
+        hint_ = "RMB: go in";
+        cursor_ = hud::Cursor::Enter;
         return;
     }
     if (resource && !s && has_trucks(world) && !has_workers(world)) {
         hint_ = "RMB: park by it; rear troops hand it their loads, it takes them in 40 at a time";
+        cursor_ = hud::Cursor::Supply;
         return;
     }
     if (resource && !s && has_workers(world)) {
         hint_ = TextFormat("RMB: %s (%d left), carry it in",
                            world.map().terrain(*resource) == engine::Terrain::Rock ? "quarry stone" : "cut timber",
                            world.map().resource(*resource));
+        cursor_ = tool_for(*resource);
     }
 }
 
@@ -757,7 +826,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Research: {
             engine::Command cmd{.type = engine::CommandType::Research, .target_unit = selected_structure_,
                                 .upgrade = cell.param};
-            lockstep.submit(std::move(cmd));
+            send(lockstep, std::move(cmd));
             break;
         }
         case Action::Upgrade:
@@ -765,7 +834,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             engine::Command cmd{.type = cell.action == Action::Upgrade ? engine::CommandType::Upgrade
                                                                       : engine::CommandType::Unload,
                                 .target_unit = selected_structure_};
-            lockstep.submit(std::move(cmd));
+            send(lockstep, std::move(cmd));
             break;
         }
         case Action::Shell: {
@@ -774,7 +843,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                 const engine::Unit* u = world.find_unit(id);
                 if (u && engine::unit_type(u->type).weapon.indirect) load.units.push_back(id);
             }
-            if (!load.units.empty()) lockstep.submit(std::move(load));
+            if (!load.units.empty()) send(lockstep, std::move(load));
             break;
         }
         case Action::Dismount: {
@@ -783,7 +852,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                 const engine::Unit* u = world.find_unit(id);
                 if (u && (!u->passengers.empty() || !u->riders.empty())) out.units.push_back(id);
             }
-            if (!out.units.empty()) lockstep.submit(std::move(out));
+            if (!out.units.empty()) send(lockstep, std::move(out));
             break;
         }
         case Action::Haul: {
@@ -795,7 +864,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                     haul.units.push_back(id);
                 }
             }
-            if (!haul.units.empty()) lockstep.submit(std::move(haul));
+            if (!haul.units.empty()) send(lockstep, std::move(haul));
             break;
         }
         case Action::Ability: {
@@ -816,7 +885,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
                     if (id == engine::AbilityId::RadioSilence && on_air && u->silent) continue;
                     cmd.units.push_back(unit_id);
                 }
-                if (!cmd.units.empty()) lockstep.submit(std::move(cmd));
+                if (!cmd.units.empty()) send(lockstep, std::move(cmd));
             } else {
                 targeting_ = Targeting::Ability;
                 aiming_ = id;
@@ -840,7 +909,7 @@ void PlayerController::order_ability(net::Lockstep& lockstep, const engine::Worl
         if (u && engine::ability_slot(engine::unit_type(u->type), ability) >= 0) cmd.units.push_back(id);
     }
     if (cmd.units.empty()) return;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
     renderer.add_order_ping(target, true);
 }
 
@@ -881,7 +950,7 @@ void PlayerController::order_convert(net::Lockstep& lockstep, const engine::Worl
         if (u && engine::unit_type(u->type).worker) cmd.units.push_back(id);
     }
     if (cmd.units.empty()) return;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
     renderer.add_order_ping(render::to_vector2(s->center), false);
 }
 
@@ -943,8 +1012,8 @@ void PlayerController::order_supply(net::Lockstep& lockstep, const engine::World
         if (!u) continue;
         (engine::unit_type(u->type).supplies != engine::Resource::Count ? supply : move).units.push_back(id);
     }
-    if (!supply.units.empty()) lockstep.submit(std::move(supply));
-    if (!move.units.empty()) lockstep.submit(std::move(move));
+    if (!supply.units.empty()) send(lockstep, std::move(supply));
+    if (!move.units.empty()) send(lockstep, std::move(move));
     renderer.add_order_ping(render::to_vector2(unit.pos), false);
 }
 
@@ -974,8 +1043,8 @@ void PlayerController::order_haul(net::Lockstep& lockstep, const engine::World& 
         const bool hauls = u->type == engine::UnitTypeId::Truck || engine::unit_type(u->type).supplies != engine::Resource::Count;
         (hauls ? haul : move).units.push_back(id);
     }
-    if (!haul.units.empty()) lockstep.submit(std::move(haul));
-    if (!move.units.empty()) lockstep.submit(std::move(move));
+    if (!haul.units.empty()) send(lockstep, std::move(haul));
+    if (!move.units.empty()) send(lockstep, std::move(move));
     renderer.add_order_ping(ground, false);
 }
 
@@ -1007,7 +1076,7 @@ void PlayerController::order_board(net::Lockstep& lockstep, const engine::World&
         const engine::Unit* u = world.find_unit(id);
         if (u && engine::can_ride(engine::unit_type(u->type))) board.units.push_back(id);
     }
-    lockstep.submit(std::move(board));
+    send(lockstep, std::move(board));
     renderer.add_order_ping(render::to_vector2(carrier.pos), false);
 }
 
@@ -1038,9 +1107,9 @@ void PlayerController::order_gather(net::Lockstep& lockstep, const engine::World
             move.units.push_back(id);
         }
     }
-    if (!gather.units.empty()) lockstep.submit(std::move(gather));
-    if (!collect.units.empty()) lockstep.submit(std::move(collect));
-    if (!move.units.empty()) lockstep.submit(std::move(move));
+    if (!gather.units.empty()) send(lockstep, std::move(gather));
+    if (!collect.units.empty()) send(lockstep, std::move(collect));
+    if (!move.units.empty()) send(lockstep, std::move(move));
     renderer.add_order_ping(ground, false);
 }
 
@@ -1048,7 +1117,7 @@ void PlayerController::order_retrain(net::Lockstep& lockstep) {
     engine::Command cmd;
     cmd.type = engine::CommandType::Retrain;
     cmd.units = selection_;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_train(net::Lockstep& lockstep, const engine::World& world, engine::UnitTypeId type) {
@@ -1058,7 +1127,7 @@ void PlayerController::order_train(net::Lockstep& lockstep, const engine::World&
     cmd.type = engine::CommandType::Train;
     cmd.target_unit = s->id;
     cmd.unit_type = static_cast<uint8_t>(type);
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_move(net::Lockstep& lockstep, render::WorldRenderer& renderer, Vector2 ground) {
@@ -1082,7 +1151,7 @@ void PlayerController::order_to_point(net::Lockstep& lockstep, render::WorldRend
     cmd.type = type;
     cmd.units = selection_;
     cmd.target = render::to_fixed_vec2(ground);
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
     renderer.add_order_ping(ground, type != engine::CommandType::Move);
 }
 
@@ -1105,7 +1174,7 @@ void PlayerController::order_attack(net::Lockstep& lockstep, engine::EntityId ta
     cmd.type = engine::CommandType::Attack;
     cmd.units = selection_;
     cmd.target_unit = target;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_garrison(net::Lockstep& lockstep, engine::EntityId structure) {
@@ -1114,7 +1183,7 @@ void PlayerController::order_garrison(net::Lockstep& lockstep, engine::EntityId 
     cmd.type = engine::CommandType::Garrison;
     cmd.units = selection_;
     cmd.target_unit = structure;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_build(net::Lockstep& lockstep, const Placement& placement) {
@@ -1123,7 +1192,7 @@ void PlayerController::order_build(net::Lockstep& lockstep, const Placement& pla
     cmd.units = selection_;
     cmd.target = engine::tile_center(placement.origin);
     cmd.structure_type = static_cast<uint8_t>(placement.type);
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_help_build(net::Lockstep& lockstep, engine::EntityId site) {
@@ -1131,7 +1200,7 @@ void PlayerController::order_help_build(net::Lockstep& lockstep, engine::EntityI
     cmd.type = engine::CommandType::Build;
     cmd.units = selection_;
     cmd.target_unit = site;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 void PlayerController::order_stop(net::Lockstep& lockstep) {
@@ -1139,16 +1208,16 @@ void PlayerController::order_stop(net::Lockstep& lockstep) {
     engine::Command cmd;
     cmd.type = engine::CommandType::Stop;
     cmd.units = selection_;
-    lockstep.submit(std::move(cmd));
+    send(lockstep, std::move(cmd));
 }
 
 bool PlayerController::dragging() const {
     if (!pressing_) return false;
-    const Vector2 m = GetMousePosition();
+    const Vector2 m = theme::mouse_position();
     return std::fabs(m.x - press_pos_.x) > kDragThreshold || std::fabs(m.y - press_pos_.y) > kDragThreshold;
 }
 
-Rectangle PlayerController::drag_rect() const { return rect_from_points(press_pos_, GetMousePosition()); }
+Rectangle PlayerController::drag_rect() const { return rect_from_points(press_pos_, theme::mouse_position()); }
 
 void PlayerController::prune_selection(const engine::World& world) {
     std::erase_if(selection_, [&](engine::EntityId id) {

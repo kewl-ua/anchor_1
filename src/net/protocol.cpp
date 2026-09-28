@@ -78,6 +78,7 @@ bool has_target_unit(engine::CommandType type) {
 
 void write_command(Writer& w, const engine::Command& cmd) {
     w.u8(static_cast<uint8_t>(cmd.type));
+    w.u8(cmd.queued ? 1 : 0);
     w.u16(static_cast<uint16_t>(cmd.units.size()));
     for (engine::EntityId id : cmd.units) w.u32(id);
     if (has_target_point(cmd.type)) {
@@ -102,6 +103,9 @@ std::optional<engine::Command> read_command(Reader& r) {
     const uint8_t type = r.u8();
     if (type > static_cast<uint8_t>(engine::CommandType::LoadShell)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
+    const uint8_t flags = r.u8();
+    if (flags > 1) return std::nullopt;
+    cmd.queued = flags != 0;
 
     const uint16_t count = r.u16();
     if (!r.ok() || count > kMaxUnitsPerCommand) return std::nullopt;
