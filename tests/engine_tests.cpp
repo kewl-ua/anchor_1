@@ -3029,15 +3029,18 @@ void test_service_vehicles_refill_at_depots() {
 }
 
 // A tanker hit with fuel aboard goes up and burns whatever stands next to it;
-// an empty one just stops.
+// an empty one just stops. So does a supply truck with fuel or ammunition
+// on it (the rounds cooking off); with food, timber, it just burns out.
 void test_tanker_goes_up_in_flames() {
-    auto neighbour_hurt = [](int32_t fuel_aboard) {
+    // (The neighbour a step off on the diagonal: burning fuel reaches it, a cook-off doesn't; `close`: right beside it.)
+    auto neighbour_hurt = [](int32_t fuel_aboard, UnitTypeId type = UnitTypeId::FuelTanker, Resource load = Resource::Fuel, bool close = false) {
         Simulation sim(1, TileMap(40, 20));
         World& w = sim.world_for_setup();
-        const EntityId tanker = w.spawn_unit(0, UnitTypeId::FuelTanker, at(10, 10));
+        const EntityId tanker = w.spawn_unit(0, type, at(10, 10));
         w.unit_for_setup(tanker)->hp = 1;
         w.unit_for_setup(tanker)->carrying = fuel_aboard;
-        const EntityId neighbour = w.spawn_unit(0, UnitTypeId::Truck, at(11, 11));
+        w.unit_for_setup(tanker)->carrying_type = load;
+        const EntityId neighbour = w.spawn_unit(0, UnitTypeId::Truck, at(11, close ? 10 : 11));
         w.spawn_unit(1, UnitTypeId::Rifleman, at(10, 5));
         for (int i = 0; i < 200 && sim.world().find_unit(tanker); ++i) sim.step();
         CHECK(sim.world().find_unit(tanker) == nullptr);
@@ -3048,6 +3051,11 @@ void test_tanker_goes_up_in_flames() {
     };
     CHECK(neighbour_hurt(100));
     CHECK(!neighbour_hurt(0));
+    CHECK(neighbour_hurt(20, UnitTypeId::Truck, Resource::Fuel));
+    CHECK(neighbour_hurt(20, UnitTypeId::Truck, Resource::Ammo, true));
+    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Ammo));  // (a cook-off reaches less far than burning fuel)
+    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Food, true));
+    CHECK(!neighbour_hurt(20, UnitTypeId::Truck, Resource::Materials, true));
 }
 
 // --- Artillery -----------------------------------------------------------------

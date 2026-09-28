@@ -411,7 +411,13 @@ constexpr float kVehicleScale = 1.25f;   // vehicles in pixel art: a little over
 // where; where its engine is (along, up).
 std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId owner);
 int truck_variant(TruckModel model, int wear, int sink, int load);
-int truck_load(const engine::Unit& u);
+// What a truck carries, as it shows: food in sacks; building materials
+// (boards, bricks, cement); logs from the wood; stone from the quarry;
+// ammunition in its boxes; shells; fuel in drums; a tanker's fuel (not seen).
+enum class Cargo : uint8_t { None, Sacks, Boards, Logs, Stone, Crates, Shells, Drums, Fuel, Count };
+Cargo cargo_of(const engine::World& world, const engine::Unit& u);
+int truck_load(Cargo c);  // the load its sprite shows (0: none)
+int wreck_load(Cargo c);  // what its wreck still shows of it
 bool truck_turns_top(TruckModel m);
 Vector2 truck_top_ring_of(TruckModel m);
 Vector2 truck_engine_of(TruckModel m);
@@ -1054,7 +1060,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (impact.tick < impacts_seen_until_ || !in_view(world, to_vector2(impact.pos))) continue;
         const float splash = to_float(impact.splash);
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
-        if (splash > 0.0f) spawn_burst(world, to_vector2(impact.pos), splash);
+        const bool fire = impact.shooter_type == engine::UnitTypeId::FuelTanker;  // a load going up: fire, not a shell's dust (drawn with the wreck)
+        if (splash > 0.0f && !fire) spawn_burst(world, to_vector2(impact.pos), splash);
     }
     impacts_seen_until_ = world.tick();
 
@@ -1148,6 +1155,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle, u.type, u.owner, unit(to_vector2(u.hull)),
                        unit(to_vector2(u.facing)), static_cast<uint32_t>(u.id) * 2654435761u,
                        u.mired * 4 >= engine::kBogLimit * 3};
+        alive[u.id].cargo = static_cast<uint8_t>(cargo_of(world, u));
     }
     for (const auto& [id, last] : units_seen_) {
         if (alive.contains(id) || world.find_unit(id)) continue;
@@ -1181,6 +1189,78 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 p.color = {30, 28, 26, 220};
                 particles_.push_back(p);
             }
+        }
+        const auto cargo = static_cast<Cargo>(last.cargo);
+        if (!last.sunk && (cargo == Cargo::Fuel || cargo == Cargo::Drums)) {
+            // The fuel going up: a white flash, a ball of flame boiling up and
+            // out, black smoke rolling up over it in a mushroom.
+            const float big = cargo == Cargo::Fuel ? 1.0f : 0.65f;
+            spawn_flash(last.ground, 10.0f, 22.0f * big, {255, 240, 190, 255});
+            spawn_sparks(last.ground, 10.0f, static_cast<int>(24.0f * big), {255, 190, 90, 255}, 2.0f);
+            for (int i = 0; i < static_cast<int>(70.0f * big); ++i) {  // the ball of it: out low and wide, up high in the middle
+                Particle p{};
+                p.kind = Particle::Kind::Flame;
+                const float a = fx_random() * 6.2831853f;
+                const float core = fx_random();
+                const float out = (0.3f + 0.9f * (1.0f - core)) * 0.9f * big;
+                p.ground = {last.ground.x + std::cos(a) * 0.2f, last.ground.y + std::sin(a) * 0.2f};
+                p.vel = {std::cos(a) * out, std::sin(a) * out};
+                p.z = 4.0f + 10.0f * fx_random();
+                p.vz = (15.0f + 70.0f * core) * big;
+                p.life = 0.8f + 0.9f * fx_random();
+                p.size = (6.0f + 7.0f * fx_random()) * (0.6f + 0.4f * big);
+                p.grow = 4.0f + 6.0f * fx_random();
+                p.color = {255, 210, 110, 240};
+                particles_.push_back(p);
+            }
+            for (int i = 0; i < static_cast<int>(22.0f * big); ++i) {
+                Particle p{};
+                p.kind = Particle::Kind::Smoke;
+                p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.4f, last.ground.y + (fx_random() - 0.5f) * 0.4f};
+                p.z = 16.0f + 20.0f * fx_random();
+                p.vel = {(fx_random() - 0.5f) * 0.5f, (fx_random() - 0.5f) * 0.5f};
+                p.vz = 30.0f + 30.0f * fx_random();
+                p.life = 4.0f + 2.0f * fx_random();
+                p.size = 5.0f + 3.0f * fx_random();
+                p.grow = 11.0f;
+                p.color = {24, 22, 20, 230};
+                particles_.push_back(p);
+            }
+            blasts_.push_back({last.ground, 0.0f, 1.2f * big});
+        }
+        if (!last.sunk && (cargo == Cargo::Crates || cargo == Cargo::Shells)) {
+            // The rounds going up: a blast that throws the bed apart, boxes
+            // and bits flying, burning.
+            spawn_flash(last.ground, 8.0f, 18.0f, {255, 236, 170, 255});
+            spawn_sparks(last.ground, 8.0f, 40, {255, 200, 100, 255}, 3.0f);
+            for (int i = 0; i < 14; ++i) {
+                Particle p{};
+                p.kind = Particle::Kind::Clod;  // bits of it, boxes, planks
+                const float a = fx_random() * 6.2831853f;
+                const float v = 1.2f + 2.2f * fx_random();
+                p.ground = last.ground;
+                p.vel = {std::cos(a) * v, std::sin(a) * v};
+                p.z = 6.0f;
+                p.vz = 50.0f + 60.0f * fx_random();
+                p.life = 1.4f + 0.8f * fx_random();
+                p.size = 1.5f + 1.5f * fx_random();
+                p.color = i % 3 == 0 ? Color{88, 100, 64, 255} : i % 3 == 1 ? Color{150, 116, 76, 255} : Color{40, 36, 32, 255};
+                particles_.push_back(p);
+            }
+            for (int i = 0; i < 12; ++i) {
+                Particle p{};
+                p.kind = Particle::Kind::Smoke;
+                p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.3f, last.ground.y + (fx_random() - 0.5f) * 0.3f};
+                p.z = 10.0f + 8.0f * fx_random();
+                p.vel = {(fx_random() - 0.5f) * 0.4f, (fx_random() - 0.5f) * 0.4f};
+                p.vz = 26.0f + 16.0f * fx_random();
+                p.life = 3.0f + 1.5f * fx_random();
+                p.size = 4.0f + 2.0f * fx_random();
+                p.grow = 9.0f;
+                p.color = {46, 42, 38, 220};
+                particles_.push_back(p);
+            }
+            spawn_burst(world, last.ground, 0.9f);
         }
         if (last.vehicle) {
             const engine::Terrain under =
@@ -1230,6 +1310,86 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             const Vector2 spot{r.ground.x + (fx_random() - 0.5f) * 0.5f, r.ground.y + (fx_random() - 0.5f) * 0.5f};
             spawn_flash(spot, 10.0f, 5.0f, {255, 226, 150, 255});
             spawn_sparks(spot, 10.0f, 8, {255, 200, 100, 255}, 1.4f);
+        }
+        const auto cargo = static_cast<Cargo>(r.cargo);
+        if ((cargo == Cargo::Fuel || cargo == Cargo::Drums) && r.age < 45.0f) {
+            // The fuel burning: flames roaring up off the length of it, black smoke thick over it...
+            const float heat = (cargo == Cargo::Fuel ? 1.0f : 0.6f) * (r.age < 30.0f ? 1.0f : (45.0f - r.age) / 15.0f);
+            for (const float t : {-0.35f, 0.0f, 0.3f}) {
+                if (fx_random() > heat) continue;
+                const Vector2 at{r.ground.x + r.facing.x * t, r.ground.y + r.facing.y * t};
+                if (fx_random() < dt * 14.0f) {
+                    Particle p{};
+                    p.kind = Particle::Kind::Flame;
+                    p.ground = {at.x + (fx_random() - 0.5f) * 0.2f, at.y + (fx_random() - 0.5f) * 0.2f};
+                    p.z = 8.0f + 3.0f * fx_random();
+                    p.vz = 22.0f + 16.0f * fx_random();
+                    p.life = 0.5f + 0.35f * fx_random();
+                    p.size = 3.0f + 2.5f * fx_random();
+                    p.grow = -2.0f;
+                    p.color = {255, 200, 80, 230};
+                    particles_.push_back(p);
+                }
+                if (fx_random() < dt * 4.0f) {
+                    Particle p{};
+                    p.kind = Particle::Kind::Smoke;
+                    p.ground = at;
+                    p.z = 18.0f;
+                    p.vel = {0.15f + (fx_random() - 0.5f) * 0.1f, -0.1f + (fx_random() - 0.5f) * 0.1f};
+                    p.vz = 22.0f + 10.0f * fx_random();
+                    p.life = 3.5f + 1.5f * fx_random();
+                    p.size = 4.0f + 2.0f * fx_random();
+                    p.grow = 7.0f;
+                    p.color = {26, 24, 22, 220};
+                    particles_.push_back(p);
+                }
+            }
+            // ...and the fuel run out burning in a pool round it for a while.
+            if (r.age < 20.0f && fx_random() < dt * 18.0f * heat * (1.0f - r.age / 20.0f)) {
+                const float a = fx_random() * 6.2831853f;
+                const float d = std::sqrt(fx_random()) * 0.8f;
+                Particle p{};
+                p.kind = Particle::Kind::Flame;
+                p.ground = {r.ground.x + std::cos(a) * d, r.ground.y + std::sin(a) * d * 0.9f};
+                p.z = 0.5f;
+                p.vz = 10.0f + 8.0f * fx_random();
+                p.life = 0.45f + 0.3f * fx_random();
+                p.size = 2.0f + 2.0f * fx_random();
+                p.grow = -1.5f;
+                p.color = {255, 190, 70, 220};
+                particles_.push_back(p);
+            }
+        }
+        if ((cargo == Cargo::Crates || cargo == Cargo::Shells) && r.age < 16.0f) {
+            // The rounds cooking off in the fire: pops, sparks, a round flying
+            // off burning now and then, now and then a bigger one going.
+            const float rate = 3.2f * (1.0f - r.age / 16.0f) + 0.4f;
+            if (fx_random() < dt * rate) {
+                const Vector2 spot{r.ground.x + (fx_random() - 0.5f) * 0.5f, r.ground.y + (fx_random() - 0.5f) * 0.5f};
+                const float z = 5.0f + 6.0f * fx_random();
+                spawn_flash(spot, z, 4.0f + 5.0f * fx_random(), {255, 226, 150, 255});
+                spawn_sparks(spot, z, 6, {255, 200, 100, 255}, 1.6f);
+                if (fx_random() < 0.4f) {
+                    Particle p{};
+                    p.kind = Particle::Kind::Spark;
+                    const float a = fx_random() * 6.2831853f;
+                    const float v = 2.5f + 3.0f * fx_random();
+                    p.ground = spot;
+                    p.z = z;
+                    p.vel = {std::cos(a) * v, std::sin(a) * v};
+                    p.vz = 60.0f + 60.0f * fx_random();
+                    p.life = 0.9f + 0.6f * fx_random();
+                    p.size = 1.5f;
+                    p.color = {255, 214, 130, 255};
+                    particles_.push_back(p);
+                }
+                if (fx_random() < (cargo == Cargo::Shells ? 0.22f : 0.1f)) {
+                    spawn_flash(spot, 8.0f, 14.0f, {255, 236, 170, 255});
+                    spawn_sparks(spot, 8.0f, 16, {255, 190, 90, 255}, 2.4f);
+                    spawn_burst(world, spot, 0.5f);
+                    blasts_.push_back({spot, 0.0f, 0.5f});
+                }
+            }
         }
         const Vector2 e = truck ? truck_engine_of(*truck) : small ? Vector2{0.0f, 3.0f} : armor_engine(engine::unit_type(r.type).model);
         const Vector2 along = truck ? r.facing : r.hull;
@@ -8205,7 +8365,9 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
 
     if (const std::optional<TruckModel> truck = truck_model(type, u.owner)) {
         const int wear = wear_of(u.hp, type_def.max_hp);
-        const SpriteSheet* body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, truck_load(u)), u.owner);
+        const auto seen = units_seen_.find(u.id);
+        const int load = seen != units_seen_.end() ? truck_load(static_cast<Cargo>(seen->second.cargo)) : 0;
+        const SpriteSheet* body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, load), u.owner);
         if (!body) body = sheet(SpritePart::TruckBody, truck_variant(*truck, wear, 0, 0), u.owner);
         if (body) {
             const int frame = u.deployed ? 1 : 0;  // set up: masts raised, jacks down, the launcher up
@@ -10282,9 +10444,9 @@ std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId 
     }
 }
 
-// A truck's sprite sheets by its wear, how far it's sunk, its load (0: none, else the resource + 1).
+// A truck's sprite sheets by its wear, how far it's sunk, its load (a Cargo).
 int truck_variant(TruckModel model, int wear, int sink, int load) {
-    return ((static_cast<int>(model) * 6 + wear) * 5 + sink) * 6 + load;
+    return ((static_cast<int>(model) * 6 + wear) * 5 + sink) * 10 + load;
 }
 
 // Where a truck's parts are: its axles, its cab (along, its back and its
@@ -10402,6 +10564,211 @@ struct Whip {
     Vector2 foot;
     int length;
 };
+
+// A truck's load on its bed from a0 (its back) to a1 along it, `c` either
+// side, on its floor at z: sacks of flour and grain; boards, a pallet of
+// bricks, bags of cement; logs, their cut ends to the back, stakes holding
+// them; stone; green ammunition boxes stacked; long shell crates, a row of
+// shells standing; drums. Burnt (a wreck's): charred, what's left of it.
+void draw_cargo(const Frame& fr, Cargo cargo, float a0, float a1, float c, float z, bool burnt, uint32_t seed) {
+    enum Kind : uint8_t { Box, Sack, Drum, Log, Shell, Stone, AmmoBox, ShellCrate };
+    struct Item {
+        int layer;
+        float a0, a1, c0, c1, z0, z1;
+        Color color;
+        Kind kind;
+    };
+    std::vector<Item> items;
+    auto rnd = [&](int i) { return rand01(seed, i); };
+    auto charred = [&](Color col) { return burnt ? shade(mix(col, {44, 36, 30, 255}, 0.75f), 0.85f) : col; };
+    const float len = a1 - a0;
+    const float wid = 2.0f * c;
+    auto cell = [&](int i, int n, int j, int m, float fill_a, float fill_c) {  // a grid cell's bounds, a little in from its neighbours
+        const float da = len / static_cast<float>(n);
+        const float dc = wid / static_cast<float>(m);
+        const float ma = a0 + da * (static_cast<float>(i) + 0.5f);
+        const float mc = -c + dc * (static_cast<float>(j) + 0.5f);
+        return std::array<float, 4>{ma - da * fill_a * 0.5f, ma + da * fill_a * 0.5f, mc - dc * fill_c * 0.5f, mc + dc * fill_c * 0.5f};
+    };
+    switch (cargo) {
+        case Cargo::Sacks: {  // two layers, lying across; burlap and white flour sacks, a box of tins
+            for (int layer = 0; layer < (burnt ? 1 : 2); ++layer) {
+                for (int i = 0; i < 4; ++i) {
+                    for (int j = 0; j < 3 - layer; ++j) {
+                        if (burnt && rnd(i * 7 + j) < 0.5f) continue;
+                        const auto b = cell(i, 4, j + (layer ? 0 : 0), 3 - layer, 0.9f, 0.88f);
+                        const float lift = static_cast<float>(layer) * 2.2f;
+                        const Color col = (i + j + layer) % 3 == 0 ? Color{214, 208, 190, 255} : Color{176, 156, 112, 255};
+                        items.push_back({layer, b[0], b[1], b[2], b[3], z + lift, z + lift + 2.3f - (burnt ? 1.0f : 0.0f), charred(col), Sack});
+                    }
+                }
+            }
+            break;
+        }
+        case Cargo::Boards: {  // boards along the back, a pallet of bricks and bags of cement at the front
+            const float split = a0 + len * 0.55f;
+            for (int layer = 0; layer < (burnt ? 1 : 3); ++layer) {
+                for (int j = 0; j < 5; ++j) {
+                    const float dc = wid / 5.0f;
+                    const float c0 = -c + dc * static_cast<float>(j) + dc * 0.06f;
+                    const float lift = static_cast<float>(layer) * 1.1f;
+                    items.push_back({layer, a0 - 0.02f, split, c0, c0 + dc * 0.88f, z + lift, z + lift + 1.0f,
+                                     charred(shade({190, 150, 98, 255}, 0.9f + 0.2f * rnd(20 + layer * 5 + j))), Box});
+                }
+            }
+            if (!burnt) {
+                items.push_back({0, split + 0.02f, split + (a1 - split) * 0.55f, -c + 0.01f, c - 0.01f, z, z + 0.8f, {150, 116, 76, 255}, Box});  // the pallet
+                items.push_back({1, split + 0.03f, split + (a1 - split) * 0.53f, -c + 0.03f, c - 0.03f, z + 0.8f, z + 4.2f, {160, 84, 60, 255}, Box});  // bricks
+                for (int j = 0; j < 2; ++j) {
+                    const auto b = cell(0, 1, j, 2, 1.0f, 0.85f);
+                    items.push_back({0, split + (a1 - split) * 0.6f, a1 - 0.01f, b[2], b[3], z, z + 2.0f, {150, 148, 142, 255}, Sack});  // cement
+                    items.push_back({1, split + (a1 - split) * 0.62f, a1 - 0.03f, b[2] + 0.01f, b[3] - 0.01f, z + 2.0f, z + 4.0f, {160, 158, 150, 255}, Sack});
+                }
+            }
+            break;
+        }
+        case Cargo::Logs: {  // five logs, three and two, longer than the bed; stakes up its sides
+            const float r = wid / 6.0f;
+            const float rz = 2.4f;
+            for (int layer = 0; layer < (burnt ? 1 : 2); ++layer) {
+                const int n = layer == 0 ? 3 : 2;
+                for (int j = 0; j < n; ++j) {
+                    const float mc = -c + r + (layer == 0 ? 2.0f * r * static_cast<float>(j) : r + 2.0f * r * static_cast<float>(j)) + (layer == 0 ? 0.0f : 0.0f);
+                    const float lift = static_cast<float>(layer) * rz * 1.7f;
+                    const float over = 0.05f + 0.06f * rnd(40 + layer * 3 + j);  // out over the back
+                    items.push_back({layer, a0 - over, a1 - 0.02f, mc - r * 0.95f, mc + r * 0.95f, z + lift, z + lift + rz * 2.0f,
+                                     charred(shade({104, 80, 56, 255}, 0.9f + 0.2f * rnd(50 + layer * 3 + j))), Log});
+                }
+            }
+            for (const float side : {-1.0f, 1.0f}) {  // the stakes
+                for (int k = 0; k < 3; ++k) {
+                    const float a = a0 + len * (0.15f + 0.35f * static_cast<float>(k));
+                    items.push_back({0, a - 0.012f, a + 0.012f, side * c - 0.012f, side * c + 0.012f, z, z + 8.0f, charred({92, 70, 50, 255}), Box});
+                }
+            }
+            break;
+        }
+        case Cargo::Stone: {  // a heap of broken stone, higher in the middle
+            for (int i = 0; i < 12; ++i) {
+                const float ma = a0 + len * (0.1f + 0.8f * rnd(60 + i));
+                const float mc = -c * 0.85f + wid * 0.85f * rnd(70 + i);
+                const float s = 0.035f + 0.03f * rnd(80 + i);
+                const float middle = 1.0f - std::fabs(mc) / c;
+                const float lift = middle * 2.0f * rnd(90 + i);
+                items.push_back({i < 6 ? 0 : 1, ma - s, ma + s, mc - s * 0.8f, mc + s * 0.8f, z + lift, z + lift + 1.5f + 2.0f * rnd(100 + i),
+                                 charred(shade({140, 136, 128, 255}, 0.8f + 0.35f * rnd(110 + i))), Stone});
+            }
+            break;
+        }
+        case Cargo::Crates: {  // green ammunition boxes, three by two, two high
+            if (burnt) break;
+            for (int layer = 0; layer < 2; ++layer) {
+                for (int i = 0; i < 3; ++i) {
+                    for (int j = 0; j < 2; ++j) {
+                        if (layer == 1 && i == 0 && j == 1) continue;
+                        const auto b = cell(i, 3, j, 2, 0.9f, 0.9f);
+                        const float lift = static_cast<float>(layer) * 2.6f;
+                        items.push_back({layer, b[0], b[1], b[2], b[3], z + lift, z + lift + 2.5f, shade({88, 100, 64, 255}, 0.92f + 0.14f * rnd(120 + i * 3 + j)), AmmoBox});
+                    }
+                }
+            }
+            break;
+        }
+        case Cargo::Shells: {  // at the back the shells standing in rows; long wooden shell crates stacked at the front, the lids off the top ones
+            if (burnt) break;
+            const float split = a0 + len * 0.42f;
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 4; ++j) {
+                    const float ma = a0 + (split - a0) * (static_cast<float>(i) + 0.5f) / 3.0f;
+                    const float mc = -c + wid * (static_cast<float>(j) + 0.5f) / 4.0f;
+                    items.push_back({0, ma - 0.028f, ma + 0.028f, mc - 0.028f, mc + 0.028f, z, z + 5.2f, {112, 112, 80, 255}, Shell});
+                }
+            }
+            for (int layer = 0; layer < 2; ++layer) {
+                for (int j = 0; j < 3; ++j) {
+                    const float dc = wid / 3.0f;
+                    const float c0 = -c + dc * static_cast<float>(j) + dc * 0.07f;
+                    const float lift = static_cast<float>(layer) * 2.2f;
+                    items.push_back({layer, split + 0.02f, a1, c0, c0 + dc * 0.86f, z + lift, z + lift + 2.1f,
+                                     shade({170, 130, 84, 255}, 0.9f + 0.15f * rnd(130 + j + layer * 3)), layer == 1 ? ShellCrate : Box});
+                }
+            }
+            break;
+        }
+        case Cargo::Drums: {  // drums standing, two rows; blue, red, green; burnt, some knocked over
+            for (int i = 0; i < 4; ++i) {
+                for (int j = 0; j < 2; ++j) {
+                    if (burnt && rnd(140 + i * 2 + j) < 0.3f) continue;
+                    const auto b = cell(i, 4, j, 2, 0.9f, 0.9f);
+                    static constexpr Color kDrums[3] = {{60, 90, 130, 255}, {150, 60, 46, 255}, {70, 100, 70, 255}};
+                    items.push_back({0, b[0], b[1], b[2], b[3], z, z + 4.4f, charred(kDrums[(i + j * 2) % 3]), Drum});
+                }
+            }
+            break;
+        }
+        default: break;
+    }
+    // Back to front, bottom to top.
+    std::sort(items.begin(), items.end(), [&](const Item& p, const Item& q) {
+        if (p.layer != q.layer) return p.layer < q.layer;
+        return fr.at((p.a0 + p.a1) * 0.5f, (p.c0 + p.c1) * 0.5f).y < fr.at((q.a0 + q.a1) * 0.5f, (q.c0 + q.c1) * 0.5f).y;
+    });
+    const Vector2 back = fr.ground_of(-1.0f, 0.0f);
+    const bool back_near = back.x + back.y > 0.02f;
+    for (const Item& it : items) {
+        const float ma = (it.a0 + it.a1) * 0.5f;
+        const float mc = (it.c0 + it.c1) * 0.5f;
+        switch (it.kind) {
+            case Box: block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color); break;
+            case ShellCrate: {  // its lid off: the two shells in it, olive, their noses
+                block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color);
+                for (const float t : {0.3f, 0.7f}) {
+                    const float cc = it.c0 + (it.c1 - it.c0) * t;
+                    DrawLineEx(fr.at(it.a0 + 0.02f, cc, it.z1), fr.at(it.a1 - 0.03f, cc, it.z1), 1.2f, lit({112, 112, 80, 255}));
+                    DrawPixelV(fr.at(it.a1 - 0.025f, cc, it.z1), lit({160, 160, 130, 255}));
+                    DrawPixelV(fr.at(it.a0 + 0.04f, cc, it.z1), lit({196, 160, 70, 255}));
+                }
+                break;
+            }
+            case AmmoBox:
+                block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color);
+                DrawLineV(fr.at(ma, it.c0 + 0.005f, it.z1), fr.at(ma, it.c1 - 0.005f, it.z1), lit(shade(it.color, 0.45f)));  // its lid's seam
+                DrawLineV(fr.at(it.a0 + 0.01f, it.c1, it.z1 - 0.9f), fr.at(it.a1 - 0.01f, it.c1, it.z1 - 0.9f), lit(shade(it.color, 0.55f)));  // its band
+                DrawPixelV(fr.at(it.a0 + (it.a1 - it.a0) * 0.3f, it.c1, it.z0 + 1.2f), lit({206, 180, 70, 255}));             // its marking
+                break;
+            case Sack: block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color, 0.012f, 0.012f, 0.018f); break;
+            case Stone: block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color, 0.01f * rnd(200 + static_cast<int>(ma * 100.0f)), 0.012f, 0.012f); break;
+            case Drum:
+                round_solid(fr, ma, mc, (it.a1 - it.a0) * 0.5f, (it.c1 - it.c0) * 0.5f, it.z0, it.z1, it.color, 0.0f, 10);
+                DrawLineV(fr.at(ma - (it.a1 - it.a0) * 0.3f, mc, it.z1), fr.at(ma + (it.a1 - it.a0) * 0.3f, mc, it.z1), lit(shade(it.color, 0.7f)));  // its bung
+                break;
+            case Shell:
+                round_solid(fr, ma, mc, (it.a1 - it.a0) * 0.5f, (it.c1 - it.c0) * 0.5f, it.z0, it.z1 - 1.4f, it.color, 0.0f, 8);
+                round_solid(fr, ma, mc, (it.a1 - it.a0) * 0.45f, (it.c1 - it.c0) * 0.45f, it.z1 - 1.4f, it.z1, {150, 150, 110, 255}, 0.75f, 8);  // its nose
+                round_solid(fr, ma, mc, (it.a1 - it.a0) * 0.52f, (it.c1 - it.c0) * 0.52f, it.z0 + 0.8f, it.z0 + 1.4f, {196, 160, 70, 255}, 0.0f, 8);  // the band
+                break;
+            case Log: {
+                const float r = (it.c1 - it.c0) * 0.5f;
+                const float rz = (it.z1 - it.z0) * 0.5f;
+                block(fr, it.a0, it.a1, it.c0, it.c1, it.z0, it.z1, it.color, 0.0f, 0.0f, r * 0.45f);
+                if (back_near) {  // its cut end: pale wood, the rings, the bark round it
+                    constexpr int kN = 10;
+                    Vector2 ring[kN];
+                    for (int k = 0; k < kN; ++k) {
+                        const float t = static_cast<float>(k) * 6.2831853f / kN;
+                        ring[k] = fr.at(it.a0, mc + std::cos(t) * r, it.z0 + rz + std::sin(t) * rz);
+                    }
+                    const Vector2 mid = fr.at(it.a0, mc, it.z0 + rz);
+                    const Color cut = burnt ? Color{40, 34, 30, 255} : Color{206, 172, 122, 255};
+                    for (int k = 0; k < kN; ++k) fill_triangle(mid, ring[k], ring[(k + 1) % kN], cut);
+                    for (int k = 0; k < kN; ++k) DrawLineV(ring[k], ring[(k + 1) % kN], lit(shade(it.color, 0.8f)));
+                    if (!burnt) DrawPixelV(mid, lit({150, 116, 76, 255}));
+                }
+                break;
+            }
+        }
+    }
+}
 
 void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color team, int wear, int load, std::vector<Whip>& whips) {
     if (look.chassis == Chassis::Btr80) {  // its hull, its mast folded along the roof, its aerials
@@ -10534,44 +10901,61 @@ void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color te
                         DrawLineV(fr.at(b0 + 0.01f, near * (w - 0.01f), z), fr.at(b1 - 0.01f, near * (w - 0.01f), z), lit(shade(paint, 0.7f)));
                     }
                 }
-                if (load > 0 && !burnt) {  // the load: sacks, timber, crates, drums
-                    const auto r = static_cast<engine::Resource>(load - 1);
-                    const Color c = cargo_color(r);
-                    block(fr, b0 + 0.05f, b1 - 0.05f, -w + 0.05f, w - 0.05f, ch.floor, ch.floor + 4.6f, c, 0.01f, 0.01f, 0.02f);
-                    if (!under(fr, ch.floor + 4.6f)) {
-                        for (int k = 1; k < 4; ++k) {
-                            const float a = b0 + 0.05f + (b1 - b0 - 0.1f) * static_cast<float>(k) / 4.0f;
-                            DrawLineV(fr.at(a, -w + 0.06f, ch.floor + 4.6f), fr.at(a, w - 0.06f, ch.floor + 4.6f), lit(shade(c, 0.7f)));
-                        }
-                    }
+                if (load > 0 && !under(fr, ch.floor + 2.0f)) {  // the load (on a wreck, what's left of it)
+                    draw_cargo(fr, static_cast<Cargo>(load), b0 + 0.04f, b1 - 0.04f, w - 0.05f, ch.floor - 0.4f, burnt, seed + static_cast<uint32_t>(load) * 13u);
                 }
                 break;
             }
             case Body::Tarp: {
                 block(fr, b0, b1, -w + 0.01f, w - 0.01f, ch.floor - 1.0f, ch.floor + 1.4f, paint);
                 const float top = ch.floor + 6.4f;
-                if (!burnt) {
-                    const Color tarp = mix(paint, {128, 122, 86, 255}, 0.35f);
-                    block(fr, b0 + 0.01f, b1 - 0.01f, -w + 0.015f, w - 0.015f, ch.floor + 1.4f, top, tarp, 0.01f, 0.01f, 0.05f);
-                    if (!under(fr, top)) {
-                        for (int k = 1; k < 5; ++k) {  // its hoops showing through
-                            const float a = b0 + (b1 - b0) * static_cast<float>(k) / 5.0f;
-                            DrawLineV(fr.at(a, -w + 0.07f, top), fr.at(a, w - 0.07f, top), lit(shade(tarp, 0.78f)));
-                            DrawLineV(fr.at(a, near * (w - 0.015f), ch.floor + 1.6f), fr.at(a, near * (w - 0.06f), top - 0.2f), lit(shade(tarp, 0.8f)));
+                const auto cargo = static_cast<Cargo>(load);
+                const bool open = cargo != Cargo::None && !burnt;  // loaded: the tarpaulin rolled up off the back, the load showing
+                const float split = open ? b0 + (b1 - b0) * 0.48f : b0;
+                const Color tarp = mix(paint, {128, 122, 86, 255}, 0.35f);
+                auto cover = [&] {
+                    if (!burnt) {
+                        block(fr, split + 0.01f, b1 - 0.01f, -w + 0.015f, w - 0.015f, ch.floor + 1.4f, top, tarp, 0.01f, 0.01f, 0.05f);
+                        if (!under(fr, top)) {
+                            for (int k = 1; k < 5; ++k) {  // its hoops showing through
+                                const float a = split + (b1 - split) * static_cast<float>(k) / 5.0f;
+                                DrawLineV(fr.at(a, -w + 0.07f, top), fr.at(a, w - 0.07f, top), lit(shade(tarp, 0.78f)));
+                                DrawLineV(fr.at(a, near * (w - 0.015f), ch.floor + 1.6f), fr.at(a, near * (w - 0.06f), top - 0.2f), lit(shade(tarp, 0.8f)));
+                            }
+                            if (wear >= 3) {  // torn
+                                for (int k = 0; k < 3; ++k) patch(fr, split + 0.08f + (b1 - split - 0.16f) * 0.4f * static_cast<float>(k), 0.03f * static_cast<float>(k - 1), 0.04f, 0.035f, top, {30, 28, 24, 255}, seed + static_cast<uint32_t>(k));
+                            }
                         }
-                        if (wear >= 3) {  // torn
-                            for (int k = 0; k < 3; ++k) patch(fr, b0 + 0.1f + 0.14f * static_cast<float>(k), 0.03f * static_cast<float>(k - 1), 0.04f, 0.035f, top, {30, 28, 24, 255}, seed + static_cast<uint32_t>(k));
+                        if (open) block(fr, split - 0.03f, split + 0.02f, -w + 0.02f, w - 0.02f, top - 2.4f, top - 0.2f, shade(tarp, 0.9f), 0.008f, 0.008f, 0.0f);  // rolled up
+                    } else if (!under(fr, top)) {  // burnt off its hoops
+                        for (int k = 0; k <= 5; ++k) {
+                            const float a = b0 + 0.01f + (b1 - b0 - 0.02f) * static_cast<float>(k) / 5.0f;
+                            const Vector2 l0 = fr.at(a, -w + 0.02f, ch.floor + 1.4f);
+                            const Vector2 l1 = fr.at(a, -w + 0.07f, top);
+                            const Vector2 r1 = fr.at(a, w - 0.07f, top);
+                            const Vector2 r0 = fr.at(a, w - 0.02f, ch.floor + 1.4f);
+                            for (const auto& [p, q] : {std::pair{l0, l1}, std::pair{l1, r1}, std::pair{r1, r0}}) DrawLineV(p, q, lit({34, 32, 28, 255}));
                         }
                     }
-                } else if (!under(fr, top)) {  // burnt off its hoops
-                    for (int k = 0; k <= 5; ++k) {
-                        const float a = b0 + 0.01f + (b1 - b0 - 0.02f) * static_cast<float>(k) / 5.0f;
+                };
+                auto freight = [&] {
+                    if (!open || under(fr, ch.floor + 2.0f)) return;
+                    draw_cargo(fr, cargo, b0 + 0.03f, split - 0.04f, w - 0.04f, ch.floor + 0.2f, false, seed + static_cast<uint32_t>(load) * 13u);
+                    for (int k = 0; k < 2; ++k) {  // the bare hoops over it
+                        const float a = b0 + 0.03f + (split - b0 - 0.06f) * static_cast<float>(k);
                         const Vector2 l0 = fr.at(a, -w + 0.02f, ch.floor + 1.4f);
                         const Vector2 l1 = fr.at(a, -w + 0.07f, top);
                         const Vector2 r1 = fr.at(a, w - 0.07f, top);
                         const Vector2 r0 = fr.at(a, w - 0.02f, ch.floor + 1.4f);
-                        for (const auto& [p, q] : {std::pair{l0, l1}, std::pair{l1, r1}, std::pair{r1, r0}}) DrawLineV(p, q, lit({34, 32, 28, 255}));
+                        for (const auto& [p, q] : {std::pair{l0, l1}, std::pair{l1, r1}, std::pair{r1, r0}}) DrawLineV(p, q, lit(shade(paint, 0.6f)));
                     }
+                };
+                if (facing(1.0f, 0.0f)) {  // the front nearer: the load behind the tarpaulin
+                    freight();
+                    cover();
+                } else {
+                    cover();
+                    freight();
                 }
                 break;
             }
@@ -10759,8 +11143,42 @@ void draw_truck_chassis(const Frame& fr, const VehicleLook& look, Color team, in
     draw_truck_body(fr, truck, 0, team, wear, 0, whips);
 }
 
-int truck_load(const engine::Unit& u) {
-    return u.type == engine::UnitTypeId::Truck && u.carrying > 0 ? static_cast<int>(u.carrying_type) + 1 : 0;
+Cargo cargo_of(const engine::World& world, const engine::Unit& u) {
+    if (u.carrying <= 0) return Cargo::None;
+    switch (u.type) {
+        case engine::UnitTypeId::FuelTanker: return Cargo::Fuel;
+        case engine::UnitTypeId::AmmoTruck: {  // for the guns, shells; for the tanks, the infantry, boxes of rounds
+            const engine::Unit* served = u.serves != 0 ? world.find_unit(u.serves) : nullptr;
+            if (!served) return (u.id & 1u) != 0 ? Cargo::Shells : Cargo::Crates;
+            const engine::UnitTypeDef& def = engine::unit_type(served->type);
+            const bool guns = engine::is_tube_artillery(def) || served->type == engine::UnitTypeId::Mortar || served->type == engine::UnitTypeId::Mlrs;
+            return guns ? Cargo::Shells : Cargo::Crates;
+        }
+        case engine::UnitTypeId::Truck:
+            switch (u.carrying_type) {
+                case engine::Resource::Food: return Cargo::Sacks;
+                case engine::Resource::Ammo: return (u.id & 1u) != 0 ? Cargo::Shells : Cargo::Crates;
+                case engine::Resource::Fuel: return Cargo::Drums;
+                case engine::Resource::Materials: {
+                    if (u.order != engine::Order::Collect) return Cargo::Boards;  // off the train: building materials
+                    const engine::TileMap& map = world.map();  // taking in the rear troops' work: at a quarry stone, else logs
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int x = u.order_goal.x + dx;
+                            const int y = u.order_goal.y + dy;
+                            if (map.contains_tile(x, y) && map.terrain(x, y) == engine::Terrain::Rock) return Cargo::Stone;
+                        }
+                    }
+                    return Cargo::Logs;
+                }
+                default: return Cargo::None;
+            }
+        default: return Cargo::None;
+    }
+}
+int truck_load(Cargo c) { return c == Cargo::Fuel ? 0 : static_cast<int>(c); }  // (a tanker's tank looks the same full)
+int wreck_load(Cargo c) {  // the rounds and the fuel went up with it; the rest lies there burnt
+    return c == Cargo::Sacks || c == Cargo::Boards || c == Cargo::Logs || c == Cargo::Stone || c == Cargo::Drums ? static_cast<int>(c) : 0;
 }
 bool truck_turns_top(TruckModel m) { return truck_look_of(m).top != Top::None; }
 Vector2 truck_top_ring_of(TruckModel m) { return truck_top_ring(truck_look_of(m)); }
@@ -11325,14 +11743,14 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         TruckModel model;
         int wear;
         int sink;  // 0, or 2: drowned, only the top of it showing
-        int load;  // 0 empty, else what it carries + 1
+        int load;  // what it carries (a Cargo), as its sprite shows it
     };
     std::vector<TruckWanted> trucks;
     for (const engine::Unit& u : world.units()) {
         const std::optional<TruckModel> model = truck_model(u.type, u.owner);
         if (!model) continue;
         for (int wear = 0; wear <= 5; ++wear) trucks.push_back({u.owner, *model, wear, 0, 0});
-        if (const int load = truck_load(u); load > 0) {
+        if (const int load = truck_load(cargo_of(world, u)); load > 0) {
             const int now = wear_of(u.hp, engine::unit_type(u.type).max_hp);
             for (int wear = now; wear <= std::min(now + 1, 3); ++wear) trucks.push_back({u.owner, *model, wear, 0, load});
         }
@@ -11344,8 +11762,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             trucks.push_back({r.owner, *model, 1, 2, 0});
             continue;
         }
-        trucks.push_back({r.owner, *model, 4, 0, 0});
-        trucks.push_back({r.owner, *model, 5, 0, 0});
+        trucks.push_back({r.owner, *model, 4, 0, wreck_load(static_cast<Cargo>(r.cargo))});
+        trucks.push_back({r.owner, *model, 5, 0, wreck_load(static_cast<Cargo>(r.cargo))});
     }
     // Towed guns and aircraft: every wear up front.
     std::vector<std::pair<engine::PlayerId, engine::VehicleModel>> small;
@@ -11397,10 +11815,18 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         worn(look, wear);
         const Color team = team_of(wear, owner);
         const Color tarp = mix(look.paint, {128, 122, 86, 255}, 0.35f);
-        const std::vector<Color> palette =
+        std::vector<Color> palette =
             palette_of(look.paint, look.camo, look.camo1, look.camo2, team,
                        {shade(tarp, 0.7f), tarp, shade(tarp, 1.25f), cargo_color(engine::Resource::Food), cargo_color(engine::Resource::Ammo),
                         cargo_color(engine::Resource::Fuel), cargo_color(engine::Resource::Materials), Color{150, 156, 146, 255}});
+        if (load > 0) {  // the load's colours, in their shades
+            static constexpr Color kLoads[] = {{176, 156, 112, 255}, {214, 208, 190, 255}, {190, 150, 98, 255}, {104, 80, 56, 255}, {206, 172, 122, 255},
+                                               {160, 84, 60, 255},   {150, 148, 142, 255}, {140, 136, 128, 255}, {88, 100, 64, 255},  {170, 130, 84, 255},
+                                               {112, 112, 80, 255},  {196, 160, 70, 255},  {60, 90, 130, 255},   {150, 60, 46, 255},  {70, 100, 70, 255}};
+            for (const Color c : kLoads) {
+                for (const float k : {0.45f, 0.62f, 0.8f, 1.0f, 1.2f}) palette.push_back(shade(c, k));
+            }
+        }
         const float sunk = sink == 2 ? truck_height(look) - 2.5f : 0.0f;
         const int w = std::min(wear, 4);
         bake(SpritePart::TruckBody, variant, owner, 3, palette,
@@ -12156,8 +12582,11 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
         draw_sprite(*body, fr.o, fr.f, 0);
         return;
     }
-    const SpriteSheet* burnt = sheet(SpritePart::TruckBody, truck_variant(model, 4, 0, 0), r.owner);
-    const SpriteSheet* rusted = sheet(SpritePart::TruckBody, truck_variant(model, 5, 0, 0), r.owner);
+    const int left = wreck_load(static_cast<Cargo>(r.cargo));  // what's left of its load on it
+    const SpriteSheet* burnt = sheet(SpritePart::TruckBody, truck_variant(model, 4, 0, left), r.owner);
+    const SpriteSheet* rusted = sheet(SpritePart::TruckBody, truck_variant(model, 5, 0, left), r.owner);
+    if (!burnt) burnt = sheet(SpritePart::TruckBody, truck_variant(model, 4, 0, 0), r.owner);
+    if (!rusted) rusted = sheet(SpritePart::TruckBody, truck_variant(model, 5, 0, 0), r.owner);
     if (!burnt) return;
     const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
     const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
@@ -12177,6 +12606,42 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
             DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.8f, ry * 0.8f, lit(shade(steel, 0.85f)));
             DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.5f, ry * 0.5f, lit(shade(steel, 1.3f)));
             DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.18f, ry * 0.18f, lit({18, 18, 16, 255}));
+        }
+    }
+    {
+        const auto cargo = static_cast<Cargo>(r.cargo);
+        const uint32_t hc = tile_hash(static_cast<int>(r.seed & 0xFFFF), 71);
+        if (cargo == Cargo::Fuel || cargo == Cargo::Drums) {  // where the fuel burned out on the ground
+            fill_ground_ellipse(fr.o, cargo == Cargo::Fuel ? 1.0f : 0.7f, {30, 26, 22, 170});
+            fill_ground_ellipse(fr.o, cargo == Cargo::Fuel ? 0.7f : 0.5f, {20, 18, 16, 200});
+        }
+        if (cargo == Cargo::Crates || cargo == Cargo::Shells) {  // thrown about: the boxes, the shells, black round it
+            fill_ground_ellipse(fr.o, 0.75f, {34, 30, 26, 150});
+            for (int i = 0; i < 12; ++i) {
+                const float a = hash_unit(tile_hash(static_cast<int>(hc >> 3) + i * 13, i * 7)) * 6.2831853f;
+                const float d = 0.5f + 0.9f * hash_unit(tile_hash(static_cast<int>(hc >> 9) + i * 5, i * 11));
+                const float pa = std::cos(a) * d;
+                const float pc = std::sin(a) * d;
+                const bool shell = cargo == Cargo::Shells ? i % 3 != 0 : i % 4 == 0;
+                const bool black = i % 2 == 0;
+                if (shell) {
+                    block(fr, pa - 0.03f, pa + 0.03f, pc - 0.01f, pc + 0.01f, 0.0f, 1.3f, black ? Color{50, 46, 40, 255} : Color{112, 112, 80, 255});
+                } else {
+                    const Color box = cargo == Cargo::Shells ? Color{170, 130, 84, 255} : Color{88, 100, 64, 255};
+                    block(fr, pa - 0.035f, pa + 0.035f, pc - 0.025f, pc + 0.025f, 0.0f, 2.0f, black ? shade(box, 0.35f) : box);
+                }
+            }
+        }
+        if (cargo == Cargo::Logs) {  // a couple rolled off, charred
+            for (int i = 0; i < 2; ++i) {
+                const float side = (i == 0 ? 1.0f : -1.0f) * (look.width * k + 0.12f + 0.08f * hash_unit(hc >> (4 + i)));
+                block(fr, -look.length * k * 0.4f, look.length * k * 0.1f, side - 0.035f, side + 0.035f, 0.0f, 2.2f, {50, 40, 32, 255}, 0.0f, 0.0f, 0.015f);
+            }
+        }
+        if (cargo == Cargo::Sacks) {  // burst sacks, the flour white on the ground
+            const Vector2 p = fr.at(-look.length * k * 0.4f, look.width * k + 0.15f);
+            fill_ground_ellipse(p, 0.22f, {206, 202, 190, 200});
+            block(fr, -look.length * k * 0.45f, -look.length * k * 0.35f, look.width * k + 0.06f, look.width * k + 0.14f, 0.0f, 1.6f, {120, 108, 84, 255}, 0.01f, 0.01f, 0.015f);
         }
     }
     draw_sprite(*burnt, fr.o, fr.f, 0);

@@ -1609,9 +1609,17 @@ void World::apply_damage_and_remove_dead() {
         }
     }
 
-    // A tanker or an ammunition truck hit with its load aboard goes up.
+    // A tanker or an ammunition truck hit with its load aboard goes up; so
+    // does a supply truck with fuel or ammunition on it.
+    auto going_up = [&](const Unit& u) {
+        if (u.hp > 0 || u.carrying <= 0) return Resource::Count;
+        if (def_of(u).supplies != Resource::Count) return def_of(u).supplies;
+        const bool dangerous = u.carrying_type == Resource::Fuel || u.carrying_type == Resource::Ammo;
+        return u.type == UnitTypeId::Truck && dangerous ? u.carrying_type : Resource::Count;
+    };
     for (const Unit& u : units_) {
-        if (u.hp > 0 || u.carrying <= 0 || def_of(u).supplies == Resource::Count) continue;
+        const Resource load = going_up(u);
+        if (load == Resource::Count) continue;
         static constexpr WeaponDef kTankerFire{.name = "Burning fuel", .damage = 60,
                                                .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
                                                .projectile_speed = Fixed{}, .splash_radius = Fixed::from_ratio(3, 2),
@@ -1620,7 +1628,7 @@ void World::apply_damage_and_remove_dead() {
                                                 .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
                                                 .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
                                                 .accuracy = 100, .miss_spread = Fixed{}};
-        burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
+        burst_into_flames(u.pos, u.owner, load == Resource::Fuel ? kTankerFire : kAmmoCookOff);
     }
     // A tank killed by a direct hit with its racks more than a quarter full
     // goes up: the rounds cook off round it, the turret's thrown off.

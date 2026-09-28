@@ -55,6 +55,11 @@ struct Options {
     std::string scene;
 };
 
+// Units a scene has knocked out a moment in (offline): hit then, to see
+// them go (their fuel flaring, their rounds going up).
+std::vector<engine::EntityId> g_doomed;
+engine::Tick g_doom_tick = 0;
+
 // A flat open field round a point, to see what stands on it against.
 void flat_field(engine::World& w, engine::FixedVec2 center, int radius) {
     engine::TileMap& map = w.map_for_setup();
@@ -760,6 +765,77 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                                                                     : ahead(22.0f, -7.0f));
     }
 
+    if (options.scene.starts_with("trucks_") && options.mode == Options::Mode::Offline) {
+        // Offline: the trucks with what they carry, in a row on a flat field
+        // ahead of the base. trucks_cargo: food (sacks), building materials,
+        // logs (taking in the rear troops' timber), stone (from a quarry),
+        // ammunition boxes, shells, fuel in drums; ammunition trucks for a
+        // howitzer (shells) and a tank (boxes), a tanker. trucks_fire: the
+        // loaded ones hit a second in: the tanker's fuel flaring, the
+        // ammunition going up, a truck of drums, of boxes, of logs, of sacks.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(19.0f, 0.0f), 14);
+        using engine::Resource;
+        using engine::UnitTypeId;
+        const bool fire = options.scene == "trucks_fire";
+        const float gap = fire ? 2.5f : 1.6f;  // (burning, apart: the fire doesn't reach the next one)
+        float at = 13.0f;
+        auto truck = [&](UnitTypeId type, Resource load, int amount) {
+            const engine::EntityId id = w.spawn_unit(me, type, ahead(at, 0.0f));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->carrying = amount;
+            u->carrying_type = load;
+            u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
+            at += gap;
+            return id;
+        };
+        auto collecting = [&](engine::EntityId id, bool quarry) {  // parked by the wood (or the quarry), taking in its load
+            engine::Unit* u = w.unit_for_setup(id);
+            u->order = engine::Order::Collect;
+            u->order_point = u->pos;
+            u->order_goal = engine::tile_of(u->pos);
+            if (quarry) w.map_for_setup().set_terrain(u->order_goal.x + 1, u->order_goal.y + 1, engine::Terrain::Rock);
+        };
+        auto serving = [&](engine::EntityId id, UnitTypeId gun) {  // an ammunition truck attached to a gun, a tank
+            engine::Unit* u = w.unit_for_setup(id);
+            const engine::EntityId served = w.spawn_unit(me, gun, {u->pos.x + engine::Fixed::from_int(1), u->pos.y + engine::Fixed::from_int(1)});
+            w.unit_for_setup(id)->serves = served;
+        };
+        if (fire) {
+            g_doomed = {truck(UnitTypeId::FuelTanker, Resource::Fuel, 100)};
+            const engine::EntityId ammo = truck(UnitTypeId::AmmoTruck, Resource::Ammo, 100);
+            serving(ammo, UnitTypeId::Howitzer);
+            g_doomed.push_back(ammo);
+            g_doomed.push_back(truck(UnitTypeId::Truck, Resource::Fuel, 20));
+            engine::EntityId crates = truck(UnitTypeId::Truck, Resource::Ammo, 20);
+            if ((crates & 1u) != 0) crates = truck(UnitTypeId::Truck, Resource::Ammo, 20);  // (the one with boxes, not shells)
+            g_doomed.push_back(crates);
+            const engine::EntityId logs = truck(UnitTypeId::Truck, Resource::Materials, 12);
+            collecting(logs, false);
+            g_doomed.push_back(logs);
+            g_doomed.push_back(truck(UnitTypeId::Truck, Resource::Food, 20));
+            g_doom_tick = 30;
+            return render::to_vector2(ahead(13.0f + gap * 2.5f, 0.5f));
+        }
+        truck(UnitTypeId::Truck, Resource::Food, 20);
+        truck(UnitTypeId::Truck, Resource::Materials, 20);
+        collecting(truck(UnitTypeId::Truck, Resource::Materials, 12), false);
+        collecting(truck(UnitTypeId::Truck, Resource::Materials, 12), true);
+        truck(UnitTypeId::Truck, Resource::Ammo, 20);
+        truck(UnitTypeId::Truck, Resource::Ammo, 20);
+        truck(UnitTypeId::Truck, Resource::Fuel, 20);
+        serving(truck(UnitTypeId::AmmoTruck, Resource::Ammo, 100), UnitTypeId::Howitzer);
+        serving(truck(UnitTypeId::AmmoTruck, Resource::Ammo, 100), UnitTypeId::Tank);
+        truck(UnitTypeId::FuelTanker, Resource::Fuel, 100);
+        return render::to_vector2(ahead(13.0f + gap * 4.5f, 0.5f));
+    }
+
     if (options.scene.starts_with("stages") && options.mode == Options::Mode::Offline) {
         // Offline: each kind of building at each stage of damage, whole, hit,
         // burning, burnt out, left to right in its row. stages_farm: houses,
@@ -1443,6 +1519,12 @@ int main(int argc, char** argv) {
                 smoke_ordered = true;
             }
             game->update(GetFrameTime());
+            if (smoke && !g_doomed.empty() && game->world().tick() >= g_doom_tick) {  // the scene's units hit now
+                for (const engine::EntityId id : g_doomed) {
+                    if (engine::Unit* u = game->world_for_setup().unit_for_setup(id)) u->hp = 0;
+                }
+                g_doomed.clear();
+            }
             if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally" ||
                           options->scene == "rear" || options->scene.starts_with("armory"))) {
                 // Show the barracks', the station's, the headquarters' or the hospital's card on the command panel.

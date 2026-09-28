@@ -79,6 +79,7 @@ private:
         uint32_t seed = 0;
         bool sunk = false;   // a tank that went under in a bog
         bool blown = false;  // a tank whose rounds went up: its turret thrown off
+        uint8_t cargo = 0;   // a truck's load (see Cargo): what burns, goes off, lies about
     };
     // Smoke, flames, clods of earth, spray, sparks, a muzzle's flash, spent
     // cases: flying about for a moment. Only for the eye: nothing in the game
