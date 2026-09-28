@@ -22,7 +22,7 @@ namespace render {
 namespace {
 
 constexpr float kPingLifetime = 0.5f;
-constexpr float kBlastLifetime = 0.45f;
+constexpr float kBlastLifetime = 1.8f;  // (the longest blast's sheet)
 constexpr float kWreckLifetime = 25.0f;
 constexpr float kBodyLifetime = 8.0f;
 
@@ -1163,16 +1163,18 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         remains_.back().blown = std::find(blown.begin(), blown.end(), id) != blown.end();
         if (remains_.back().blown && !last.sunk) {  // its rounds going up: a fireball, black smoke boiling up
             spawn_flash(last.ground, 12.0f, 18.0f, {255, 236, 170, 255});
+            blasts_.push_back({last.ground, 0.0f, 1.6f, 4.0f});
+            blasts_.push_back({last.ground, -0.18f, 1.0f, 22.0f});
             spawn_sparks(last.ground, 14.0f, 30, {255, 190, 90, 255}, 2.4f);
-            for (int i = 0; i < 16; ++i) {
+            for (int i = 0; i < 10; ++i) {  // burning bits of it flung up
                 Particle p{};
                 p.kind = Particle::Kind::Flame;
                 p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.4f, last.ground.y + (fx_random() - 0.5f) * 0.4f};
                 p.z = 6.0f + 6.0f * fx_random();
                 p.vz = 40.0f + 50.0f * fx_random();
-                p.life = 0.6f + 0.5f * fx_random();
-                p.size = 4.0f + 3.0f * fx_random();
-                p.grow = -2.0f;
+                p.life = 0.5f + 0.4f * fx_random();
+                p.size = 1.6f + 0.8f * fx_random();
+                p.grow = 0.0f;
                 p.color = {255, 200, 80, 230};
                 particles_.push_back(p);
             }
@@ -1197,7 +1199,9 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             const float big = cargo == Cargo::Fuel ? 1.0f : 0.65f;
             spawn_flash(last.ground, 10.0f, 22.0f * big, {255, 240, 190, 255});
             spawn_sparks(last.ground, 10.0f, static_cast<int>(24.0f * big), {255, 190, 90, 255}, 2.0f);
-            for (int i = 0; i < static_cast<int>(70.0f * big); ++i) {  // the ball of it: out low and wide, up high in the middle
+            blasts_.push_back({last.ground, -0.12f, 1.4f * big, 14.0f});  // the ball of it rising
+            blasts_.push_back({{last.ground.x - 0.1f, last.ground.y + 0.1f}, -0.3f, 1.1f * big, 30.0f});
+            for (int i = 0; i < static_cast<int>(18.0f * big); ++i) {  // burning bits flung out
                 Particle p{};
                 p.kind = Particle::Kind::Flame;
                 const float a = fx_random() * 6.2831853f;
@@ -1207,17 +1211,17 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 p.vel = {std::cos(a) * out, std::sin(a) * out};
                 p.z = 4.0f + 10.0f * fx_random();
                 p.vz = (15.0f + 70.0f * core) * big;
-                p.life = 0.8f + 0.9f * fx_random();
-                p.size = (6.0f + 7.0f * fx_random()) * (0.6f + 0.4f * big);
-                p.grow = 4.0f + 6.0f * fx_random();
+                p.life = 0.6f + 0.6f * fx_random();
+                p.size = 1.6f + 0.8f * fx_random();
+                p.grow = 0.0f;
                 p.color = {255, 210, 110, 240};
                 particles_.push_back(p);
             }
-            for (int i = 0; i < static_cast<int>(22.0f * big); ++i) {
+            for (int i = 0; i < static_cast<int>(12.0f * big); ++i) {  // (over the ball of fire as it dies)
                 Particle p{};
                 p.kind = Particle::Kind::Smoke;
                 p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.4f, last.ground.y + (fx_random() - 0.5f) * 0.4f};
-                p.z = 16.0f + 20.0f * fx_random();
+                p.z = 30.0f + 20.0f * fx_random();
                 p.vel = {(fx_random() - 0.5f) * 0.5f, (fx_random() - 0.5f) * 0.5f};
                 p.vz = 30.0f + 30.0f * fx_random();
                 p.life = 4.0f + 2.0f * fx_random();
@@ -1226,7 +1230,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 p.color = {24, 22, 20, 230};
                 particles_.push_back(p);
             }
-            blasts_.push_back({last.ground, 0.0f, 1.2f * big});
+            blasts_.push_back({last.ground, 0.0f, 1.9f * big});
         }
         if (!last.sunk && (cargo == Cargo::Crates || cargo == Cargo::Shells)) {
             // The rounds going up: a blast that throws the bed apart, boxes
@@ -1247,11 +1251,11 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 p.color = i % 3 == 0 ? Color{88, 100, 64, 255} : i % 3 == 1 ? Color{150, 116, 76, 255} : Color{40, 36, 32, 255};
                 particles_.push_back(p);
             }
-            for (int i = 0; i < 12; ++i) {
+            for (int i = 0; i < 6; ++i) {
                 Particle p{};
                 p.kind = Particle::Kind::Smoke;
                 p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.3f, last.ground.y + (fx_random() - 0.5f) * 0.3f};
-                p.z = 10.0f + 8.0f * fx_random();
+                p.z = 18.0f + 8.0f * fx_random();
                 p.vel = {(fx_random() - 0.5f) * 0.4f, (fx_random() - 0.5f) * 0.4f};
                 p.vz = 26.0f + 16.0f * fx_random();
                 p.life = 3.0f + 1.5f * fx_random();
@@ -1260,7 +1264,9 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 p.color = {46, 42, 38, 220};
                 particles_.push_back(p);
             }
-            spawn_burst(world, last.ground, 0.9f);
+            spawn_burst(world, last.ground, 0.5f);
+            blasts_.push_back({last.ground, 0.0f, 1.5f});
+            blasts_.push_back({{last.ground.x + 0.15f, last.ground.y - 0.1f}, -0.15f, 0.8f, 12.0f});
         }
         if (last.vehicle) {
             const engine::Terrain under =
@@ -1369,6 +1375,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 const float z = 5.0f + 6.0f * fx_random();
                 spawn_flash(spot, z, 4.0f + 5.0f * fx_random(), {255, 226, 150, 255});
                 spawn_sparks(spot, z, 6, {255, 200, 100, 255}, 1.6f);
+                blasts_.push_back({spot, 0.0f, 0.3f, z * 0.5f});
                 if (fx_random() < 0.4f) {
                     Particle p{};
                     p.kind = Particle::Kind::Spark;
@@ -1516,6 +1523,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
 
 // --- Drawing -----------------------------------------------------------------
 
+const char* dump_dir();  // where the baked sheets are written to look at (below, with the sprites)
+
 namespace {
 
 // Calls fn(tx, ty) for every tile that may be on screen, back to front.
@@ -1550,6 +1559,294 @@ void disc(Vector2 centre, float radius, Color color) {
 }
 
 float hash_unit(uint32_t h) { return static_cast<float>(h & 0xFFFF) / 65536.0f; }
+
+float rand01(uint32_t seed, int i);  // below, with the buildings
+
+// --- Fire, explosions and flashes in pixel art ---------------------------------
+//
+// Baked once into sheets of frames, as the vehicles are (a pixel of a sheet a
+// pixel of the world): an explosion's ball of fire in lumps (white-hot at
+// its heart, yellow, orange, dark red at the edge, a dark line round it)
+// swelling and rising, cooling to dark lumps with embers glowing in them,
+// then rings of smoke thinning out; a flame's tongues flickering; a flash's
+// star of rays; embers smouldering in a burnt patch.
+
+struct FxSheet {
+    Texture2D tex{};
+    int w = 0;
+    int h = 0;
+    int frames = 0;
+    Vector2 origin{};  // its foot (a blast's, a flame's) or its middle (a flash's)
+};
+enum class Fx : uint8_t { Blast0, Blast1, Blast2, Blast3, Flame0, Flame1, Flame2, Star0, Star1, Star2, Embers, Count };
+constexpr int kFxVariants = 3;
+constexpr int kBlastFrames = 18;
+constexpr float kBlastSeconds[4] = {0.7f, 1.0f, 1.3f, 1.7f};  // how long a blast's sheet plays, by its size
+std::vector<FxSheet> g_fx;
+
+const FxSheet& fx_sheet(Fx kind, int variant) {
+    return g_fx[static_cast<size_t>(kind) * kFxVariants + static_cast<size_t>(variant % kFxVariants)];
+}
+
+// Fire's colours, white-hot to the dark red at its edge; the dark line round it.
+constexpr Color kHeat[5] = {{255, 250, 222, 255}, {255, 222, 92, 255}, {250, 156, 42, 255}, {212, 80, 30, 255}, {138, 40, 24, 255}};
+constexpr Color kFireRim{50, 20, 14, 255};
+Color heat_colour(float v) { return v > 0.74f ? kHeat[0] : v > 0.54f ? kHeat[1] : v > 0.36f ? kHeat[2] : v > 0.2f ? kHeat[3] : kHeat[4]; }
+
+float fx_noise(uint32_t seed, int x, int y) {
+    return hash_unit(tile_hash(x * 7 + static_cast<int>(seed % 9973u), y * 13 + static_cast<int>((seed / 9973u) % 9973u)));
+}
+
+// A frame being drawn, pixel by pixel.
+struct Canvas {
+    int w;
+    int h;
+    std::vector<Color> px;
+    Canvas(int w_, int h_) : w(w_), h(h_), px(static_cast<size_t>(w_ * h_), Color{0, 0, 0, 0}) {}
+    bool in(int x, int y) const { return x >= 0 && y >= 0 && x < w && y < h; }
+    Color get(int x, int y) const { return in(x, y) ? px[static_cast<size_t>(y * w + x)] : Color{0, 0, 0, 0}; }
+    void set(int x, int y, Color c) {
+        if (in(x, y)) px[static_cast<size_t>(y * w + x)] = c;
+    }
+    void set_if_empty(int x, int y, Color c) {
+        if (in(x, y) && get(x, y).a == 0) set(x, y, c);
+    }
+    void disc(float cx, float cy, float r, Color c) {
+        for (int y = static_cast<int>(cy - r) - 1; y <= static_cast<int>(cy + r) + 1; ++y) {
+            for (int x = static_cast<int>(cx - r) - 1; x <= static_cast<int>(cx + r) + 1; ++x) {
+                const float dx = static_cast<float>(x) + 0.5f - cx;
+                const float dy = static_cast<float>(y) + 0.5f - cy;
+                if (dx * dx + dy * dy <= r * r) set(x, y, c);
+            }
+        }
+    }
+    // A dark line round what's drawn.
+    void outline(Color rim) {
+        const std::vector<Color> was = px;
+        auto filled = [&](int x, int y) { return in(x, y) && was[static_cast<size_t>(y * w + x)].a != 0; };
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (filled(x, y)) continue;
+                if (filled(x - 1, y) || filled(x + 1, y) || filled(x, y - 1) || filled(x, y + 1)) px[static_cast<size_t>(y * w + x)] = rim;
+            }
+        }
+    }
+};
+
+FxSheet bake_fx(int w, int h, int frames, Vector2 origin, const std::function<void(Canvas&, int)>& draw) {
+    Image img = GenImageColor(w * frames, h, {0, 0, 0, 0});
+    auto* out = static_cast<Color*>(img.data);
+    for (int f = 0; f < frames; ++f) {
+        Canvas c(w, h);
+        draw(c, f);
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) out[static_cast<size_t>(y * w * frames + f * w + x)] = c.px[static_cast<size_t>(y * w + x)];
+        }
+    }
+    if (const char* dump = dump_dir()) {
+        static int n = 0;
+        ExportImage(img, TextFormat("%s/fx_%02d.png", dump, n++));
+    }
+    FxSheet sheet;
+    sheet.tex = LoadTextureFromImage(img);
+    SetTextureFilter(sheet.tex, TEXTURE_FILTER_POINT);
+    sheet.w = w;
+    sheet.h = h;
+    sheet.frames = frames;
+    sheet.origin = origin;
+    UnloadImage(img);
+    return sheet;
+}
+
+// A star of rays out of a white-hot heart: a flash, the start of a blast.
+void star_on(Canvas& c, float cx, float cy, float r, float k, uint32_t seed) {
+    c.disc(cx, cy, r * 0.45f * k, kHeat[1]);
+    c.disc(cx, cy, r * 0.28f * k, kHeat[0]);
+    for (int i = 0; i < 8; ++i) {
+        const float a = static_cast<float>(i) * 0.7853982f + (rand01(seed, i) - 0.5f) * 0.3f;
+        const float len = r * k * (i % 2 == 1 ? 0.6f : 1.0f) * (0.8f + 0.4f * rand01(seed, i + 9));
+        for (float d = r * 0.2f * k; d <= len; d += 0.5f) {
+            const float q = d / std::max(len, 0.5f);
+            c.set(static_cast<int>(std::floor(cx + std::cos(a) * d)), static_cast<int>(std::floor(cy + std::sin(a) * d * 0.8f)),
+                  q < 0.45f ? kHeat[0] : q < 0.8f ? kHeat[1] : kHeat[2]);
+        }
+    }
+}
+
+// An explosion `r` pixels round at its biggest: a flash, then a ball of fire
+// in lumps swelling and rising; cooling to dark lumps with embers in them;
+// rings of smoke thinning out.
+FxSheet bake_blast(float r, uint32_t seed) {
+    const int w = static_cast<int>(r * 3.0f) + 8;
+    const int h = static_cast<int>(r * 3.6f) + 8;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h - 4)};
+    struct Bubble {
+        float x, y, r, lump;
+    };
+    std::vector<Bubble> bubbles{{0.0f, -r * 0.5f, r * 0.62f, rand01(seed, 0) * 6.28f}};
+    const int n = 6 + static_cast<int>(r / 3.0f);
+    for (int i = 1; i < n; ++i) {
+        const float a = rand01(seed, i * 3) * 6.2831853f;
+        const float d = r * (0.28f + 0.38f * rand01(seed, i * 3 + 1));
+        bubbles.push_back({std::cos(a) * d, -r * 0.5f + std::sin(a) * d * 0.75f, r * (0.28f + 0.22f * rand01(seed, i * 3 + 2)), rand01(seed, i * 5) * 6.28f});
+    }
+    return bake_fx(w, h, kBlastFrames, o, [&](Canvas& c, int f) {
+        const float t = static_cast<float>(f) / static_cast<float>(kBlastFrames - 1);
+        const float grow = std::clamp((t - 0.04f) / 0.4f, 0.0f, 1.0f);
+        const float swell = 0.3f + 0.7f * (1.0f - (1.0f - grow) * (1.0f - grow));
+        const float rise = r * 0.55f * t;
+        const float heat = t < 0.4f ? 1.0f : t < 0.7f ? 1.0f - (t - 0.4f) / 0.3f * 0.95f : 0.0f;
+        const bool rings = t >= 0.8f;
+        const float fade = rings ? (t - 0.8f) / 0.2f : 0.0f;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float px = static_cast<float>(x) - o.x + 0.5f;
+                const float py = static_cast<float>(y) - o.y + 0.5f;
+                float hot = 0.0f;
+                float nearest = 9.0f;
+                bool ring = false;
+                for (const Bubble& b : bubbles) {
+                    const float bx = b.x * swell * (1.0f + 0.25f * t);
+                    const float by = b.y * swell - rise;
+                    const float br = b.r * swell * (1.0f + 0.3f * t);
+                    const float dx = px - bx;
+                    const float dy = (py - by) * 1.1f;
+                    const float ang = std::atan2(dy, dx);
+                    const float rr = br * (1.0f + 0.12f * std::sin(3.0f * ang + b.lump) + 0.06f * std::sin(5.0f * ang + 2.0f * b.lump));
+                    const float d = std::sqrt(dx * dx + dy * dy) / std::max(rr, 0.5f);
+                    if (d < 1.0f) hot = std::max(hot, 1.0f - d);
+                    if (d >= 0.7f && d < 1.0f) ring = true;
+                    nearest = std::min(nearest, d);
+                }
+                if (nearest >= 1.0f) continue;
+                const float grain = (fx_noise(seed + static_cast<uint32_t>(f), x, y) - 0.5f) * 0.12f;
+                if (!rings) {
+                    // Each lump white-hot at its heart, yellow, orange where it meets the next, red at the edge.
+                    const float v = (std::pow(hot, 1.25f) * 1.25f + grain) * heat;
+                    if (heat > 0.05f && v > 0.16f) {
+                        c.set(x, y, v > 0.8f ? kHeat[0] : v > 0.56f ? kHeat[1] : v > 0.34f ? kHeat[2] : kHeat[3]);
+                    } else {  // cooled: the dark lumps of it, embers glowing in them
+                        const bool ember = fx_noise(seed * 3u + static_cast<uint32_t>(f), x, y) < 0.07f * heat + (t < 0.75f ? 0.03f : 0.0f);
+                        const Color lump = hot + grain > 0.35f ? Color{70, 60, 56, 255} : Color{48, 42, 40, 255};
+                        c.set(x, y, ember ? kHeat[2] : hot + grain > 0.18f && ring ? Color{36, 30, 28, 255} : lump);
+                    }
+                } else if (ring && nearest > 0.45f && fx_noise(seed * 7u + static_cast<uint32_t>(f), x, y) > fade * 0.9f) {  // each lump's ring of smoke, thinning out
+                    const auto g = static_cast<unsigned char>(62.0f + 56.0f * fade);
+                    c.set(x, y, {g, static_cast<unsigned char>(g - 2), static_cast<unsigned char>(g - 4), 255});
+                }
+            }
+        }
+        if (t < 0.45f) {  // bits of it flung out
+            for (int i = 0; i < 10; ++i) {
+                const float a = rand01(seed, 100 + i) * 6.2831853f;
+                const float d = r * (0.7f + 1.5f * t) * (0.8f + 0.4f * rand01(seed, 120 + i));
+                c.set(static_cast<int>(o.x + std::cos(a) * d), static_cast<int>(o.y - r * 0.5f - rise + std::sin(a) * d * 0.8f), i % 2 == 0 ? kHeat[1] : kHeat[3]);
+            }
+        }
+        if (t < 0.16f) star_on(c, o.x, o.y - r * 0.45f, r * 1.1f, 1.0f - t * 3.0f, seed);  // the flash
+        if (!rings) c.outline(kFireRim);
+    });
+}
+
+// A flame `fw` pixels wide, `fh` high: its tongues flickering, split at the
+// top; white-hot at the foot, red at the tips; a spark going up off it now and then.
+FxSheet bake_flame(float fw, float fh, uint32_t seed) {
+    const int w = static_cast<int>(fw) + 6;
+    const int h = static_cast<int>(fh) + 5;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h - 2)};
+    constexpr int kFrames = 8;
+    struct Tongue {
+        float x, base, tall, width, phase;
+    };
+    const Tongue tongues[3] = {{0.0f, 0.0f, 1.0f, 0.5f, 0.0f},
+                               {-fw * 0.24f, 0.15f, 0.62f + 0.12f * rand01(seed, 1), 0.3f, 2.1f},
+                               {fw * 0.24f, 0.1f, 0.7f + 0.12f * rand01(seed, 2), 0.3f, 4.2f}};
+    return bake_fx(w, h, kFrames, o, [&](Canvas& c, int f) {
+        const float ph = static_cast<float>(f) / kFrames * 6.2831853f;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float yn = (o.y - static_cast<float>(y)) / fh;  // 0 at its foot, 1 at the tip
+                if (yn < 0.0f || yn > 1.1f) continue;
+                const float xr = static_cast<float>(x) - o.x + 0.5f;
+                float hv = -1.0f;
+                for (const Tongue& t : tongues) {
+                    const float tall = t.tall * (0.88f + 0.12f * std::sin(ph + t.phase));  // leaping up and down
+                    const float k = (yn - t.base * 0.3f) / tall;
+                    if (k < 0.0f || k > 1.0f) continue;
+                    const float lean = std::sin(k * 3.2f + ph + t.phase) * fw * 0.12f * k;  // licking side to side
+                    const float bulge = k < 0.25f ? 0.75f + k : 1.0f;  // round at its foot
+                    const float hw = fw * t.width * std::pow(1.0f - k, 0.85f) * bulge;
+                    hv = std::max(hv, (1.0f - std::fabs(xr - t.x * (1.0f - k * 0.5f) - lean) / std::max(hw, 0.35f)) * (1.0f - 0.25f * k));
+                }
+                hv += (fx_noise(seed + static_cast<uint32_t>(f), x, y) - 0.5f) * 0.16f;
+                if (hv <= 0.0f) continue;
+                const float v = hv * (1.1f - 0.6f * yn);
+                c.set(x, y, v > 0.78f ? kHeat[0] : v > 0.55f ? kHeat[1] : v > 0.3f ? kHeat[2] : kHeat[3]);
+            }
+        }
+        if (f % 3 == 0) c.set(static_cast<int>(o.x + (rand01(seed, f) - 0.5f) * fw * 0.6f), static_cast<int>(o.y - fh) - 1 - f % 2, kHeat[1]);  // a spark off it
+        c.outline({110, 30, 18, 255});
+    });
+}
+
+// A flash: a star of rays, shrinking and going orange over its four frames.
+FxSheet bake_star(float r, uint32_t seed) {
+    const int s = static_cast<int>(r * 2.0f) + 5;
+    const Vector2 o{static_cast<float>(s / 2), static_cast<float>(s / 2)};
+    return bake_fx(s, s, 4, o, [&](Canvas& c, int f) { star_on(c, o.x, o.y, r, 1.0f - static_cast<float>(f) * 0.22f, seed); });
+}
+
+// Embers smouldering in a burnt patch: dark lumps, specks glowing, flickering.
+FxSheet bake_embers(uint32_t seed) {
+    constexpr int w = 30;
+    constexpr int h = 14;
+    return bake_fx(w, h, 4, {static_cast<float>(w / 2), static_cast<float>(h / 2)}, [&](Canvas& c, int f) {
+        for (int i = 0; i < 22; ++i) {
+            const float a = rand01(seed, i) * 6.2831853f;
+            const float d = std::sqrt(rand01(seed, i + 40));
+            const float cx = w * 0.5f + std::cos(a) * d * w * 0.42f;
+            const float cy = h * 0.5f + std::sin(a) * d * h * 0.38f;
+            c.disc(cx, cy, 1.0f + 1.3f * rand01(seed, i + 80), i % 3 == 0 ? Color{66, 46, 38, 255} : Color{44, 34, 30, 255});
+        }
+        for (int i = 0; i < 16; ++i) {
+            const int x = static_cast<int>(rand01(seed, 200 + i) * w);
+            const int y = static_cast<int>(rand01(seed, 220 + i) * h);
+            if (c.get(x, y).a == 0) continue;
+            const float glow = rand01(seed, 240 + i * 4 + f);
+            c.set(x, y, glow > 0.7f ? kHeat[1] : glow > 0.35f ? kHeat[2] : kHeat[3]);
+        }
+    });
+}
+
+// Every sheet, once there's a window to make textures in.
+void ensure_fx() {
+    if (!g_fx.empty()) return;
+    g_fx.resize(static_cast<size_t>(Fx::Count) * kFxVariants);
+    for (int v = 0; v < kFxVariants; ++v) {
+        const auto seed = static_cast<uint32_t>(v * 7919 + 17);
+        auto put = [&](Fx kind, FxSheet sheet) { g_fx[static_cast<size_t>(kind) * kFxVariants + static_cast<size_t>(v)] = sheet; };
+        put(Fx::Blast0, bake_blast(7.0f, seed));
+        put(Fx::Blast1, bake_blast(12.0f, seed + 1u));
+        put(Fx::Blast2, bake_blast(18.0f, seed + 2u));
+        put(Fx::Blast3, bake_blast(26.0f, seed + 3u));
+        put(Fx::Flame0, bake_flame(5.0f, 9.0f, seed + 4u));
+        put(Fx::Flame1, bake_flame(8.0f, 14.0f, seed + 5u));
+        put(Fx::Flame2, bake_flame(12.0f, 21.0f, seed + 6u));
+        put(Fx::Star0, bake_star(4.0f, seed + 7u));
+        put(Fx::Star1, bake_star(8.0f, seed + 8u));
+        put(Fx::Star2, bake_star(13.0f, seed + 9u));
+        put(Fx::Embers, bake_embers(seed + 10u));
+    }
+}
+
+// A frame of a sheet, its foot (or its middle) at `anchor`; fire lights itself.
+void draw_fx(const FxSheet& s, int frame, Vector2 anchor) {
+    if (s.frames == 0) return;
+    frame = std::clamp(frame, 0, s.frames - 1);
+    DrawTexturePro(s.tex, {static_cast<float>(frame * s.w), 0.0f, static_cast<float>(s.w), static_cast<float>(s.h)},
+                   {std::round(anchor.x - s.origin.x), std::round(anchor.y - s.origin.y), static_cast<float>(s.w), static_cast<float>(s.h)},
+                   {0.0f, 0.0f}, 0.0f, WHITE);
+}
 
 // Trees of a forest tile, placed by a hash so they never move: pine stands,
 // broadleaf and birch groves in patches, poplars along a tree line, an old
@@ -6212,12 +6509,8 @@ bool WorldRenderer::draw_baked(const BuildingBake& want) const {
         for (size_t i = 0; i < it->second.burning.size(); ++i) {
             const auto& f = it->second.burning[i];
             if (!f.flames) continue;
-            const float t = now * 9.0f + static_cast<float>(i) * 1.7f;
-            const float tall = 5.0f + 2.0f * std::sin(t) + 1.5f * std::sin(t * 2.3f);
-            const Vector2 p = f.at;
-            DrawCircleV(p, 4.0f, {255, 140, 40, 50});
-            DrawTriangle({p.x - 2.5f, p.y + 1.0f}, {p.x + 2.5f, p.y + 1.0f}, {p.x + std::sin(t * 1.3f), p.y - tall}, {236, 110, 30, 235});
-            DrawTriangle({p.x - 1.2f, p.y + 1.0f}, {p.x + 1.2f, p.y + 1.0f}, {p.x + std::sin(t * 1.7f) * 0.6f, p.y - tall * 0.6f}, {255, 214, 90, 245});
+            const FxSheet& s = fx_sheet(i % 2 == 0 ? Fx::Flame1 : Fx::Flame0, static_cast<int>(i % 3));
+            draw_fx(s, static_cast<int>(now * 12.0f + static_cast<float>(i) * 3.0f) % s.frames, {f.at.x, f.at.y + 2.0f});
         }
     }
     return true;
@@ -6314,6 +6607,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         return std::binary_search(selection.begin(), selection.end(), id);
     };
 
+    ensure_fx();
     if (grain_.id == 0) {
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
         grain_zoom_loc_ = GetShaderLocation(grain_, "zoom");
@@ -6655,10 +6949,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             const float d = r * (0.25f + 0.6f * static_cast<float>(i % 3) / 2.0f);
             const Vector2 g{c.x + std::cos(a) * d, c.y + std::sin(a) * d};
             const Vector2 base = on_terrain(map, g);
-            const float h = 7.0f + 4.0f * std::sin(t * 0.7f + static_cast<float>(i));
-            DrawTriangle({base.x + 3, base.y}, {base.x, base.y - h}, {base.x - 3, base.y}, {230, 120, 30, 230});
-            DrawTriangle({base.x + 1.5f, base.y}, {base.x, base.y - h * 0.6f}, {base.x - 1.5f, base.y},
-                         {255, 210, 80, 240});
+            const FxSheet& s = fx_sheet(i % 3 == 0 ? Fx::Flame1 : Fx::Flame0, i);
+            draw_fx(s, static_cast<int>(t * 0.4f + static_cast<float>(i) * 3.0f) % s.frames, base);
         }
     }
 
@@ -12317,28 +12609,26 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
                 DrawRectangleRec({at.x - p.size * 0.5f, at.y - p.size * 0.5f, p.size, p.size}, ColorAlpha(p.color, alpha));
                 break;
             }
-            case Particle::Kind::Flame: {
-                const Color c = t < 0.4f ? mix({255, 236, 150, 255}, {255, 170, 50, 255}, t / 0.4f)
-                                         : mix({255, 170, 50, 255}, {200, 60, 30, 255}, (t - 0.4f) / 0.6f);
-                DrawEllipse(static_cast<int>(at.x), static_cast<int>(at.y), p.size * 0.8f, p.size * 1.4f, ColorAlpha(c, 0.9f * (1.0f - t * 0.6f)));
+            case Particle::Kind::Flame: {  // a tongue of fire, flickering, smaller as it goes out
+                const float size = p.size * (t < 0.7f ? 1.0f : 1.0f - (t - 0.7f) / 0.3f * 0.6f);
+                const Fx kind = size < 2.6f ? Fx::Flame0 : size < 4.6f ? Fx::Flame1 : Fx::Flame2;
+                const FxSheet& s = fx_sheet(kind, static_cast<int>(p.seed % 3u));
+                draw_fx(s, static_cast<int>(p.age * 14.0f + static_cast<float>(p.seed % 8u)) % s.frames, {at.x, at.y + size * 0.6f});
                 break;
             }
-            case Particle::Kind::Spark: {  // a hot streak along its flight
+            case Particle::Kind::Spark: {  // a hot streak along its flight, pixel-sharp: a white head, its colour behind
                 const Vector2 v = iso_offset(p.vel);
-                const Vector2 tail{at.x - v.x * 0.04f, at.y - v.y * 0.04f + p.vz * 0.04f};
-                DrawLineV(tail, at, ColorAlpha(p.color, 1.0f - t));
-                DrawPixelV(at, ColorAlpha({255, 250, 220, 255}, 1.0f - t));
+                const Vector2 head{std::round(at.x), std::round(at.y)};
+                const Vector2 tail{std::round(at.x - v.x * 0.04f), std::round(at.y - v.y * 0.04f + p.vz * 0.04f)};
+                const Color c = t < 0.5f ? p.color : kHeat[3];
+                DrawLineV(tail, head, c);
+                DrawRectangleRec({head.x, head.y, 1.0f, 1.0f}, t < 0.6f ? kHeat[0] : kHeat[1]);
                 break;
             }
-            case Particle::Kind::Flash: {  // white-hot at the heart, rays out of it, gone at once
-                const float k = 1.0f - t;
-                DrawCircleV(at, p.size * (0.6f + 0.4f * k), ColorAlpha(p.color, 0.75f * k));
-                DrawCircleV(at, p.size * 0.45f * k, ColorAlpha({255, 255, 245, 255}, k));
-                for (int i = 0; i < 4; ++i) {
-                    const float a = static_cast<float>(i) * 1.5708f + 0.4f;
-                    const float len = p.size * 1.7f * k;
-                    DrawLineV(at, {at.x + std::cos(a) * len, at.y + std::sin(a) * len * 0.6f}, ColorAlpha(p.color, 0.8f * k));
-                }
+            case Particle::Kind::Flash: {  // a star of rays out of a white-hot heart, gone at once
+                const Fx kind = p.size < 5.0f ? Fx::Star0 : p.size < 11.0f ? Fx::Star1 : Fx::Star2;
+                const FxSheet& s = fx_sheet(kind, static_cast<int>(p.seed % 3u));
+                draw_fx(s, static_cast<int>(t * static_cast<float>(s.frames)), at);
                 break;
             }
             case Particle::Kind::Casing: {
@@ -12696,14 +12986,22 @@ void WorldRenderer::draw_track_marks(const engine::World& world, Rectangle view)
 }
 
 void WorldRenderer::draw_blasts(const engine::TileMap& map) const {
-    for (const Blast& b : blasts_) {
+    // The little ones first: where several go off together, the biggest ball of fire over the rest.
+    std::vector<const Blast*> order;
+    for (const Blast& b : blasts_) order.push_back(&b);
+    std::stable_sort(order.begin(), order.end(), [](const Blast* a, const Blast* b) { return a->radius < b->radius; });
+    for (const Blast* bp : order) {
+        const Blast& b = *bp;
         if (b.age < 0.0f) continue;  // not yet
-        const float t = b.age / kBlastLifetime;
+        const int size = b.radius < 0.45f ? 0 : b.radius < 1.0f ? 1 : b.radius < 1.8f ? 2 : 3;
+        if (b.age >= kBlastSeconds[size]) continue;
         const Vector2 p = on_terrain(map, b.ground);
-        const float radius = b.radius * (0.5f + t);
-        fill_ground_ellipse(p, radius, ColorAlpha({255, 170, 60, 255}, 0.55f * (1.0f - t)));
-        fill_ground_ellipse({p.x, p.y - 3.0f}, radius * 0.5f, ColorAlpha({255, 240, 190, 255}, 0.8f * (1.0f - t)));
-        draw_ground_ellipse(p, radius * 1.1f, ColorAlpha({90, 80, 70, 255}, 0.6f * (1.0f - t)));
+        if (b.age < 0.3f && b.z <= 0.0f) {  // the ground lit up under it
+            fill_ground_ellipse(p, b.radius * 0.7f, ColorAlpha({255, 170, 60, 255}, 0.35f * (1.0f - b.age / 0.3f)));
+        }
+        const uint32_t v = tile_hash(static_cast<int>(b.ground.x * 17.0f), static_cast<int>(b.ground.y * 23.0f + b.z));
+        const FxSheet& s = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Blast0) + size), static_cast<int>(v % 3u));
+        draw_fx(s, static_cast<int>(b.age / kBlastSeconds[size] * static_cast<float>(s.frames)), {p.x, p.y - b.z});
     }
 }
 

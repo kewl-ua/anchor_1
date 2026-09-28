@@ -67,6 +67,7 @@ private:
         Vector2 ground;
         float age;
         float radius;  // tiles
+        float z = 0.0f;  // pixels up (a ball of fire rising off a burst below)
     };
     struct Remains {
         Vector2 ground;
