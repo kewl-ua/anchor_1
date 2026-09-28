@@ -345,6 +345,17 @@ private:
     // Yards of a village (not of the town or the works): earth and grass,
     // fences, woodpiles, wells, fruit trees. One per tile, found once per map.
     std::vector<uint8_t> village_;
+    // Each village's bus stop, on a yard by the road where it comes in,
+    // facing the road (a kiosk by some); the house by it drawn as the
+    // village shop.
+    struct BusStop {
+        Vector2 ground;
+        Vector2 facing;
+        bool kiosk = false;
+    };
+    std::vector<BusStop> bus_stops_;
+    std::vector<engine::EntityId> shops_;
+    void draw_bus_stop(const engine::TileMap& map, const BusStop& b) const;
     bool village(int tx, int ty) const {
         return tx >= 0 && ty >= 0 && tx < cache_width_ && ty < cache_height_ &&
                village_.size() == static_cast<size_t>(cache_width_ * cache_height_) &&

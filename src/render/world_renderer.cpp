@@ -1106,6 +1106,74 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 if (cottage && !town) village_[static_cast<size_t>(y * cache_width_ + x)] = 1;
             }
         }
+        // Each village's bus stop: on its yard nearest where a road comes in
+        // (the lowest such tile), facing the road; its shop the house nearest it.
+        bus_stops_.clear();
+        shops_.clear();
+        {
+            std::vector<uint8_t> done(village_.size(), 0);
+            for (int y = 0; y < cache_height_; ++y) {
+                for (int x = 0; x < cache_width_; ++x) {
+                    const size_t i0 = static_cast<size_t>(y * cache_width_ + x);
+                    if (!village_[i0] || done[i0] || map.terrain(x, y) != engine::Terrain::Urban) continue;
+                    std::vector<engine::TilePos> cluster{{x, y}};
+                    done[i0] = 1;
+                    for (size_t k = 0; k < cluster.size(); ++k) {
+                        for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                            const int nx = cluster[k].x + dx;
+                            const int ny = cluster[k].y + dy;
+                            if (!map.contains_tile(nx, ny)) continue;
+                            const size_t i = static_cast<size_t>(ny * cache_width_ + nx);
+                            if (done[i]) continue;
+                            // Its yards, streets and houses: the whole village (across a road through it).
+                            if (!village_[i]) {
+                                const engine::Terrain r = map.terrain(nx, ny);
+                                if (r != engine::Terrain::Road && r != engine::Terrain::DirtRoad) continue;
+                                int sides = 0;
+                                for (const auto& [ex, ey] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                                    if (map.contains_tile(nx + ex, ny + ey) && village_[static_cast<size_t>((ny + ey) * cache_width_ + nx + ex)]) ++sides;
+                                }
+                                if (sides < 2) continue;
+                            }
+                            done[i] = 1;
+                            cluster.push_back({nx, ny});
+                        }
+                    }
+                    if (cluster.size() < 30) continue;  // (a holding's yard, a farm's: no village)
+                    std::optional<BusStop> stop;
+                    for (const engine::TilePos& t : cluster) {
+                        if (stop) break;
+                        if (map.terrain(t.x, t.y) != engine::Terrain::Urban) continue;
+                        for (const auto& [dx, dy] : {std::pair{0, 1}, std::pair{1, 0}, std::pair{0, -1}, std::pair{-1, 0}}) {
+                            if (!map.contains_tile(t.x + dx, t.y + dy)) continue;
+                            const engine::Terrain r = map.terrain(t.x + dx, t.y + dy);
+                            if (r != engine::Terrain::Road && r != engine::Terrain::DirtRoad) continue;
+                            const Vector2 f{static_cast<float>(dx), static_cast<float>(dy)};
+                            stop = BusStop{{static_cast<float>(t.x) + 0.5f + f.x * 0.22f, static_cast<float>(t.y) + 0.5f + f.y * 0.22f}, f,
+                                           tile_hash(t.x, t.y) % 2 == 0};
+                            break;
+                        }
+                    }
+                    if (!stop) continue;
+                    bus_stops_.push_back(*stop);
+                    const engine::Structure* best = nullptr;
+                    float best_d = 1e9f;
+                    for (const engine::Structure& s : world.structures()) {
+                        if (s.type != engine::StructureType::House || s.look != engine::HouseLook::House || s.tiles.size() >= engine::kSpaciousTiles ||
+                            s.tiles.size() < 4 || std::find(cluster.begin(), cluster.end(), s.tiles.front()) == cluster.end()) {
+                            continue;  // (one of this village's houses)
+                        }
+                        const Vector2 c = to_vector2(s.center);
+                        const float d = std::hypot(c.x - stop->ground.x, c.y - stop->ground.y);
+                        if (d < best_d && d < 6.0f) {
+                            best_d = d;
+                            best = &s;
+                        }
+                    }
+                    if (best) shops_.push_back(best->id);
+                }
+            }
+        }
         // A spoil tip's top: a corner among rock, higher than every corner round it.
         spoil_peaks_.clear();
         for (int cy = 1; cy < cache_height_; ++cy) {
@@ -3823,6 +3891,65 @@ void wear_walls(const Face& f, float k, float v0, float v1, int stage, Color und
 void fallen_roof(const engine::TileMap& map, Rectangle r, float wall, float rise, bool along_x, bool gable, Color walls, Color cover, bool steel,
                  uint32_t seed);  // below, with the roofs
 
+// A shop's sign in tiny pixel letters: ПРОДУКТЫ, on a face `f` from u0,
+// its lower edge at `v`, each letter's pixel a pixel.
+void sign_text(const Face& f, float u0, float v, Color c) {
+    static constexpr const char* kLetters[8][5] = {
+        {"111", "101", "101", "101", "101"},            // П
+        {"110", "101", "110", "100", "100"},            // Р
+        {"111", "101", "101", "101", "111"},            // О
+        {"0110", "0110", "0110", "1111", "1001"},       // Д
+        {"101", "101", "011", "001", "110"},            // У
+        {"101", "110", "100", "110", "101"},            // К
+        {"111", "010", "010", "010", "010"},            // Т
+        {"10001", "10001", "11101", "10101", "11101"},  // Ы
+    };
+    const float px = f.px();
+    float u = u0;
+    for (const auto& letter : kLetters) {
+        int wide = 0;
+        for (int row = 0; row < 5; ++row) {
+            for (int col = 0; letter[row][col] != 0; ++col) {
+                wide = std::max(wide, col + 1);
+                if (letter[row][col] != '1') continue;
+                face_fill(f, u + static_cast<float>(col) * px, u + static_cast<float>(col + 1) * px, v + static_cast<float>(4 - row),
+                          v + static_cast<float>(5 - row), c);
+            }
+        }
+        u += static_cast<float>(wide + 1) * px;
+    }
+}
+
+// A plot's fence along one of its edges, from `a` to `b` on the ground:
+// pickets (painted, pointed) on their rails, or corrugated sheets on posts;
+// left out between `gap0` and `gap1` (along it, 0..1) for the gate.
+void plot_fence(const engine::TileMap& map, Vector2 a, Vector2 b, bool sheets, Color paint, float tall, float light, float gap0 = 2.0f,
+                float gap1 = 2.0f) {
+    const Face f{on_terrain(map, a), on_terrain(map, b)};
+    const float px = f.px();
+    const Color c = shade(paint, light);
+    if (sheets) {  // corrugated sheets: the ribs, a rail on top, a post every few metres
+        for (const auto& [u0, u1] : {std::pair{0.0f, std::min(1.0f, gap0)}, std::pair{std::max(0.0f, gap1), 1.0f}}) {
+            if (u1 <= u0) continue;
+            face_fill(f, u0, u1, 0.5f, tall, c);
+            for (float u = u0; u < u1; u += 2.0f * px) face_line(f, u, 0.5f, u, tall, shade(c, 0.8f));
+            face_line(f, u0, tall, u1, tall, shade(c, 1.2f));
+            face_fill(f, u0, u1, 0.0f, 1.0f, shade(c, 0.6f));
+        }
+        return;
+    }
+    for (const float rail : {tall * 0.3f, tall * 0.75f}) {
+        if (gap0 > 0.0f) face_line(f, 0.0f, rail, std::min(1.0f, gap0), rail, shade(c, 0.7f));
+        if (gap1 < 1.0f) face_line(f, std::max(0.0f, gap1), rail, 1.0f, rail, shade(c, 0.7f));
+    }
+    int k = 0;
+    for (float u = px; u < 1.0f; u += 2.0f * px, ++k) {
+        if (u > gap0 && u < gap1) continue;
+        const float top = tall + (k % 2 == 0 ? 1.0f : 0.0f);
+        face_line(f, u, 0.0f, u, top, k % 6 == 0 ? shade(c, 0.8f) : c);
+    }
+}
+
 // A house on its plot, as they stand in the villages of the Donbas (on a
 // village's 2 x 2 plot, a good deal bigger than a tank; its walls, its roof,
 // its windows, its chimney all to that size):
@@ -3834,7 +3961,7 @@ void fallen_roof(const engine::TileMap& map, Rectangle r, float wall, float rise
 // chimney, a TV aerial or a satellite dish; a glazed porch on some. Hit:
 // windows broken, soot over them, plaster fallen off showing the brick
 // under it, cracks; holes in the roof, the rafters showing; burnt black.
-void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float damage) {
+void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float damage, bool shop = false) {
     auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 5) + i * 13, i * 31 + 7)); };
     // The plot's size (1 a tile); the house's size by it (1 on one tile).
     const float s = std::sqrt(plot.width * plot.height);
@@ -3862,6 +3989,22 @@ void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float da
     const float soot = 1.0f - 0.3f * damage;
     const int stage = stage_of(damage);
 
+    // Its fence round the plot (a village's): pickets or corrugated sheets;
+    // the far sides first, the near ones over the house after it. The shop's
+    // front stands open to the street.
+    const bool fenced = s > 1.2f && stage < 3;
+    const bool sheets = rnd(30) < 0.3f;
+    static constexpr Color kFences[4] = {{96, 136, 90, 255}, {84, 116, 170, 255}, {150, 126, 96, 255}, {150, 84, 60, 255}};
+    const Color fence_paint = sheets ? (rnd(31) < 0.5f ? Color{138, 74, 52, 255} : Color{70, 108, 82, 255}) : kFences[static_cast<int>(rnd(32) * 4.0f) % 4];
+    const float fence_h = (sheets ? 6.0f : 4.5f) * k;
+    const float px0 = plot.x + 0.03f;
+    const float px1 = plot.x + plot.width - 0.03f;
+    const float py0 = plot.y + 0.03f;
+    const float py1 = plot.y + plot.height - 0.03f;
+    if (fenced) {
+        plot_fence(map, {px0, py0}, {px1, py0}, sheets, fence_paint, fence_h, 0.74f);
+        plot_fence(map, {px0, py0}, {px0, py1}, sheets, fence_paint, fence_h, 1.0f);
+    }
     // The path trodden from its door out to the street, across the yard.
     if (plot.y + plot.height > y1 + 0.05f) {
         const float door_x = x1 - 0.78f * (x1 - x0);
@@ -4046,6 +4189,54 @@ void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float da
         DrawEllipse(static_cast<int>(d.x + 1.0f * k), static_cast<int>(d.y), 2.2f * k, 2.6f * k, lit({226, 226, 220, 255}));
         DrawEllipse(static_cast<int>(d.x + 1.4f * k), static_cast<int>(d.y + 0.4f * k), 1.4f * k, 1.8f * k, lit({180, 180, 176, 255}));
         DrawLineV({d.x + 1.0f * k, d.y}, {d.x + 3.5f * k, d.y + 1.0f * k}, lit({90, 90, 90, 255}));
+    }
+    // The shop: its sign over the door (ПРОДУКТЫ), the counter's window lit, a crate or two by the door.
+    if (shop && stage < 3) {
+        const Face front{base[3], base[2]};  // (left to right, to read)
+        const float fpx = front.px();
+        const float sign0 = 0.5f - 18.0f * fpx;
+        face_fill(front, sign0 - 2.0f * fpx, sign0 + 36.0f * fpx, wall_h - 1.5f * k - 8.0f, wall_h - 1.5f * k, {40, 84, 170, 255});
+        face_line(front, sign0 - 2.0f * fpx, wall_h - 1.5f * k - 8.0f, sign0 + 36.0f * fpx, wall_h - 1.5f * k - 8.0f, {220, 220, 214, 255});
+        sign_text(front, sign0, wall_h - 1.5f * k - 6.5f, {246, 244, 236, 255});
+        const Vector2 crate = on_terrain(map, {x1 - 0.3f * (x1 - x0), y1 + 0.12f});
+        DrawRectangleRec({crate.x - 3.0f, crate.y - 4.0f, 6.0f, 4.0f}, lit({150, 116, 70, 255}));
+        DrawLineV({crate.x - 3.0f, crate.y - 2.0f}, {crate.x + 3.0f, crate.y - 2.0f}, lit({110, 84, 50, 255}));
+    }
+    if (fenced) {
+        // The near sides: the gate for a car and the wicket where the path comes out, the bench by them.
+        const float door_x = x1 - 0.78f * (x1 - x0);
+        const float span = px1 - px0;
+        const float wicket0 = (door_x - 0.08f - px0) / span;
+        const float wicket1 = (door_x + 0.08f - px0) / span;
+        const bool gate_right = door_x + 0.5f < px1;
+        const float gate0 = gate_right ? wicket1 + 0.02f / span : wicket0 - 0.4f / span;
+        const float gate1 = gate_right ? wicket1 + 0.4f / span : wicket0 - 0.02f / span;
+        plot_fence(map, {px1, py0}, {px1, py1}, sheets, fence_paint, fence_h, 1.0f);
+        if (!shop) {
+            plot_fence(map, {px0, py1}, {px1, py1}, sheets, fence_paint, fence_h, 0.74f, std::min(wicket0, gate0), std::max(wicket1, gate1));
+            const Face front{on_terrain(map, {px0, py1}), on_terrain(map, {px1, py1})};
+            const float fpx = front.px();
+            const Color leaf = shade(sheets ? fence_paint : shade(fence_paint, 0.9f), 0.8f);
+            // The gate's two leaves, shut; its posts.
+            face_fill(front, gate0, gate1, 0.5f, fence_h + 1.0f, leaf);
+            for (float u = gate0; u < gate1; u += 3.0f * fpx) face_line(front, u, 0.5f, u, fence_h + 1.0f, shade(leaf, 0.75f));
+            face_line(front, (gate0 + gate1) * 0.5f, 0.5f, (gate0 + gate1) * 0.5f, fence_h + 1.0f, shade(leaf, 0.5f));
+            for (const float u : {gate0, gate1, wicket0, wicket1}) face_fill(front, u - fpx, u + fpx, 0.0f, fence_h + 2.5f * k * 0.6f, {70, 64, 58, 255});
+            // The wicket, ajar.
+            const Vector2 hinge = front.at(wicket0, 0.5f);
+            const Vector2 swing = on_terrain(map, {px0 + span * wicket0 + 0.1f, py1 - 0.09f});
+            fill_quad(hinge, swing, {swing.x, swing.y - fence_h}, {hinge.x, hinge.y - fence_h}, shade(leaf, 1.1f));
+            // A bench outside by the gate, for the old women of an evening.
+            if (rnd(33) < 0.75f) {
+                const float bu = gate_right ? wicket0 - 0.28f / span : wicket1 + 0.06f / span;
+                const Vector2 b0 = on_terrain(map, {px0 + span * bu, py1 + 0.1f});
+                const Vector2 b1 = on_terrain(map, {px0 + span * (bu + 0.22f / span), py1 + 0.1f});
+                const float seat = 2.5f * k;
+                fill_quad({b0.x, b0.y - seat}, {b1.x, b1.y - seat}, {b1.x, b1.y - seat - 1.5f}, {b0.x, b0.y - seat - 1.5f}, {140, 104, 66, 255});
+                for (const Vector2& leg : {b0, b1}) DrawLineV({leg.x + (leg.x == b0.x ? 1.0f : -1.0f), leg.y}, {leg.x + (leg.x == b0.x ? 1.0f : -1.0f), leg.y - seat},
+                                                           lit({96, 72, 48, 255}));
+            }
+        }
     }
 }
 
@@ -4782,7 +4973,9 @@ void draw_sunflower(Vector2 base, float tall, float head, float stage, float lea
 }
 
 // A village yard: a picket fence along an edge or two (weathered, green or
-// blue), and now a woodpile, a well under its little roof, a dog's kennel, a
+// blue), and now a woodpile, a well under its little roof, a well's sweep
+// (a zhuravel: the long pole on its post, the bucket on its rod), the
+// street's cast-iron water pump, a haystack on its pole, a dog's kennel, a
 // washing line, a bench, a vegetable bed.
 void draw_yard(const engine::TileMap& map, int tx, int ty) {
     const auto fx = static_cast<float>(tx);
@@ -4801,8 +4994,8 @@ void draw_yard(const engine::TileMap& map, int tx, int ty) {
         }
         for (const float lift : {2.0f, 4.5f}) DrawLineV(at(a.x, a.y, lift), at(b.x, b.y, lift), lit(shade(wood, 0.75f)));
     };
-    if (rnd(1) < 0.55f) fence({1.0f, 0.02f}, {1.0f, 0.98f});
-    if (rnd(2) < 0.45f) fence({0.02f, 1.0f}, {0.98f, 1.0f});
+    if (rnd(1) < 0.3f) fence({1.0f, 0.02f}, {1.0f, 0.98f});
+    if (rnd(2) < 0.25f) fence({0.02f, 1.0f}, {0.98f, 1.0f});
     const int item = static_cast<int>(rnd(3) * 12.0f);
     const Vector2 spot = at(0.3f + 0.4f * rnd(4), 0.3f + 0.4f * rnd(5));
     switch (item) {
@@ -4849,6 +5042,52 @@ void draw_yard(const engine::TileMap& map, int tx, int ty) {
         case 5: {  // a bench by the fence
             DrawLineEx({spot.x - 5.0f, spot.y - 2.5f}, {spot.x + 5.0f, spot.y - 4.0f}, 2.0f, lit({132, 100, 66, 255}));
             for (const float side : {-4.0f, 4.0f}) DrawLineV({spot.x + side, spot.y - 2.8f + side * -0.15f}, {spot.x + side, spot.y}, lit({90, 68, 46, 255}));
+            break;
+        }
+        case 8: {  // a zhuravel: the well's log frame, the post, the long sweep pole, the bucket on its rod
+            const Color log{120, 90, 60, 255};
+            DrawRectangleRec({spot.x - 4.0f, spot.y - 4.0f, 8.0f, 4.0f}, lit(log));
+            DrawRectangleRec({spot.x - 4.0f, spot.y - 4.0f, 8.0f, 1.0f}, lit(shade(log, 1.3f)));
+            for (float y = spot.y - 3.0f; y < spot.y; y += 1.5f) DrawLineV({spot.x - 4.0f, y}, {spot.x + 4.0f, y}, lit(shade(log, 0.75f)));
+            const Vector2 post{spot.x + 9.0f, spot.y + 1.0f};
+            const Vector2 pivot{post.x, post.y - 17.0f};
+            DrawLineEx(post, pivot, 1.8f, lit({96, 72, 50, 255}));
+            DrawLineV(pivot, {pivot.x - 1.5f, pivot.y - 2.0f}, lit({96, 72, 50, 255}));  // its fork
+            DrawLineV(pivot, {pivot.x + 1.5f, pivot.y - 2.0f}, lit({96, 72, 50, 255}));
+            const Vector2 high{spot.x - 1.0f, pivot.y - 12.0f};
+            const Vector2 low{pivot.x + (pivot.x - high.x) * 0.45f, pivot.y + (pivot.y - high.y) * 0.45f};
+            DrawLineEx(high, low, 1.2f, lit({130, 100, 66, 255}));
+            DrawRectangleRec({low.x - 1.5f, low.y - 1.0f, 3.0f, 3.0f}, lit({90, 86, 80, 255}));  // the weight
+            DrawLineV(high, {high.x, spot.y - 7.0f}, lit({110, 84, 56, 255}));                  // the rod
+            DrawRectangleRec({high.x - 1.5f, spot.y - 7.0f, 3.0f, 3.0f}, lit({150, 150, 146, 255}));  // the bucket
+            break;
+        }
+        case 9: {  // the street's water pump: cast iron, painted, its spout, its lever; the wet ground under it
+            fill_ground_ellipse({spot.x + 1.5f, spot.y + 0.5f}, 0.08f, {70, 80, 84, 140});
+            const Color iron{50, 92, 120, 255};
+            DrawRectangleRec({spot.x - 1.5f, spot.y - 11.0f, 3.0f, 11.0f}, lit(iron));
+            DrawRectangleRec({spot.x - 1.5f, spot.y - 11.0f, 1.0f, 11.0f}, lit(shade(iron, 1.35f)));
+            DrawRectangleRec({spot.x - 2.0f, spot.y - 12.5f, 4.0f, 2.0f}, lit(shade(iron, 0.8f)));
+            DrawLineEx({spot.x + 1.5f, spot.y - 6.0f}, {spot.x + 4.0f, spot.y - 5.0f}, 1.4f, lit(shade(iron, 0.85f)));  // the spout
+            DrawLineEx({spot.x - 1.0f, spot.y - 11.0f}, {spot.x - 5.0f, spot.y - 14.0f}, 1.0f, lit({40, 40, 42, 255}));  // the lever
+            break;
+        }
+        case 10: {  // a haystack: raked up round its pole, darker where it's settled
+            const Color hay{190, 160, 86, 255};
+            DrawEllipse(static_cast<int>(spot.x + 3.0f), static_cast<int>(spot.y + 0.5f), 9.0f, 2.5f, lit({30, 34, 20, 70}));
+            for (int k = 0; k < 7; ++k) {
+                const float t = static_cast<float>(k) / 6.0f;
+                const float r = 7.0f * std::sqrt(1.0f - t * 0.92f);
+                DrawEllipse(static_cast<int>(spot.x), static_cast<int>(spot.y - 1.0f - 2.2f * static_cast<float>(k)), r, r * 0.55f,
+                            lit(shade(hay, 0.78f + 0.08f * static_cast<float>(k % 3))));
+            }
+            DrawEllipse(static_cast<int>(spot.x - 2.0f), static_cast<int>(spot.y - 9.0f), 3.0f, 3.5f, lit(shade(hay, 1.2f)));
+            for (int k = 0; k < 5; ++k) {  // wisps
+                const float a = static_cast<float>(k) * 1.2f;
+                const Vector2 w{spot.x + std::cos(a) * 5.0f, spot.y - 4.0f + std::sin(a) * 2.0f};
+                DrawLineV(w, {w.x + 1.5f, w.y + 1.0f}, lit(shade(hay, 1.25f)));
+            }
+            DrawLineV({spot.x, spot.y - 14.0f}, {spot.x + 0.5f, spot.y - 19.0f}, lit({110, 84, 56, 255}));  // its pole
             break;
         }
         case 6:
@@ -7585,7 +7824,8 @@ void WorldRenderer::draw_by_hand(const engine::TileMap& map, const BuildingBake&
     if (b.s.look == engine::HouseLook::Factory) return draw_factory(map, b.s, b.damage);
     if (b.s.type == engine::StructureType::House && b.s.tiles.size() < engine::kSpaciousTiles) {  // a house on its plot
         const engine::TilePos t = b.s.tiles.front();
-        return draw_house(map, footprint(b.s, 0.0f), tile_hash(t.x, t.y), b.damage);
+        return draw_house(map, footprint(b.s, 0.0f), tile_hash(t.x, t.y), b.damage,
+                          std::find(shops_.begin(), shops_.end(), b.s.id) != shops_.end());
     }
     draw_barn(map, b.s, b.damage);
 }
@@ -7808,6 +8048,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         bool rock = false;
         const engine::Structure* barn = nullptr;  // a spacious village building, drawn whole
         const engine::Structure* post = nullptr;  // a scout's observation post
+        const BusStop* stop = nullptr;
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
@@ -7823,6 +8064,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
         drawables.push_back({.depth = g.x + g.y, .unit = &u});
+    }
+    for (const BusStop& b : bus_stops_) {
+        if (!reveal_ && fog(world, static_cast<int>(b.ground.x), static_cast<int>(b.ground.y)) == kUnexplored) continue;
+        if (in_view(world, b.ground)) drawables.push_back({.depth = b.ground.x + b.ground.y, .stop = &b});
     }
     // Observation posts: ours as they are, others' as last seen (a hair nearer than the trees on their tile).
     for (const engine::Structure& s : world.structures()) {
@@ -8048,6 +8293,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             if (!draw_baked(want)) draw_by_hand(map, want);
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
+        } else if (d.stop) {
+            draw_bus_stop(map, *d.stop);
         } else if (d.post) {
             // The post, and the scout up his tree on it (in a stump, a hide, he's not to be seen).
             const engine::Unit* man = nullptr;
@@ -9325,6 +9572,85 @@ void WorldRenderer::draw_post(const engine::TileMap& map, const engine::Structur
             break;
         }
     }
+}
+
+// A village's bus stop, as the collective farms built them: a concrete
+// shelter, its back wall a mosaic towards the road (a sun over the wheat,
+// the blue sky, a dove), its sides, a bench in it, the flat roof slab over
+// it; a kiosk beside some.
+void WorldRenderer::draw_bus_stop(const engine::TileMap& map, const BusStop& b) const {
+    const Vector2 f = b.facing;
+    const Vector2 side{-f.y, f.x};
+    const uint32_t h = tile_hash(static_cast<int>(b.ground.x * 7.0f), static_cast<int>(b.ground.y * 7.0f));
+    constexpr float kHalf = 0.3f;   // along the road, tiles
+    constexpr float kDeep = 0.2f;  // back wall to its sides' ends
+    constexpr float kTall = 18.0f;
+    constexpr float kRoof = 0.13f;  // how far the roof slab reaches out over the bench
+    const Color concrete{190, 186, 176, 255};
+    const Vector2 back{b.ground.x - f.x * kDeep * 0.5f, b.ground.y - f.y * kDeep * 0.5f};
+    const Vector2 w0{back.x - side.x * kHalf, back.y - side.y * kHalf};
+    const Vector2 w1{back.x + side.x * kHalf, back.y + side.y * kHalf};
+    auto fwd = [&](Vector2 p, float t) { return Vector2{p.x + f.x * t, p.y + f.y * t}; };
+    // Its sides: the one farther from us first, the back wall, the bench, the near side.
+    auto side_wall = [&](Vector2 at) {
+        const Face s{on_terrain(map, at), on_terrain(map, fwd(at, kDeep * 0.7f))};
+        face_fill(s, 0.0f, 1.0f, 0.0f, kTall, shade(concrete, 0.8f));
+        face_line(s, 0.0f, kTall, 1.0f, kTall, shade(concrete, 1.1f));
+    };
+    const bool w0_far = w0.x + w0.y < w1.x + w1.y;
+    side_wall(w0_far ? w0 : w1);
+    const Face wall{on_terrain(map, w0), on_terrain(map, w1)};
+    const bool facing_us = f.x + f.y > 0.0f;  // the mosaic's side seen
+    face_fill(wall, 0.0f, 1.0f, 0.0f, kTall, facing_us ? concrete : shade(concrete, 0.78f));
+    if (facing_us) {
+        const float px = wall.px();
+        for (float u = 2.0f * px; u < 1.0f - 2.0f * px; u += 2.0f * px) {
+            for (float v = 2.0f; v < kTall - 2.0f; v += 2.0f) {
+                const float su = (u - 0.72f) * wall.pixels() / 2.0f;
+                const float sv = (v - 12.0f) / 2.0f;
+                const float roll = hash_unit(tile_hash(static_cast<int>(u * 97.0f) + static_cast<int>(h % 97u), static_cast<int>(v)));
+                Color tile;
+                if (su * su + sv * sv < 5.0f) {
+                    tile = roll < 0.5f ? Color{250, 206, 60, 255} : Color{236, 150, 44, 255};  // the sun
+                } else if (v < 7.0f) {
+                    tile = roll < 0.6f ? Color{214, 170, 70, 255} : roll < 0.85f ? Color{190, 140, 50, 255} : Color{110, 150, 70, 255};  // the wheat
+                } else {
+                    tile = roll < 0.55f ? Color{70, 130, 196, 255} : roll < 0.85f ? Color{104, 160, 214, 255} : Color{236, 236, 230, 255};  // the sky
+                }
+                face_fill(wall, u, u + 2.0f * px, v, v + 2.0f, tile);
+            }
+        }
+        // A dove in the sky.
+        const Vector2 dove = wall.at(0.3f, 11.0f);
+        DrawLineV({dove.x - 2.0f, dove.y}, {dove.x + 2.0f, dove.y - 1.0f}, lit({248, 248, 244, 255}));
+        DrawLineV({dove.x, dove.y}, {dove.x + 1.0f, dove.y - 2.0f}, lit({248, 248, 244, 255}));
+    } else {
+        face_line(wall, 0.2f, 3.0f, 0.5f, 5.0f, shade(concrete, 0.6f));  // a stain down it
+    }
+    // The bench along it, inside.
+    const Face bench{on_terrain(map, fwd(w0, 0.07f)), on_terrain(map, fwd(w1, 0.07f))};
+    face_fill(bench, 0.08f, 0.92f, 4.0f, 5.5f, {150, 112, 70, 255});
+    face_fill(bench, 0.1f, 0.14f, 0.0f, 4.0f, {110, 104, 96, 255});
+    face_fill(bench, 0.86f, 0.9f, 0.0f, 4.0f, {110, 104, 96, 255});
+    side_wall(w0_far ? w1 : w0);
+    // The roof slab, out over the bench.
+    const Vector2 r0 = on_terrain(map, {w0.x - side.x * 0.04f, w0.y - side.y * 0.04f}, kTall);
+    const Vector2 r1 = on_terrain(map, {w1.x + side.x * 0.04f, w1.y + side.y * 0.04f}, kTall);
+    const Vector2 r2 = on_terrain(map, fwd({w1.x + side.x * 0.04f, w1.y + side.y * 0.04f}, kRoof), kTall);
+    const Vector2 r3 = on_terrain(map, fwd({w0.x - side.x * 0.04f, w0.y - side.y * 0.04f}, kRoof), kTall);
+    fill_quad({r0.x, r0.y + 2.0f}, {r1.x, r1.y + 2.0f}, {r2.x, r2.y + 2.0f}, {r3.x, r3.y + 2.0f}, shade(concrete, 0.7f));
+    fill_quad(r0, r1, r2, r3, shade(concrete, 1.08f));
+    if (!b.kiosk) return;
+    // A kiosk beside it: a blue and white booth, its window, the awning.
+    const Vector2 k0{b.ground.x + side.x * 0.62f - 0.1f, b.ground.y + side.y * 0.62f - 0.1f};
+    const Box box = box_on(map, {k0.x, k0.y, 0.2f, 0.2f}, 11.0f);
+    face_fill(box.lit_face, 0.0f, 1.0f, 0.0f, 11.0f, {214, 220, 226, 255});
+    face_fill(box.shade_face, 0.0f, 1.0f, 0.0f, 11.0f, {160, 168, 176, 255});
+    face_fill(box.lit_face, 0.0f, 1.0f, 8.0f, 11.0f, {50, 96, 180, 255});
+    face_fill(box.shade_face, 0.0f, 1.0f, 8.0f, 11.0f, {40, 76, 146, 255});
+    face_fill(box.lit_face, 0.2f, 0.8f, 3.5f, 7.0f, {70, 90, 104, 255});
+    face_fill(box.shade_face, 0.2f, 0.8f, 3.5f, 7.0f, {56, 74, 86, 255});
+    fill_quad(box.top[0], box.top[1], box.top[2], box.top[3], {120, 124, 128, 255});
 }
 
 // A direction finder's aerial up a cell tower: a cross-arm with its four
