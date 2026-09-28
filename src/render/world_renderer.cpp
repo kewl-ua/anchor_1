@@ -4972,8 +4972,8 @@ void draw_sunflower(Vector2 base, float tall, float head, float stage, float lea
     if (!far) disc({hc.x + head * 0.15f, hc.y + head * 0.15f}, head * 0.32f, {58, 38, 20, 255});
 }
 
-// A village yard: a picket fence along an edge or two (weathered, green or
-// blue), and now a woodpile, a well under its little roof, a well's sweep
+// A village yard: a picket fence where it runs out into the fields
+// (weathered, green or blue), and now a woodpile, a well under its little roof, a well's sweep
 // (a zhuravel: the long pole on its post, the bucket on its rod), the
 // street's cast-iron water pump, a haystack on its pole, a dog's kennel, a
 // washing line, a bench, a vegetable bed.
@@ -4994,8 +4994,16 @@ void draw_yard(const engine::TileMap& map, int tx, int ty) {
         }
         for (const float lift : {2.0f, 4.5f}) DrawLineV(at(a.x, a.y, lift), at(b.x, b.y, lift), lit(shade(wood, 0.75f)));
     };
-    if (rnd(1) < 0.3f) fence({1.0f, 0.02f}, {1.0f, 0.98f});
-    if (rnd(2) < 0.25f) fence({0.02f, 1.0f}, {0.98f, 1.0f});
+    // (The plots have their own fences now: on the streets, one only where a yard runs out into the fields.)
+    auto open_side = [&](int dx, int dy) {
+        const int x = tx + dx;
+        const int y = ty + dy;
+        if (!map.contains_tile(x, y)) return false;
+        const engine::Terrain t = map.terrain(x, y);
+        return t == engine::Terrain::Grass || t == engine::Terrain::Wheat || t == engine::Terrain::Garden || t == engine::Terrain::Plowed;
+    };
+    if (open_side(1, 0) && rnd(1) < 0.6f) fence({1.0f, 0.02f}, {1.0f, 0.98f});
+    if (open_side(0, 1) && rnd(2) < 0.6f) fence({0.02f, 1.0f}, {0.98f, 1.0f});
     const int item = static_cast<int>(rnd(3) * 12.0f);
     const Vector2 spot = at(0.3f + 0.4f * rnd(4), 0.3f + 0.4f * rnd(5));
     switch (item) {
@@ -7763,7 +7771,13 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
     Rectangle g{static_cast<float>(tx), static_cast<float>(ty), 1.0f, 1.0f};
     float up = 44.0f;
     float pad = 0.15f;
-    if (kind == 3) {
+    if (kind == 4) {  // a yard's things: a well sweep's pole, a haystack, a fence
+        up = 40.0f;
+        pad = 0.4f;
+    } else if (kind == 5) {  // a bus stop, its kiosk beside it
+        up = 34.0f;
+        pad = 0.8f;
+    } else if (kind == 3) {
         const engine::RuinKind ruin = map.ruin(tx, ty);
         up = ruin == engine::RuinKind::Apartment ? 110.0f : ruin == engine::RuinKind::Elevator ? 64.0f : 40.0f;
         pad = 0.45f;
@@ -7806,6 +7820,13 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
 
 void WorldRenderer::draw_by_hand(const engine::TileMap& map, const BuildingBake& b) const {
     if (b.kind == 3) return draw_ruin_tile(map, b.tx, b.ty);
+    if (b.kind == 4) return draw_yard(map, b.tx, b.ty);
+    if (b.kind == 5) {
+        for (const BusStop& stop : bus_stops_) {
+            if (static_cast<int>(stop.ground.x) == b.tx && static_cast<int>(stop.ground.y) == b.ty) return draw_bus_stop(map, stop);
+        }
+        return;
+    }
     if (b.kind == 0) return draw_house(map, b.tx, b.ty, b.damage);
     if (const float k = building_scale(b.s); k != 1.0f && g_shrink == 1.0f) {  // bigger than its tiles (see building_scale)
         const Rectangle f = footprint(b.s, 0.0f);
@@ -7919,7 +7940,7 @@ void WorldRenderer::bake_buildings(const engine::World& world) const {
         sprite.look = b.look;
         sprite.burning.clear();
         for (const FireSpot& f : fires) sprite.burning.push_back({f.at, f.flames, f.roof});
-        sprite.ground = b.kind == 0 || b.kind == 3 ? Vector2{static_cast<float>(b.tx) + 0.5f, static_cast<float>(b.ty) + 0.5f} : to_vector2(b.s.center);
+        sprite.ground = b.kind == 0 || b.kind >= 3 ? Vector2{static_cast<float>(b.tx) + 0.5f, static_cast<float>(b.ty) + 0.5f} : to_vector2(b.s.center);
         sprite.anchor = on_terrain(map, sprite.ground);
         sprite.used = frame_;
         UnloadImage(img);
@@ -8049,6 +8070,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const engine::Structure* barn = nullptr;  // a spacious village building, drawn whole
         const engine::Structure* post = nullptr;  // a scout's observation post
         const BusStop* stop = nullptr;
+        bool yard = false;  // a village yard's things on house_x, house_y
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
@@ -8097,9 +8119,12 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const float light = state == kInView ? 1.0f : kFogLight;
         switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
             case engine::Terrain::Urban: {
+                if (!village(tx, ty)) break;
+                // The yard's things (a well, a haystack, a fence...), baked as the buildings are.
+                drawables.push_back({.depth = static_cast<float>(tx + ty) + 0.95f, .house_x = tx, .house_y = ty, .yard = true, .light = light});
                 // An apple or a cherry tree in some of the village yards.
                 const uint32_t hk = tile_hash(tx * 7 + 3, ty * 5 + 1);
-                if (!village(tx, ty) || hk % 4 != 0) break;
+                if (hk % 4 != 0) break;
                 Tree t{{static_cast<float>(tx) + 0.25f + 0.5f * hash_unit(hk >> 4), static_cast<float>(ty) + 0.25f + 0.5f * hash_unit(hk >> 12)},
                        0.8f + 0.25f * hash_unit(hk >> 20), 0.9f + 0.2f * hash_unit(hk >> 8), TreeKind::Apple};
                 t.height = 0.9f + 0.3f * hash_unit(hk >> 16);
@@ -8182,6 +8207,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
                                      .ruins = true, .light = light});
                 break;
+
             case engine::Terrain::Rock:
                 drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.0f, .house_x = tx, .house_y = ty,
                                      .rock = true, .light = light});
@@ -8294,7 +8320,18 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
         } else if (d.stop) {
-            draw_bus_stop(map, *d.stop);
+            // Baked into pixel art as the buildings are.
+            const int tx = static_cast<int>(d.stop->ground.x);
+            const int ty = static_cast<int>(d.stop->ground.y);
+            BuildingBake want{uint64_t{4} << 40 | static_cast<uint64_t>(ty * map.width() + tx), 0, 5};
+            want.tx = tx;
+            want.ty = ty;
+            if (!draw_baked(want)) draw_bus_stop(map, *d.stop);
+        } else if (d.yard) {
+            BuildingBake want{uint64_t{3} << 40 | static_cast<uint64_t>(d.house_y * map.width() + d.house_x), 0, 4};
+            want.tx = d.house_x;
+            want.ty = d.house_y;
+            if (!draw_baked(want)) draw_yard(map, d.house_x, d.house_y);
         } else if (d.post) {
             // The post, and the scout up his tree on it (in a stump, a hide, he's not to be seen).
             const engine::Unit* man = nullptr;
@@ -8787,7 +8824,6 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
             });
         }
         draw_ground_detail(map, tx, ty, terrain, top, right, bottom, left);
-        if (terrain == engine::Terrain::Urban && village(tx, ty)) draw_yard(map, tx, ty);
         if (terrain == engine::Terrain::Airstrip) {
             // Concrete slabs; a dashed centre line down the middle row of the runway.
             const Color seam = shade(theme::terrain_color(terrain), 0.8f);

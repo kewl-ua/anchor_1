@@ -245,7 +245,9 @@ private:
     struct BuildingBake {
         uint64_t key = 0;
         uint32_t look = 0;
-        int kind = 0;  // 0 a house on its tile; 1 a village building (a barn, a block of flats...); 2 a player's; 3 rubble on its tile
+        // 0 a house on its tile; 1 a village building (a barn, a block of flats...); 2 a player's; 3 rubble on its tile;
+        // 4 a village yard's things on its tile (a well, a haystack, a fence...); 5 a bus stop on its tile.
+        int kind = 0;
         engine::Structure s{};  // (a copy: as last seen)
         int tx = 0;
         int ty = 0;
