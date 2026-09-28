@@ -871,6 +871,37 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if (options.scene == "tracks" && options.mode == Options::Mode::Offline) {
+        // Offline: strips of field across the way ahead (grass, a plowed
+        // field, wheat, sunflowers, an orchard, kitchen gardens); a tank and
+        // an IFV drive across them all, a truck beside them.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(16.0f, 0.0f), 20);
+        const engine::Terrain strips[] = {engine::Terrain::Grass, engine::Terrain::Plowed, engine::Terrain::Wheat, engine::Terrain::Crops,
+                                          engine::Terrain::Orchard, engine::Terrain::Garden};
+        for (int i = 0; i < 6; ++i) {  // (wide: no way round them)
+            for (float d = 8.0f + 2.0f * static_cast<float>(i); d < 10.0f + 2.0f * static_cast<float>(i); d += 0.5f) {
+                for (float side = -16.0f; side <= 16.0f; side += 0.5f) {
+                    const engine::TilePos t = engine::tile_of(ahead(d, side));
+                    if (w.map().contains_tile(t.x, t.y)) w.map_for_setup().set_terrain(t.x, t.y, strips[i]);
+                }
+            }
+        }
+        const engine::EntityId tank = w.spawn_unit(me, engine::UnitTypeId::Tank, ahead(6.0f, -2.0f));
+        const engine::EntityId ifv = w.spawn_unit(me, engine::UnitTypeId::Ifv, ahead(6.0f, 1.0f));
+        const engine::EntityId truck = w.spawn_unit(me, engine::UnitTypeId::Truck, ahead(6.0f, 4.0f));
+        game.submit({.type = engine::CommandType::Move, .units = {tank}, .target = ahead(23.0f, -2.0f)});
+        game.submit({.type = engine::CommandType::Move, .units = {ifv}, .target = ahead(23.0f, 1.0f)});
+        game.submit({.type = engine::CommandType::Move, .units = {truck}, .target = ahead(23.0f, 4.0f)});
+        return render::to_vector2(ahead(14.0f, 0.0f));
+    }
+
     if (options.scene == "shelling" && options.mode == Options::Mode::Offline) {
         // Offline: at the village house nearest our base a tank shells it
         // (down in four), an IFV opens up on a squad of the enemy's standing

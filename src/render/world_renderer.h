@@ -123,8 +123,12 @@ private:
         bool tyres = false;  // a wheeled one's: narrower, no tread across
     };
     std::vector<TrackMark> track_marks_;
+    // Where vehicles went through the crops, flattened for good: 8 x 8 spots a tile, a bit each.
+    std::vector<uint64_t> crushed_;
     std::unordered_map<engine::EntityId, Vector2> track_last_;  // where each left its last mark
-    void draw_track_marks(const engine::World& world, Rectangle view) const;
+    void draw_track_marks(const engine::World& world, Rectangle view) const;  // buckets the marks by tile
+    void draw_marks_on_tile(const engine::TileMap& map, int tx, int ty) const;
+    mutable std::unordered_map<int, std::vector<const TrackMark*>> marks_at_;
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
     std::unordered_map<engine::EntityId, double> shot_at_;           // when (GetTime) each crew's weapon last fired: its recoil
     std::unordered_map<engine::EntityId, double> thrown_at_;         // when each man last threw a hand grenade

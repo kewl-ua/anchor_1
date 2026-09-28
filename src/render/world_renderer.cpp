@@ -15,6 +15,7 @@
 
 #include "render/convert.h"
 #include "render/iso.h"
+#include "render/plants.h"
 #include "theme/palette.h"
 
 namespace render {
@@ -409,6 +410,8 @@ bool gun_toward_viewer(Vector2 dir, int dirs) {
 }
 // A tile of height in a Frame's pixels: the view is from 30 degrees up.
 constexpr float kZPerTile = 39.2f;
+// Tracks in the ground fade over this long (seconds).
+constexpr float kTrackSeconds = 300.0f;
 // A scout's platform up a tree: how high (pixels).
 constexpr float kTreePostZ = 24.0f;
 // A cell tower's mast is drawn this much taller than its tile would have it (see building_scale).
@@ -1628,7 +1631,9 @@ void WorldRenderer::update(const engine::World& world, float dt) {
 
     // Tracked vehicles leave their tracks in the ground as they go, wheeled
     // ones their tyres' (not on concrete, a bridge or the water); they fade
-    // over two minutes.
+    // over five minutes. Through the crops, whatever is under the hull is
+    // flattened, for good.
+    if (crushed_.size() != static_cast<size_t>(map.width() * map.height())) crushed_.assign(static_cast<size_t>(map.width() * map.height()), 0);
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const bool marks = drawn_as_armor(def) || truck_model(u.type, u.owner).has_value();
@@ -1641,15 +1646,44 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
         const float len = std::hypot(p.x - it->second.x, p.y - it->second.y);
         if (len < 0.2f) continue;
-        const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(p.x)), static_cast<int32_t>(std::floor(p.y))}));
-        const bool firm = t == engine::Terrain::Road || t == engine::Terrain::Bridge || t == engine::Terrain::Water ||
-                          t == engine::Terrain::Airstrip || t == engine::Terrain::Rail;
-        if (len < 1.5f && !firm) track_marks_.push_back({it->second, p, track_half(u.type), 0.0f, def.wheeled});
+        if (len > 4.0f) {  // (set down somewhere else: no track between)
+            it->second = p;
+            continue;
+        }
+        // The way it went since its last mark, in steps (however fast the frames come).
+        const int steps = std::max(1, static_cast<int>(std::ceil(len / 0.6f)));
+        Vector2 f{(p.x - it->second.x) / len, (p.y - it->second.y) / len};
+        const float half_w = track_half(u.type) + 0.08f;
+        const float half_l = to_float(def.radius) * 0.8f;
+        for (int k = 1; k <= steps; ++k) {
+            const Vector2 a0 = lerp(it->second, p, static_cast<float>(k - 1) / static_cast<float>(steps));
+            const Vector2 a1 = lerp(it->second, p, static_cast<float>(k) / static_cast<float>(steps));
+            const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(a1.x)), static_cast<int32_t>(std::floor(a1.y))}));
+            const bool firm = t == engine::Terrain::Road || t == engine::Terrain::Bridge || t == engine::Terrain::Water ||
+                              t == engine::Terrain::Airstrip || t == engine::Terrain::Rail;
+            if (!firm) track_marks_.push_back({a0, a1, track_half(u.type), 0.0f, def.wheeled});
+            // Whatever grew under the hull there, flattened.
+            for (int ty = static_cast<int>(std::floor(a1.y - 0.8f)); ty <= static_cast<int>(std::floor(a1.y + 0.8f)); ++ty) {
+                for (int tx = static_cast<int>(std::floor(a1.x - 0.8f)); tx <= static_cast<int>(std::floor(a1.x + 0.8f)); ++tx) {
+                    if (!map.contains_tile(tx, ty)) continue;
+                    const engine::Terrain under = map.terrain(tx, ty);
+                    if (under != engine::Terrain::Crops && under != engine::Terrain::Wheat && under != engine::Terrain::Garden) continue;
+                    uint64_t& bits = crushed_[static_cast<size_t>(ty * map.width() + tx)];
+                    for (int sy = 0; sy < 8; ++sy) {
+                        for (int sx = 0; sx < 8; ++sx) {
+                            const Vector2 d{static_cast<float>(tx) + (static_cast<float>(sx) + 0.5f) / 8.0f - a1.x,
+                                            static_cast<float>(ty) + (static_cast<float>(sy) + 0.5f) / 8.0f - a1.y};
+                            if (std::fabs(d.x * f.x + d.y * f.y) <= half_l && std::fabs(-d.x * f.y + d.y * f.x) <= half_w) bits |= uint64_t{1} << (sy * 8 + sx);
+                        }
+                    }
+                }
+            }
+        }
         it->second = p;
     }
     for (TrackMark& m : track_marks_) m.age += dt;
-    std::erase_if(track_marks_, [](const TrackMark& m) { return m.age >= 120.0f; });
-    if (track_marks_.size() > 6000) track_marks_.erase(track_marks_.begin(), track_marks_.begin() + static_cast<long>(track_marks_.size() - 6000));
+    std::erase_if(track_marks_, [](const TrackMark& m) { return m.age >= kTrackSeconds; });
+    if (track_marks_.size() > 12000) track_marks_.erase(track_marks_.begin(), track_marks_.begin() + static_cast<long>(track_marks_.size() - 12000));
     std::erase_if(track_last_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
 
     // Aircraft hit, in the air: smoke trailing off them, grey, then black with fire in it.
@@ -2559,6 +2593,40 @@ FxSheet bake_muzzle_fire(float len, float wide, bool brake, float angle, uint32_
     });
 }
 
+// The crops in pixel art (see plants.h): a sheet each kind.
+std::vector<FxSheet> g_plants;
+void ensure_plants() {
+    if (!g_plants.empty()) return;
+    for (int p = 0; p < static_cast<int>(plants::Plant::Count); ++p) {
+        const plants::Layout l = plants::layout(static_cast<plants::Plant>(p));
+        Image img = plants::bake(static_cast<plants::Plant>(p));
+        if (const char* dump = dump_dir()) ExportImage(img, TextFormat("%s/plants_%d.png", dump, p));
+        FxSheet sheet;
+        sheet.tex = LoadTextureFromImage(img);
+        SetTextureFilter(sheet.tex, TEXTURE_FILTER_POINT);
+        sheet.w = l.w;
+        sheet.h = l.h;
+        sheet.frames = l.frames;
+        sheet.origin = {l.origin_x, l.origin_y};
+        UnloadImage(img);
+        g_plants.push_back(sheet);
+    }
+}
+const FxSheet& plant_sheet(plants::Plant p) { return g_plants[static_cast<size_t>(p)]; }
+// The crops flattened where vehicles went (see WorldRenderer::crushed_), as the ground is drawn.
+const std::vector<uint64_t>* g_crushed = nullptr;
+int g_crushed_width = 0;
+bool crushed_at(Vector2 g) {
+    if (!g_crushed || g_crushed->empty() || g.x < 0.0f || g.y < 0.0f) return false;
+    const int tx = static_cast<int>(g.x);
+    const int ty = static_cast<int>(g.y);
+    const size_t i = static_cast<size_t>(ty * g_crushed_width + tx);
+    if (tx >= g_crushed_width || i >= g_crushed->size()) return false;
+    const int sx = std::clamp(static_cast<int>((g.x - static_cast<float>(tx)) * 8.0f), 0, 7);
+    const int sy = std::clamp(static_cast<int>((g.y - static_cast<float>(ty)) * 8.0f), 0, 7);
+    return ((*g_crushed)[i] >> (sy * 8 + sx) & 1u) != 0;
+}
+
 void ensure_muzzles() {
     if (!g_muzzles.empty()) return;
     static constexpr float kShapes[kMuzzleShapes][3] = {{10.0f, 4.0f, 0.0f}, {13.0f, 5.0f, 0.0f}, {14.0f, 7.0f, 1.0f}, {34.0f, 17.0f, 0.0f}, {28.0f, 15.0f, 1.0f}};
@@ -3041,17 +3109,58 @@ void draw_tree_at(Vector2 b, const Tree& t, bool shadowed) {
             break;
         }
         case TreeKind::Apple: {
-            // Short, the trunk whitewashed a hand high, a round crown with apples.
-            const float height = 5.5f * s * t.height;
-            const Vector2 top = draw_trunk(b, height, 2.8f * s * t.girth, 1.9f * s, bend * 0.3f, {92, 70, 50, 255});
-            DrawLineEx(b, {b.x + bend * 0.2f, b.y - height * 0.45f}, 2.8f * s * t.girth, lit({234, 232, 224, 255}));
-            const Vector2 c{top.x, top.y - 5.0f * s};
-            draw_crown(c, 14.0f * s, 11.0f * s, 4.4f * s, {72, 114, 50, 255}, t.tint, t.seed);
-            for (int k = 0; k < 6; ++k) {
-                const float a = hash_unit(tile_hash(static_cast<int>(t.seed >> 2) + k, k * 7)) * 6.2831853f;
-                const float r = 0.35f + 0.55f * hash_unit(tile_hash(k * 3, static_cast<int>(t.seed >> 6)));
-                disc({c.x + std::cos(a) * r * 6.5f * s, c.y + std::sin(a) * r * 5.0f * s}, 1.1f * s,
-                     k % 3 == 0 ? Color{220, 176, 60, 255} : Color{196, 40, 36, 255});
+            // An orchard's apple tree: a short trunk whitewashed against the
+            // hares, parting low into three or four boughs spreading up and out;
+            // a broad crown, wider than it's tall, over them, the boughs showing
+            // in the gaps under it; the apples, red, dark red, some yellow,
+            // hanging round its lower half, heaviest at its edges; a prop under
+            // a laden bough on some; windfalls under it.
+            auto rnd = [&](int i) { return hash_unit(tile_hash(static_cast<int>(t.seed >> 3) + i * 29, i * 11 + 5)); };
+            const float trunk = 5.5f * s * t.height;
+            const Vector2 top = draw_trunk(b, trunk, 3.2f * s * t.girth, 2.4f * s, bend * 0.25f, {96, 74, 54, 255});
+            // The whitewash, lit on the left, greyer in the shade.
+            const float ww = 3.2f * s * t.girth;
+            const float wash = trunk * 0.6f;
+            fill_quad({b.x - ww * 0.5f, b.y}, {b.x, b.y}, {b.x + bend * 0.05f, b.y - wash}, {b.x - ww * 0.42f + bend * 0.05f, b.y - wash},
+                      {238, 238, 230, 255});
+            fill_quad({b.x, b.y}, {b.x + ww * 0.5f, b.y}, {b.x + ww * 0.42f + bend * 0.05f, b.y - wash}, {b.x + bend * 0.05f, b.y - wash},
+                      {196, 200, 200, 255});
+            const float w = 22.0f * s;
+            const float h = 13.0f * s * (0.9f + 0.2f * t.height);
+            const Vector2 c{top.x, top.y - h * 0.5f - 1.5f * s};
+            // The boughs, up and out from the fork, their twigs.
+            const int boughs = 3 + static_cast<int>(rnd(1) * 1.99f);
+            for (int i = 0; i < boughs; ++i) {
+                const float a = -2.5f + 1.86f * static_cast<float>(i) / static_cast<float>(boughs - 1) + (rnd(10 + i) - 0.5f) * 0.3f;
+                const Vector2 end{top.x + std::cos(a) * w * 0.42f, top.y + std::sin(a) * h * 0.72f};
+                DrawLineEx(top, end, 1.8f * s, lit(shade(g_bark, 0.9f)));
+                DrawLineV({top.x - 0.5f, top.y}, {end.x - 0.5f, end.y}, lit(shade(g_bark, 1.2f)));
+            }
+            if (rnd(2) < 0.3f && g_leaf > 0.5f) {  // a prop under a laden bough
+                const Vector2 under{top.x + w * 0.34f, top.y - h * 0.18f};
+                DrawLineEx({under.x + 3.0f * s, b.y + 1.0f}, under, 1.0f, lit({150, 124, 86, 255}));
+            }
+            draw_crown(c, w, h, 4.4f * s, {72, 116, 54, 255}, t.tint, t.seed);
+            // The apples.
+            if (g_leaf > 0.05f) {
+                const int apples = static_cast<int>(16.0f * g_leaf);
+                for (int k = 0; k < apples; ++k) {
+                    // Anywhere over the crown, more of them low down and out at its edges.
+                    const float a = rnd(20 + k) * 6.2831853f;
+                    const float r = std::sqrt(0.15f + 0.85f * rnd(40 + k)) * 0.9f;
+                    const float low = std::sin(a) < 0.0f && rnd(60 + k) < 0.5f ? -std::sin(a) : std::sin(a);  // (half of the high ones moved low)
+                    const Vector2 ap{c.x + std::cos(a) * r * w * 0.46f, c.y + low * r * h * 0.46f};
+                    const float roll = rnd(80 + k);
+                    const Color apple = roll < 0.55f ? Color{202, 38, 34, 255} : roll < 0.8f ? Color{150, 28, 32, 255} : Color{222, 196, 70, 255};
+                    disc(ap, 1.25f * s, shade(apple, 0.8f));
+                    disc({ap.x - 0.3f, ap.y - 0.3f}, 0.85f * s, apple);
+                    DrawPixelV({ap.x - 0.7f, ap.y - 0.8f}, lit(shade(apple, 1.45f)));
+                }
+            }
+            for (int k = 0; k < 2; ++k) {  // windfalls
+                if (rnd(100 + k) > 0.6f) continue;
+                const Vector2 fall{b.x + (rnd(110 + k) - 0.5f) * w * 0.8f, b.y + (rnd(120 + k) - 0.3f) * 3.0f};
+                disc(fall, 0.9f * s, k == 0 ? Color{176, 40, 36, 255} : Color{200, 176, 64, 255});
             }
             break;
         }
@@ -3101,7 +3210,7 @@ void tree_flames(Vector2 base, const Tree& t, uint8_t shred, int less, uint32_t 
         case TreeKind::Birch: crown = 12.0f * s * hh + 7.0f * s; wide = 6.5f * s; break;
         case TreeKind::Pine: crown = (hh > 1.0f ? 11.0f : 4.0f) * s * hh + 9.0f * s; wide = 5.0f * s; break;
         case TreeKind::Poplar: crown = 5.0f * s + 13.0f * s * hh; wide = 4.0f * s; half = 12.0f * s * hh; break;
-        case TreeKind::Apple: crown = 5.5f * s * hh + 5.0f * s; wide = 6.0f * s; half = 5.0f * s; break;
+        case TreeKind::Apple: crown = 5.5f * s * hh + 7.5f * s; wide = 9.0f * s; half = 6.0f * s; break;
         default: crown = 9.5f * s * hh + 9.0f * s; wide = 9.0f * s; break;
     }
     struct Spot {
@@ -4794,27 +4903,48 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
             break;
         }
         case engine::Terrain::Crops: {
-            // Rows of sunflowers, each its own height and head, swaying a
-            // little; in bloom, ripening or dried black, field patch by patch.
-            // Now and then one missing from the row.
+            // Sunflowers in rows, or maize (a field here and there), each its
+            // own height, swaying a little; in bloom, ripening or dried black
+            // (the maize green or dry), field patch by patch; now and then one
+            // missing from the row; knocked flat where vehicles went through.
             const auto t = static_cast<float>(GetTime());
-            const bool far = g_zoom < 0.6f;
-            const float taller = 1.0f + 0.25f * (field({fx, fy}, 43) - 0.5f);  // some fields grew taller
+            const bool maize = field({fx, fy}, 71) > 0.62f;
+            const FxSheet& sheet = plant_sheet(maize ? plants::Plant::Maize : plants::Plant::Sunflower);
+            const int per_row = maize ? 2 : 3;
+            struct Stem {
+                float depth;
+                Vector2 at;
+                int frame;
+            };
+            std::array<Stem, 9> stems{};
+            int n = 0;
             for (int row = 0; row < 3; ++row) {
-                for (int k = 0; k < 3; ++k) {
+                for (int k = 0; k < per_row; ++k) {
                     const uint32_t hk = tile_hash(tx * 3 + k, ty * 5 + row);
                     if (hk % 23 == 0) continue;
-                    const float u = 0.18f + 0.32f * static_cast<float>(k) + (hash_unit(hk) - 0.5f) * 0.12f;
+                    const float u = maize ? 0.25f + 0.5f * static_cast<float>(k) + (hash_unit(hk) - 0.5f) * 0.1f
+                                          : 0.18f + 0.32f * static_cast<float>(k) + (hash_unit(hk) - 0.5f) * 0.12f;
                     const float v = 0.18f + 0.32f * static_cast<float>(row) + (hash_unit(hk >> 4) - 0.5f) * 0.06f;
                     const Vector2 g = along_x ? Vector2{fx + u, fy + v} : Vector2{fx + v, fy + u};
-                    const float stage = sunflower_bloom(g) + (hash_unit(hk >> 8) - 0.5f) * 0.25f;
-                    const float tall = (8.0f + 3.5f * hash_unit(hk >> 12)) * taller;
-                    const float head = 2.1f + 0.9f * hash_unit(hk >> 16);
-                    const float sway = stage > 0.3f ? 0.5f * std::sin(t * 1.1f + (g.x + g.y) * 0.45f) : 0.0f;
-                    const float lean = 0.8f + (hash_unit(hk >> 20) - 0.5f) * 1.4f + sway;
-                    draw_sunflower(at(g.x - fx, g.y - fy), tall, head, stage, lean, (hk >> 24) % 7 == 0, far);
+                    const float wind = std::sin(t * 1.1f + (g.x + g.y) * 0.45f);
+                    int frame = 0;
+                    if (maize) {
+                        const int stage = sunflower_bloom(g) < 0.3f ? 1 : 0;
+                        frame = crushed_at(g) ? plants::maize_down(stage, static_cast<int>((hk >> 3) & 1u))
+                                              : plants::maize(stage, static_cast<int>((hk >> 12) & 1u), stage == 1 ? 1 : std::clamp(1 + static_cast<int>(std::lround(wind * 0.8f)), 0, 2));
+                    } else {
+                        const float bloom = sunflower_bloom(g) + (hash_unit(hk >> 8) - 0.5f) * 0.25f;
+                        const int stage = bloom > 0.6f ? 0 : bloom > 0.3f ? 1 : 2;
+                        const int lean = stage == 2 ? static_cast<int>((hk >> 20) % 3)
+                                                    : std::clamp(1 + static_cast<int>(std::lround(wind * 0.7f + (hash_unit(hk >> 20) - 0.5f))), 0, 2);
+                        frame = crushed_at(g) ? plants::sunflower_down(stage, static_cast<int>((hk >> 3) & 1u))
+                                              : plants::sunflower(stage, static_cast<int>((hk >> 12) % 3), lean, (hk >> 24) % 7 == 0);
+                    }
+                    stems[static_cast<size_t>(n++)] = {g.x + g.y, at(g.x - fx, g.y - fy), frame};
                 }
             }
+            std::sort(stems.begin(), stems.begin() + n, [](const Stem& p, const Stem& q) { return p.depth < q.depth; });
+            for (int i = 0; i < n; ++i) draw_fx(sheet, stems[static_cast<size_t>(i)].frame, stems[static_cast<size_t>(i)].at, lit(WHITE));
             break;
         }
         case engine::Terrain::Wheat: {
@@ -4862,21 +4992,25 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
                     DrawLineEx(b, {b.x + std::cos(a) * 4.5f, b.y + std::sin(a) * 1.8f}, 1.5f, lit(shade(ripe, 0.9f)));
                 }
             }
-            const int rows = wheat_lodged(mid) ? 2 : 5;
-            for (int row = 0; row < rows; ++row) {
-                const float v = 0.1f + (rows == 5 ? 0.2f : 0.45f) * static_cast<float>(row);
-                for (int k = 0; k < (far ? 3 : 5); ++k) {
-                    const uint32_t hk = tile_hash(tx * 5 + k, ty * 7 + row);
-                    const float u = 0.1f + (far ? 0.3f : 0.2f) * static_cast<float>(k) + hash_unit(hk) * 0.08f;
-                    const float wave = 0.5f + 0.5f * std::sin(t * 1.4f - (fx + u + fy + v) * 0.55f);
-                    const Color ear = mix(ripe, light, wave * 0.8f + 0.2f * hash_unit(hk >> 5));
-                    const Vector2 base = spot(u, v);
-                    const float lean = (wave - 0.5f) * 1.6f + (hash_unit(hk >> 9) - 0.5f) * 0.8f;
-                    const float tall = 3.4f + 1.4f * hash_unit(hk >> 13);
-                    const Vector2 tip{base.x + lean, base.y - tall};
-                    DrawLineV(base, tip, lit(shade(ear, 0.78f)));
-                    DrawLineEx({tip.x - lean * 0.1f, tip.y + 1.8f}, tip, 1.9f, lit(ear));
-                    if (!far) DrawLineV(tip, {tip.x + lean * 0.4f + 0.3f, tip.y - 1.6f}, lit(shade(light, 1.05f)));
+            // Tufts of it in rows, the wind running over them in waves;
+            // flattened where it's lodged and where vehicles went through.
+            {
+                const FxSheet& sheet = plant_sheet(plants::Plant::Wheat);
+                const int stage = green > 0.5f ? 0 : 1;
+                const bool lodged = wheat_lodged(mid);
+                const int per_row = far ? 2 : 3;
+                for (int row = 0; row < 3; ++row) {
+                    for (int k = 0; k < per_row; ++k) {
+                        const uint32_t hk = tile_hash(tx * 5 + k, ty * 7 + row);
+                        const float u = (per_row == 3 ? 0.17f + 0.33f * static_cast<float>(k) : 0.25f + 0.5f * static_cast<float>(k)) + (hash_unit(hk) - 0.5f) * 0.1f;
+                        const float v = 0.17f + 0.33f * static_cast<float>(row) + (hash_unit(hk >> 3) - 0.5f) * 0.08f;
+                        const Vector2 g = along_x ? Vector2{fx + u, fy + v} : Vector2{fx + v, fy + u};
+                        const float wave = 0.5f + 0.5f * std::sin(t * 1.4f - (g.x + g.y) * 0.55f);
+                        const int variant = static_cast<int>((hk >> 5) & 1u);
+                        const int frame = lodged || crushed_at(g) ? plants::wheat_down(stage, variant)
+                                                                  : plants::wheat(stage, variant, std::clamp(static_cast<int>(wave * 3.99f), 0, 3));
+                        draw_fx(sheet, frame, at(g.x - fx, g.y - fy), lit(WHITE));
+                    }
                 }
             }
             // Poppies, cornflowers and camomile, thick along the edge of the field.
@@ -4909,20 +5043,20 @@ void draw_ground_detail(const engine::TileMap& map, int tx, int ty, engine::Terr
             break;
         }
         case engine::Terrain::Garden: {
-            // Beds of potatoes in rows, a row of cabbages.
+            // Beds of potatoes in rows (in flower here and there), a row of
+            // cabbages, tomatoes tied to stakes; trodden in where vehicles went.
+            const FxSheet& sheet = plant_sheet(plants::Plant::Garden);
+            const int cabbages = static_cast<int>(h % 4);
+            const int tomatoes = (h >> 3) % 3 == 0 ? static_cast<int>((h >> 5) % 4) : -1;
             for (int row = 0; row < 4; ++row) {
                 const float v = 0.14f + 0.24f * static_cast<float>(row);
-                const bool cabbage = row == static_cast<int>(h % 4);
-                for (int k = 0; k < 4; ++k) {
-                    const float u = 0.14f + 0.24f * static_cast<float>(k);
-                    const Vector2 p = along_x ? at(u, v) : at(v, u);
-                    if (cabbage) {
-                        DrawCircleV({p.x, p.y - 1.2f}, 2.0f, lit({150, 186, 120, 255}));
-                        DrawCircleV({p.x - 0.4f, p.y - 1.6f}, 0.9f, lit({190, 214, 160, 255}));
-                    } else {
-                        DrawCircleV({p.x, p.y - 1.4f}, 1.9f, lit({62, 104, 44, 255}));
-                        DrawCircleV({p.x - 0.5f, p.y - 2.0f}, 0.9f, lit({92, 136, 60, 255}));
-                    }
+                const int kind = row == cabbages ? 1 : row == tomatoes ? 2 : 0;
+                for (int k = 0; k < 3; ++k) {
+                    const uint32_t hk = tile_hash(tx * 3 + k, ty * 4 + row);
+                    const float u = 0.18f + 0.32f * static_cast<float>(k) + (hash_unit(hk) - 0.5f) * 0.06f;
+                    const Vector2 g = along_x ? Vector2{fx + u, fy + v} : Vector2{fx + v, fy + u};
+                    const int variant = static_cast<int>((hk >> 7) % 3);
+                    draw_fx(sheet, crushed_at(g) ? plants::garden_down(variant) : plants::garden(kind, variant), at(g.x - fx, g.y - fy), lit(WHITE));
                 }
             }
             break;
@@ -7556,6 +7690,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
 
     ensure_fx();
+    ensure_plants();
+    g_crushed = &crushed_;
+    g_crushed_width = world.map().width();
     ensure_muzzles();
     if (grain_.id == 0) {
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
@@ -7571,7 +7708,6 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     BeginShaderMode(grain_);
 
     draw_terrain(world, view);
-    draw_track_marks(world, view);
     draw_remains(map);
 
     // Mines we know of: ours, and the enemy's our sappers found. Charges ticking.
@@ -8349,6 +8485,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
     if (seen_terrain_.size() != static_cast<size_t>(map.width() * map.height())) return;
 
     std::vector<engine::TilePos> craters;
+    draw_track_marks(world, view);  // (bucketed by tile: drawn with each tile's ground)
     for_each_visible_tile(map, view, [&](int tx, int ty) {
         const float h00 = corner(tx, ty);
         const float h10 = corner(tx + 1, ty);
@@ -8373,6 +8510,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         g_light = state == kInView ? 1.0f : kFogLight;
         paint_ground(world, tx, ty, terrain, false);
         if (behind_relief(tx, ty)) return;  // the ground in front covers the rest
+        draw_marks_on_tile(map, tx, ty);
         if (terrain == engine::Terrain::Crater) craters.push_back({tx, ty});
         if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
             terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit ||
@@ -14318,32 +14456,73 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
 }
 
 // Two ruts where a tracked vehicle went: dark earth pressed into the grass
-// or the field, the tread marks across them, fading.
+// or the field, the tread marks across them, fading. Drawn tile by tile as
+// the ground is (each rut cut to the tile), under whatever grows there: the
+// crops flattened over them, the trees standing over them.
 void WorldRenderer::draw_track_marks(const engine::World& world, Rectangle view) const {
     const engine::TileMap& map = world.map();
-    const Rectangle near{view.x - 40.0f, view.y - 40.0f, view.width + 80.0f, view.height + 80.0f};
+    marks_at_.clear();
+    const Rectangle near{view.x - 60.0f, view.y - 60.0f, view.width + 120.0f, view.height + 120.0f};
     for (const TrackMark& m : track_marks_) {
-        const Vector2 sa = on_terrain(map, m.a);
-        if (!CheckCollisionPointRec(sa, near)) continue;
-        if (fog(world, static_cast<int>(std::floor(m.a.x)), static_cast<int>(std::floor(m.a.y))) == kUnexplored) continue;
-        const float fade = 1.0f - m.age / 120.0f;
+        if (!CheckCollisionPointRec(on_terrain(map, m.a), near)) continue;
+        const float reach = m.half + 0.12f;
+        for (int ty = static_cast<int>(std::floor(std::min(m.a.y, m.b.y) - reach)); ty <= static_cast<int>(std::floor(std::max(m.a.y, m.b.y) + reach)); ++ty) {
+            for (int tx = static_cast<int>(std::floor(std::min(m.a.x, m.b.x) - reach)); tx <= static_cast<int>(std::floor(std::max(m.a.x, m.b.x) + reach)); ++tx) {
+                if (map.contains_tile(tx, ty)) marks_at_[ty * map.width() + tx].push_back(&m);
+            }
+        }
+    }
+}
+
+void WorldRenderer::draw_marks_on_tile(const engine::TileMap& map, int tx, int ty) const {
+    const auto it = marks_at_.find(ty * map.width() + tx);
+    if (it == marks_at_.end()) return;
+    const auto x0 = static_cast<float>(tx);
+    const auto y0 = static_cast<float>(ty);
+    for (const TrackMark* mp : it->second) {
+        const TrackMark& m = *mp;
+        const float fade = 1.0f - m.age / kTrackSeconds;
         const Vector2 d{m.b.x - m.a.x, m.b.y - m.a.y};
         const float len = std::hypot(d.x, d.y);
         if (len <= 0.0f) continue;
         const Vector2 dir{d.x / len, d.y / len};
         const Vector2 side{-dir.y, dir.x};
-        const float rut = m.tyres ? 0.035f : 0.06f;  // half a rut's width
-        for (const float s : {-1.0f, 1.0f}) {
-            const Vector2 o{side.x * m.half * s, side.y * m.half * s};
-            auto pt = [&](Vector2 p, float across) { return on_terrain(map, {p.x + o.x + side.x * across, p.y + o.y + side.y * across}); };
-            const Vector2 a0 = pt(m.a, -rut);
-            const Vector2 a1 = pt(m.a, rut);
-            const Vector2 b1 = pt(m.b, rut);
-            const Vector2 b0 = pt(m.b, -rut);
-            fill_quad(a0, a1, b1, b0, ColorAlpha({52, 42, 30, 255}, (m.tyres ? 0.34f : 0.42f) * fade));
-            // The tread marks across it (a track's).
-            for (float t = 0.25f; t < 1.0f && !m.tyres; t += 0.5f) {
-                DrawLineV(lerp(a0, b0, t), lerp(a1, b1, t), ColorAlpha(lit({34, 28, 20, 255}), 0.5f * fade));
+        const float rut = m.tyres ? 0.05f : 0.11f;  // half a rut's width
+        for (const float sgn : {-1.0f, 1.0f}) {
+            // The rut's middle line, cut to the tile.
+            const Vector2 a{m.a.x + side.x * m.half * sgn, m.a.y + side.y * m.half * sgn};
+            float t0 = 0.0f;
+            float t1 = 1.0f;
+            bool inside = true;
+            for (const auto& [p, q] : {std::pair{-d.x, a.x - x0}, std::pair{d.x, x0 + 1.0f - a.x}, std::pair{-d.y, a.y - y0}, std::pair{d.y, y0 + 1.0f - a.y}}) {
+                if (p == 0.0f) {
+                    if (q < 0.0f) inside = false;
+                    continue;
+                }
+                const float r = q / p;
+                if (p < 0.0f) {
+                    t0 = std::max(t0, r);
+                } else {
+                    t1 = std::min(t1, r);
+                }
+            }
+            if (!inside || t1 <= t0) continue;
+            const Vector2 pa{a.x + d.x * t0, a.y + d.y * t0};
+            const Vector2 pb{a.x + d.x * t1, a.y + d.y * t1};
+            auto pt = [&](Vector2 p, float across) { return on_terrain(map, {p.x + side.x * across, p.y + side.y * across}); };
+            const Vector2 a0 = pt(pa, -rut);
+            const Vector2 a1 = pt(pa, rut);
+            const Vector2 b1 = pt(pb, rut);
+            const Vector2 b0 = pt(pb, -rut);
+            fill_quad(a0, a1, b1, b0, ColorAlpha({58, 46, 32, 255}, (m.tyres ? 0.55f : 0.7f) * fade));
+            // The earth squeezed up along its edges; the tread marks across it (a track's).
+            DrawLineV(pt(pa, rut * 1.25f), pt(pb, rut * 1.25f), ColorAlpha(lit({112, 94, 66, 255}), 0.35f * fade));
+            if (!m.tyres) {
+                const float step = 0.09f;
+                for (float t = std::ceil((t0 * len) / step) * step; t < t1 * len; t += step) {
+                    const Vector2 c{a.x + dir.x * t, a.y + dir.y * t};
+                    DrawLineV(pt(c, -rut), pt(c, rut), ColorAlpha(lit({36, 28, 20, 255}), 0.45f * fade));
+                }
             }
         }
     }
