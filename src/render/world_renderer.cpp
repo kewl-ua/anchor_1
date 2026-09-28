@@ -4656,6 +4656,39 @@ float turret_ring_of(engine::TankModel m);
 // road wheels or tyred wheels, the hull with its sloped plates, a turret
 // turned where it aims, the gun; painted olive with the side's colour in it
 // and camouflage patches, the side's stripe round the turret.
+// The mud a tank sank into, heaped round it in lumps: grey, each lump lit
+// on its upper left and shaded below, a darker soup under the hull. `front`:
+// the lumps on the near side (drawn over the tank), else the far ones and the
+// soup (drawn under it).
+void mud_halo(const Frame& fr, Vector2 size, bool front, uint32_t seed) {
+    const Color mud{102, 100, 88, 255};
+    const float len = size.x * 0.56f * kVehicleScale;
+    const float wid = (size.y + 0.1f) * kVehicleScale;
+    if (!front) {
+        for (int i = 0; i < 5; ++i) {  // the soup under it
+            const float a = (static_cast<float>(i) / 4.0f - 0.5f) * len * 1.6f;
+            const Vector2 p = fr.at(a, 0.0f);
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 14.0f, 6.0f, lit(ColorAlpha(shade(mud, 0.6f), 0.55f)));
+        }
+    }
+    constexpr int kLumps = 30;
+    for (int i = 0; i < kLumps; ++i) {
+        const float t = static_cast<float>(i) * 6.2831853f / kLumps + hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i, 3)) * 0.15f;
+        const float out = 1.0f + 0.14f * hash_unit(tile_hash(static_cast<int>(seed >> 8) + i, 7));
+        const float a = std::cos(t) * len * out;
+        const float c = std::sin(t) * wid * out;
+        const Vector2 g = fr.ground_of(a, c);  // which way from the middle, on the ground
+        const bool near = g.x + g.y > 0.0f;
+        if (near != front) continue;
+        const Vector2 p = fr.at(a, c);
+        const float r = 2.2f + 1.8f * hash_unit(tile_hash(static_cast<int>(seed >> 4) + i * 13, 11));
+        const float tone = 0.9f + 0.2f * hash_unit(tile_hash(i, static_cast<int>(seed & 0xFF)));
+        disc({p.x + r * 0.3f, p.y + r * 0.3f}, r, shade(mud, 0.62f * tone));
+        disc({p.x, p.y - r * 0.2f}, r * 0.85f, shade(mud, tone));
+        disc({p.x - r * 0.3f, p.y - r * 0.5f}, r * 0.4f, shade(mud, 1.3f * tone));
+    }
+}
+
 void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground,
                                  Vector2 facing) const {
     using engine::UnitTypeId;
@@ -4696,16 +4729,12 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, 0), u.owner);
         }
         if (hull_sheet && turret_sheet) {
-            if (bog) {  // the mud churned up round it
-                const Vector2 size = tank_size(model);
-                const Frame mud = make_frame(map, ground, fr.f);
-                patch(mud, 0.0f, 0.0f, size.x * 0.62f * kVehicleScale, (size.y + 0.12f) * kVehicleScale, 0.0f, {58, 60, 44, 255},
-                      static_cast<uint32_t>(u.id));
-                patch(mud, -size.x * 0.3f * kVehicleScale, 0.0f, 0.25f, 0.2f, 0.0f, {84, 96, 70, 255}, static_cast<uint32_t>(u.id) * 7u);
-            }
+            const uint32_t seed = static_cast<uint32_t>(u.id) * 2654435761u;
+            if (bog) mud_halo(fr, tank_size(model), false, seed);  // the mud behind and under it
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
             draw_sprite(*hull_sheet, fr.o, fr.f, frame);
             draw_sprite(*turret_sheet, fr.at(turret_ring_of(model) * kVehicleScale, 0.0f), facing, 0);
+            if (bog) mud_halo(fr, tank_size(model), true, seed);  // and in front of it
             return;
         }
     }
@@ -6024,11 +6053,19 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
                              ColorAlpha({190, 214, 226, 255}, 0.55f * (1.0f - grow)));
         }
         // Its hull a dark shape under the water, the gun along it.
+        // Soft round blots along it and across it, each faint, darker where
+        // they overlap: a rounded shape blurring out at its edges.
         const Vector2 size = tank_size(def.model);
         const float k = kVehicleScale;
-        const float a = size.x * 0.5f * k;
-        const float c = size.y * k;
-        fill_quad(fr.at(a, -c), fr.at(a, c), fr.at(-a, c), fr.at(-a, -c), {24, 46, 60, 120});
+        for (int i = 0; i < 9; ++i) {
+            const float a = (static_cast<float>(i) / 8.0f - 0.5f) * size.x * 0.9f * k;
+            for (const float across : {-0.55f, 0.0f, 0.55f}) {
+                const Vector2 p = fr.at(a, across * size.y * k);
+                const float end = 1.0f - 0.35f * std::fabs(static_cast<float>(i) / 4.0f - 1.0f);  // the ends rounder
+                DrawCircleV(p, 6.5f * end, {24, 46, 60, 34});
+                DrawCircleV(p, 4.0f * end, {24, 46, 60, 30});
+            }
+        }
         const Vector2 f = unit(r.facing);
         const Vector2 g0 = ring;
         const Vector2 g1{ring.x + iso_offset(f).x * 0.8f * k, ring.y + iso_offset(f).y * 0.8f * k};
@@ -6094,6 +6131,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         draw(*burnt, lit(WHITE));
         if (rusted && rust > 0.0f) draw(*rusted, ColorAlpha(lit(WHITE), rust));
     };
+    if (sink) mud_halo(fr, tank_size(def.model), false, r.seed);
     both(hull, rust_hull, [&](const SpriteSheet& sh, Color tint) {
         float a = std::atan2(fr.f.y, fr.f.x);
         if (a < 0.0f) a += 6.2831853f;
@@ -6132,6 +6170,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         const Rectangle src{static_cast<float>(d * sh.w), 0.0f, flip ? -w : w, flip ? -static_cast<float>(sh.h) : static_cast<float>(sh.h)};
         DrawTexturePro(sh.atlas, src, {std::round(at.x), std::round(at.y), w, static_cast<float>(sh.h)}, sh.origin, tilt, tint);
     });
+    if (sink) mud_halo(fr, tank_size(def.model), true, r.seed);
     g_light = light;
 }
 
