@@ -737,7 +737,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         for (int i = 0; i < 7; ++i) {  // blocks of flats: whole, hit, burning, burnt out; bombed in the middle, at both ends, at one end
             const float damage[7] = {0.0f, 0.33f, 0.58f, 0.85f, 0.33f, 0.85f, 0.58f};
             const std::vector<uint8_t> bombs[7] = {{}, {}, {}, {}, {128}, {20, 235}, {235}};
-            put(StructureType::Apartment, 8.0f + 6.0f * static_cast<float>(i), -9.0f, 4, 2, Terrain::Apartment, damage[i], bombs[i]);
+            put(StructureType::Apartment, 8.0f + 6.0f * static_cast<float>(i), -9.0f, 8, 2, Terrain::Apartment, damage[i], bombs[i]);
         }
         for (int i = 0; i < 4; ++i) {  // houses the same
             put(StructureType::House, 9.0f + 3.5f * static_cast<float>(i), -4.5f, 2, 2, Terrain::House, 0.33f * static_cast<float>(i) - (i == 3 ? 0.14f : 0.0f), {});
@@ -760,7 +760,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         put(StructureType::ArmorBarracks, 26.0f, 6.0f, 4, 4, Terrain::Building, 1.0f, {});
         // (ruins_rubble: the camera on the rubble; ruins_bombed: on the blocks bombed)
         return render::to_vector2(options.scene == "ruins_rubble"   ? ahead(14.0f, 4.0f)
-                                  : options.scene == "ruins_bombed" ? ahead(38.0f, -8.0f)
+                                  : options.scene == "ruins_bombed" ? ahead(40.0f, -5.0f)
                                   : options.scene == "ruins_burnt"  ? ahead(29.0f, 9.0f)
                                                                     : ahead(22.0f, -7.0f));
     }

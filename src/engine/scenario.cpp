@@ -137,11 +137,12 @@ constexpr Segment kDirtRoads[] = {
 // level above the rivers and the gullies, so a gully is a hidden way in.
 constexpr Segment kGullies[] = {{55, 62, 62, 74}, {24, 30, 12, 38}};
 constexpr int32_t kGullyHalfWidth = 1;  // three tiles across
-// A small town by the highway: two five-storey blocks; an industrial zone
-// by the western village: big sheds (spacious: they can be turned into
-// depots); cell towers on the town's edge and on the bridgehead hill.
-constexpr Barn kApartments[] = {{27, 64}, {27, 68}};
-constexpr int32_t kApartmentWidth = 4;
+// A small town by the highway: two five-storey blocks (four entrances
+// long); an industrial zone by the western village: big sheds (spacious:
+// they can be turned into depots); cell towers on the town's edge and on
+// the bridgehead hill.
+constexpr Barn kApartments[] = {{24, 64}, {24, 68}};
+constexpr int32_t kApartmentWidth = 8;
 constexpr int32_t kApartmentDepth = 2;
 struct Shed {
     int32_t x_pct;

@@ -411,6 +411,8 @@ bool gun_toward_viewer(Vector2 dir, int dirs) {
 constexpr float kZPerTile = 39.2f;
 // A scout's platform up a tree: how high (pixels).
 constexpr float kTreePostZ = 24.0f;
+// A cell tower's mast is drawn this much taller than its tile would have it (see building_scale).
+constexpr float kTowerScale = 1.8f;
 // A towed gun's or an aircraft's sprite sheets by its wear.
 int small_variant(engine::VehicleModel m, int wear) { return static_cast<int>(m) * 8 + wear; }  // (6, 7: an aircraft's crashed wreck, burnt, rusted)
 // A towed gun, an aircraft: a sprite of its own, its wreck too.
@@ -4119,6 +4121,12 @@ void ribbon_glazing(const Face& f, float u0, float u1, float v0, float v1, float
 void draw_barn(const engine::TileMap& map, const engine::Structure& s, float damage);
 
 // Ground rectangle covering a structure's tiles, shrunk by `inset` tiles.
+// A building drawn bigger than life against its tiles (see
+// building_scale): footprint() shrinks it about its middle by this much,
+// and it's drawn scaled up about that middle as much again (scaled_about):
+// its walls, floors, windows that much bigger, on the same ground.
+float g_shrink = 1.0f;
+
 Rectangle footprint(const engine::Structure& s, float inset) {
     int x0 = s.tiles.front().x, x1 = x0, y0 = s.tiles.front().y, y1 = y0;
     for (const engine::TilePos& t : s.tiles) {
@@ -4127,8 +4135,64 @@ Rectangle footprint(const engine::Structure& s, float inset) {
         y0 = std::min(y0, t.y);
         y1 = std::max(y1, t.y);
     }
-    return {static_cast<float>(x0) + inset, static_cast<float>(y0) + inset,
-            static_cast<float>(x1 - x0 + 1) - 2 * inset, static_cast<float>(y1 - y0 + 1) - 2 * inset};
+    const auto w = static_cast<float>(x1 - x0 + 1);
+    const auto h = static_cast<float>(y1 - y0 + 1);
+    const float cx = static_cast<float>(x0) + w * 0.5f;
+    const float cy = static_cast<float>(y0) + h * 0.5f;
+    const float k = 1.0f / g_shrink;
+    return {cx + (-w * 0.5f + inset) * k, cy + (-h * 0.5f + inset) * k, (w - 2 * inset) * k, (h - 2 * inset) * k};
+}
+
+// How much bigger than its tiles would have it a building is drawn, to
+// stand as it should against the men and the tanks: a block of flats' floors
+// each as high as a tank, a mast, a grain elevator's silos towering, a
+// works' shop floor, a cowshed, the offices, the station.
+float building_scale(const engine::Structure& s) {
+    switch (s.type) {
+        case engine::StructureType::Apartment: return 1.8f;
+        case engine::StructureType::CellTower: return 1.8f;
+        case engine::StructureType::Elevator: return 1.5f;
+        case engine::StructureType::GasStation: return 1.3f;
+        case engine::StructureType::Headquarters: return 1.5f;
+        case engine::StructureType::Station: return 1.4f;
+        case engine::StructureType::House:
+            if (s.look == engine::HouseLook::Factory) return 1.4f;
+            if (s.look == engine::HouseLook::Cowshed) return 1.6f;
+            if (s.look == engine::HouseLook::Coop) return 1.4f;
+            return s.tiles.size() >= engine::kSpaciousTiles ? 1.3f : 1.0f;  // a barn; a house is drawn to its plot's size
+        default: return 1.0f;
+    }
+}
+
+// Draws `fn` `k` times bigger about `anchor` (on the screen), footprint()
+// shrunk by as much meanwhile: the fires and the fine lines it leaves for
+// the baking moved to where they end up.
+void fine_line(Vector2 a, Vector2 b, Color c);
+template <typename Fn>
+void scaled_about(Vector2 anchor, float k, Fn&& fn) {
+    const size_t fires0 = g_fires ? g_fires->size() : 0;
+    const size_t fine0 = g_fine ? g_fine->size() : 0;
+    const float shrink = g_shrink;
+    g_shrink = k;
+    rlDrawRenderBatchActive();
+    rlPushMatrix();
+    rlTranslatef(anchor.x, anchor.y, 0.0f);
+    rlScalef(k, k, 1.0f);
+    rlTranslatef(-anchor.x, -anchor.y, 0.0f);
+    fn();
+    rlDrawRenderBatchActive();
+    rlPopMatrix();
+    g_shrink = shrink;
+    auto moved = [&](Vector2 p) { return Vector2{anchor.x + (p.x - anchor.x) * k, anchor.y + (p.y - anchor.y) * k}; };
+    if (g_fires) {
+        for (size_t i = fires0; i < g_fires->size(); ++i) (*g_fires)[i].at = moved((*g_fires)[i].at);
+    }
+    if (g_fine) {
+        for (size_t i = fine0; i < g_fine->size(); ++i) {
+            (*g_fine)[i].a = moved((*g_fine)[i].a);
+            (*g_fine)[i].b = moved((*g_fine)[i].b);
+        }
+    }
 }
 
 // How each kind of player building looks (placeholders until sprites).
@@ -5071,7 +5135,9 @@ Grain grain_of(engine::Terrain t) {
 Vector3 grain_normal(Grain g) { return {g.fine, g.mottle, 1.0f - g.speck}; }
 
 // How high a structure is drawn above its tiles, pixels: what a click on it may hit.
-float drawn_height(const engine::Structure& s) {
+float drawn_height_unscaled(const engine::Structure& s);
+float drawn_height(const engine::Structure& s) { return drawn_height_unscaled(s) * building_scale(s); }
+float drawn_height_unscaled(const engine::Structure& s) {
     switch (s.type) {
         case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 44.0f;
         case engine::StructureType::Apartment: return 74.0f;
@@ -6890,7 +6956,7 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
             }
             std::array<bool, 4> falls = open;
             if (edge == 0 || edge == 2) falls[static_cast<size_t>(edge)] = false;  // heaped against a far one; low behind a near one
-            const auto height = height_of(falls, 18.0f + 10.0f * rand01(h, 6));
+            const auto height = height_of(falls, 28.0f + 16.0f * rand01(h, 6));
             if (edge >= 0) {
                 const bool far = edge == 0 || edge == 2;
                 const bool along_x = edge >= 2;  // on a -y or +y edge: running along x
@@ -6902,10 +6968,10 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
                 const int floors = far ? 2 + static_cast<int>(rand01(h, 2) * 3.5f) : 2 + static_cast<int>(rand01(h, 2) * 2.5f);
                 const float k = along_x ? 0.74f : 1.0f;
                 pile_around(height, mix, 10, [=](Vector2 g) { return along_x ? g.y < y + at : g.x < x + at; }, [&] {
-                    if (far) {
-                        inner_wall(f, u0, u1, floors, 11.0f, k, h);
+                    if (far) {  // (its floors as high as the block's: see building_scale)
+                        inner_wall(f, u0, u1, floors, 20.0f, k, h);
                     } else {
-                        wall_fragment(f, u0, u1, floors, 11.0f, shade(wall, k), brick, h);
+                        wall_fragment(f, u0, u1, floors, 20.0f, shade(wall, k), brick, h);
                     }
                 });
             } else {
@@ -7308,7 +7374,7 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
     float pad = 0.15f;
     if (kind == 3) {
         const engine::RuinKind ruin = map.ruin(tx, ty);
-        up = ruin == engine::RuinKind::Apartment ? 66.0f : ruin == engine::RuinKind::Elevator ? 64.0f : 40.0f;
+        up = ruin == engine::RuinKind::Apartment ? 110.0f : ruin == engine::RuinKind::Elevator ? 64.0f : 40.0f;
         pad = 0.45f;
     } else if (kind != 0) {
         g = footprint(s, 0.0f);
@@ -7325,6 +7391,9 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
             case engine::StructureType::Headquarters: up = 96.0f; pad = 0.6f; break;  // its mast
             default: up = 74.0f; pad = 0.5f; break;  // a player's: the flag above it
         }
+        const float k = building_scale(s);  // (drawn that much bigger)
+        up *= k;
+        pad = pad * k + (k - 1.0f) * 0.5f;
     }
     const Vector2 corners[4] = {{g.x - pad, g.y - pad}, {g.x + g.width + pad, g.y - pad}, {g.x + g.width + pad, g.y + g.height + pad},
                                 {g.x - pad, g.y + g.height + pad}};
@@ -7347,6 +7416,10 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
 void WorldRenderer::draw_by_hand(const engine::TileMap& map, const BuildingBake& b) const {
     if (b.kind == 3) return draw_ruin_tile(map, b.tx, b.ty);
     if (b.kind == 0) return draw_house(map, b.tx, b.ty, b.damage);
+    if (const float k = building_scale(b.s); k != 1.0f && g_shrink == 1.0f) {  // bigger than its tiles (see building_scale)
+        const Rectangle f = footprint(b.s, 0.0f);
+        return scaled_about(on_terrain(map, {f.x + f.width * 0.5f, f.y + f.height * 0.5f}), k, [&] { draw_by_hand(map, b); });
+    }
     if (b.kind == 2) return draw_building(map, b.s);
     switch (b.s.type) {
         case engine::StructureType::Apartment: return draw_apartment(map, b.s, b.damage);
@@ -7396,8 +7469,8 @@ bool WorldRenderer::draw_baked(const BuildingBake& want) const {
 // frame; the ones no longer drawn let go.
 void WorldRenderer::bake_buildings(const engine::World& world) const {
     ++frame_;
-    constexpr int kW = 640;
-    constexpr int kH = 384;
+    constexpr int kW = 768;
+    constexpr int kH = 512;
     if (building_target_.id == 0) {
         building_target_ = LoadRenderTexture(kW, kH);
         SetTextureFilter(building_target_.texture, TEXTURE_FILTER_POINT);
@@ -8876,7 +8949,7 @@ void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u,
             const float ol = std::max(0.01f, std::hypot(off.x, off.y));
             const float up = std::min(1.0f, static_cast<float>(u.work) / static_cast<float>(engine::kAntennaWork) * 1.4f);
             const Vector2 at{mast.x + off.x / ol * 0.18f, mast.y + off.y / ol * 0.18f};
-            return draw_soldier(u, on_terrain(map, at, up * 74.0f), {-off.x / ol, -off.y / ol});
+            return draw_soldier(u, on_terrain(map, at, up * 74.0f * kTowerScale), {-off.x / ol, -off.y / ol});
         }
     }
 
@@ -9104,7 +9177,7 @@ void WorldRenderer::draw_post(const engine::TileMap& map, const engine::Structur
 void WorldRenderer::draw_tower_aerial(const engine::TileMap& map, const engine::Structure& s, float damage) const {
     if (stage_of(damage) >= 3) return;  // came down with the mast
     const Vector2 foot = on_terrain(map, to_vector2(s.center));
-    const Vector2 at{foot.x, foot.y - 80.0f};
+    const Vector2 at{foot.x, foot.y - 80.0f * building_scale(s)};
     const Color metal = lit({46, 48, 46, 255});
     const Vector2 ends[4] = {{at.x - 8.0f, at.y + 2.0f}, {at.x + 8.0f, at.y - 2.0f}, {at.x - 5.0f, at.y - 3.0f}, {at.x + 5.0f, at.y + 3.0f}};
     DrawLineEx(ends[0], ends[1], 1.2f, metal);
