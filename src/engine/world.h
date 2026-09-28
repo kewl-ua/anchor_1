@@ -106,6 +106,13 @@ struct EraLevel {
 inline constexpr EraLevel kEraLevels[] = {{65, 100}, {55, 75}, {45, 60}};  // Kontakt-1, Kontakt-5, Relikt
 inline constexpr int32_t kReactiveArmorPercent = kEraLevels[0].shaped_percent;
 inline constexpr int32_t kMinSoftGroundPercent = 5;  // a heavy tank in a bog still crawls
+// A tank in a bog sinks: a T-72B3 on the move is lost after 45 s, one standing
+// in half that; a heavier one sooner, a lighter one later (by how it copes
+// with soft ground). Sinking, it slows down, to half its speed at the end.
+// Lost, it's gone for good; its crew gets out.
+inline constexpr int32_t kBogSeconds = 45;
+inline constexpr int32_t kBogLimit = kBogSeconds * kTicksPerSecond * 100;
+inline constexpr int32_t kBogSlowPercent = 50;
 inline constexpr int32_t kFireControlFarPercent = 65;  // a tank's aim at its full range
 inline constexpr Fixed kAtgmTargetReach = Fixed::from_ratio(3, 2);  // an aim point this close to a vehicle means it
 inline constexpr int32_t kDrilledCrewsPercent = 50;    // of the time to set up or pack up a gun
@@ -415,6 +422,9 @@ struct Unit {
     uint8_t ranging_shots = 0;
     bool camouflaged = false;  // under nets: hidden like in a forest until it moves
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
+    // A tank in a bog sinks, slowly: how far it's gone (see kBogLimit). Out on
+    // firm ground it's free again; at the limit it's lost.
+    int32_t mired = 0;
 
     // A supply truck's assignment: the freight it hauls (Count: whatever
     // piles up most at the station) and the depot it takes it to (0: the
@@ -793,6 +803,7 @@ private:
     void apply_research(const Command& cmd);
     void update_research();
     void update_smoke();
+    void update_bogs();
     bool in_smoke(FixedVec2 p) const;
     // Work a job takes a unit, shortened by the owner's upgrades (shovels).
     Tick work_needed(const Unit& u, Tick base) const;

@@ -661,7 +661,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             return l > 0.0f ? Vector2{v.x / l, v.y / l} : Vector2{1.0f, 0.0f};
         };
         alive[u.id] = {to_vector2(u.pos), 0.0f, engine::unit_type(u.type).vehicle, u.type, u.owner, unit(to_vector2(u.hull)),
-                       unit(to_vector2(u.facing)), static_cast<uint32_t>(u.id) * 2654435761u};
+                       unit(to_vector2(u.facing)), static_cast<uint32_t>(u.id) * 2654435761u,
+                       u.mired * 4 >= engine::kBogLimit * 3};
     }
     for (const auto& [id, last] : units_seen_) {
         if (alive.contains(id) || world.find_unit(id)) continue;
@@ -669,8 +670,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (last.vehicle) {
             const engine::Terrain under =
                 map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(last.ground.x)), static_cast<int32_t>(std::floor(last.ground.y))}));
-            if (under != engine::Terrain::Water) blasts_.push_back({last.ground, 0.0f, 0.7f});
-            spawn_burst(world, last.ground, 0.8f);  // (off the water: spray)
+            if (under != engine::Terrain::Water && !last.sunk) blasts_.push_back({last.ground, 0.0f, 0.7f});
+            if (!last.sunk) spawn_burst(world, last.ground, 0.8f);  // (off the water: spray)
         }
     }
     units_seen_ = std::move(alive);
@@ -698,8 +699,9 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     for (const Remains& r : remains_) {  // burnt-out tanks smoulder, burning for the first half minute
         if (!engine::unit_type(r.type).tank || r.age > 100.0f) continue;
         if (map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))})) ==
-            engine::Terrain::Water) {
-            continue;  // drowned
+            engine::Terrain::Water ||
+            r.sunk) {
+            continue;  // drowned, or gone under in a bog
         }
         const Vector2 e = tank_engine(engine::unit_type(r.type).model);
         const float ease = r.age < 30.0f ? 1.0f : 0.4f;
@@ -4535,8 +4537,11 @@ Frame make_frame(const engine::TileMap& map, Vector2 ground, Vector2 f) {
 // z1, its top the polygon `top` (the same corners moved: a sloped front, a
 // rounded turret). Its sides turned towards the viewer are drawn, each shaded
 // by the way it faces (lit on the right, as the houses are), then its top.
+// Whether what's at height z (and below) has sunk out of sight.
+bool under(const Frame& fr, float z) { return fr.sink > 0.0f && z <= fr.sink + 0.2f; }
+
 void solid(const Frame& fr, const Vector2* base, const Vector2* top, int n, float z0, float z1, Color color) {
-    if (fr.sink > 0.0f && z1 <= fr.sink + 0.2f) return;  // sunk out of sight
+    if (under(fr, z1)) return;  // sunk out of sight
     Vector2 mid{0.0f, 0.0f};
     for (int i = 0; i < n; ++i) mid = {mid.x + base[i].x / static_cast<float>(n), mid.y + base[i].y / static_cast<float>(n)};
     for (int i = 0; i < n; ++i) {
@@ -4661,27 +4666,30 @@ float turret_ring_of(engine::TankModel m);
 // the lumps on the near side (drawn over the tank), else the far ones and the
 // soup (drawn under it).
 void mud_halo(const Frame& fr, Vector2 size, bool front, uint32_t seed) {
-    const Color mud{102, 100, 88, 255};
+    const Color mud{74, 72, 62, 255};
     const float len = size.x * 0.56f * kVehicleScale;
     const float wid = (size.y + 0.1f) * kVehicleScale;
-    if (!front) {
-        for (int i = 0; i < 5; ++i) {  // the soup under it
-            const float a = (static_cast<float>(i) / 4.0f - 0.5f) * len * 1.6f;
-            const Vector2 p = fr.at(a, 0.0f);
-            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 14.0f, 6.0f, lit(ColorAlpha(shade(mud, 0.6f), 0.55f)));
+    if (!front) {  // the soup under it, filling the ring
+        constexpr int kSides = 24;
+        const Vector2 o = fr.at(0.0f, 0.0f);
+        const Color soup = ColorAlpha(shade(mud, 0.6f), 0.6f);
+        for (int i = 0; i < kSides; ++i) {
+            const float t0 = static_cast<float>(i) * 6.2831853f / kSides;
+            const float t1 = static_cast<float>(i + 1) * 6.2831853f / kSides;
+            fill_triangle(o, fr.at(std::cos(t0) * len, std::sin(t0) * wid), fr.at(std::cos(t1) * len, std::sin(t1) * wid), soup);
         }
     }
-    constexpr int kLumps = 30;
+    constexpr int kLumps = 72;  // two rings of them, the outer one looser
     for (int i = 0; i < kLumps; ++i) {
-        const float t = static_cast<float>(i) * 6.2831853f / kLumps + hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i, 3)) * 0.15f;
-        const float out = 1.0f + 0.14f * hash_unit(tile_hash(static_cast<int>(seed >> 8) + i, 7));
+        const float t = static_cast<float>(i) * 6.2831853f / (kLumps / 2) + hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i, 3)) * 0.2f;
+        const float out = (i % 2 == 0 ? 0.96f : 1.1f) + 0.08f * hash_unit(tile_hash(static_cast<int>(seed >> 8) + i, 7));
         const float a = std::cos(t) * len * out;
         const float c = std::sin(t) * wid * out;
         const Vector2 g = fr.ground_of(a, c);  // which way from the middle, on the ground
         const bool near = g.x + g.y > 0.0f;
         if (near != front) continue;
         const Vector2 p = fr.at(a, c);
-        const float r = 2.2f + 1.8f * hash_unit(tile_hash(static_cast<int>(seed >> 4) + i * 13, 11));
+        const float r = 1.3f + 1.0f * hash_unit(tile_hash(static_cast<int>(seed >> 4) + i * 13, 11));
         const float tone = 0.9f + 0.2f * hash_unit(tile_hash(i, static_cast<int>(seed & 0xFF)));
         disc({p.x + r * 0.3f, p.y + r * 0.3f}, r, shade(mud, 0.62f * tone));
         disc({p.x, p.y - r * 0.2f}, r * 0.85f, shade(mud, tone));
@@ -4718,12 +4726,14 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     if (engine::unit_type(type).tank) {
         const engine::TankModel model = model_of(u);
         const int wear = wear_of(u.hp, engine::unit_type(type).max_hp);
-        // In a bog it sinks to its fenders (drawn from a sunk sprite once baked).
+        // In a bog it sinks, deeper and deeper (drawn from a sunk sprite once baked).
         const engine::TilePos under = map.clamp_tile({static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))});
         const bool bog = map.terrain(under) == engine::Terrain::Swamp;
+        // To its fenders, then to its deck, then its hull's gone and only the turret shows.
+        const int depth = !bog ? 0 : u.mired * 3 < engine::kBogLimit ? 1 : u.mired * 3 < engine::kBogLimit * 2 ? 3 : 4;
         const int era = world_era_[u.owner % world_era_.size()];
-        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, bog ? 1 : 0), u.owner);
-        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, bog ? 1 : 0), u.owner);
+        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, depth), u.owner);
+        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, depth), u.owner);
         if (bog && (!hull_sheet || !turret_sheet)) {
             hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, 0), u.owner);
             turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, 0), u.owner);
@@ -5157,7 +5167,7 @@ float tank_track_half(engine::UnitTypeId type) {
 }
 Vector2 tank_size(engine::TankModel m) { return {look_of(m).length, look_of(m).width}; }
 // A tank's sprite sheets by its reactive armor, wear and how far it's sunk.
-int tank_variant(engine::TankModel model, int era, int wear, int sink) { return ((static_cast<int>(model) * 4 + era) * 6 + wear) * 3 + sink; }
+int tank_variant(engine::TankModel model, int era, int wear, int sink) { return ((static_cast<int>(model) * 4 + era) * 6 + wear) * 5 + sink; }
 Vector2 tank_muzzle(engine::TankModel m) {
     const TankLook& t = look_of(m);
     return {(t.turret_at + t.gun) * kVehicleScale, (t.deck + t.turret_h * 0.66f) * kVehicleScale};
@@ -5237,8 +5247,11 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     if (look.skirt == Skirt::Full) side_block(-near, a0 + 0.02f, a1 - 0.08f, hw, w + 0.01f, 3.0f, look.deck - 0.4f, shade(paint, 0.85f));
     block(fr, a0, a1 - look.glacis, -hw, hw, 2.0f, look.deck, paint);
     block(fr, a1 - look.glacis, a1, -hw, hw, 2.0f, look.deck, shade(paint, 1.08f), look.glacis * 0.92f);
-    camouflage(fr, look, a0 + 0.05f, a1 - look.glacis - 0.05f, -hw + 0.03f, hw - 0.06f, look.deck, 0x51u + static_cast<uint32_t>(look.length * 100.0f), 5);
-    scorch(fr, a0 + 0.04f, a1 - look.glacis - 0.04f, -hw + 0.03f, hw - 0.06f, look.deck, wear, 0x33u + static_cast<uint32_t>(look.length * 50.0f));
+    const bool deck_under = under(fr, look.deck);  // sunk in a bog over its deck: only what stands on it shows
+    if (!deck_under) {
+        camouflage(fr, look, a0 + 0.05f, a1 - look.glacis - 0.05f, -hw + 0.03f, hw - 0.06f, look.deck, 0x51u + static_cast<uint32_t>(look.length * 100.0f), 5);
+        scorch(fr, a0 + 0.04f, a1 - look.glacis - 0.04f, -hw + 0.03f, hw - 0.06f, look.deck, wear, 0x33u + static_cast<uint32_t>(look.length * 50.0f));
+    }
 
     // Reactive armor on the glacis: bricks (Kontakt-1), plates (Kontakt-5, Relikt, FY), Nozh's angled rows.
     const float g0 = a1 - look.glacis;
@@ -5251,6 +5264,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
                 const float c = -hw + 0.03f + (2.0f * hw - 0.06f) * static_cast<float>(k) / 5.0f;
                 const float t = 0.2f + 0.38f * static_cast<float>(row);
                 if (torn(0x100u + static_cast<uint32_t>(row * 8 + k), wear)) continue;
+                if (under(fr, look.deck - (look.deck - 2.0f) * (0.34f + 0.38f * static_cast<float>(row)) * 0.9f)) continue;
                 const Color brick = shade(paint, 0.95f + 0.1f * static_cast<float>((k + row) % 2));
                 const Vector2 q[4] = {glacis_at(t, c), glacis_at(t, c + 0.065f), glacis_at(t + 0.28f, c + 0.065f), glacis_at(t + 0.28f, c)};
                 fill_quad(q[0], q[1], q[2], q[3], brick);
@@ -5265,6 +5279,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             const float c = -hw + (2.0f * hw) * static_cast<float>(k) / static_cast<float>(n);
             const float cw = 2.0f * hw / static_cast<float>(n) - 0.01f;
             if (torn(0x200u + static_cast<uint32_t>(k), wear)) continue;
+            if (under(fr, look.deck - (look.deck - 2.0f) * 0.45f * 0.9f)) continue;
             const Color slab = shade(paint, 1.0f + 0.08f * static_cast<float>(k % 2) + (era == 3 ? 0.06f : 0.0f));
             const Vector2 q[4] = {glacis_at(0.05f, c), glacis_at(0.05f, c + cw), glacis_at(0.85f, c + cw), glacis_at(0.85f, c)};
             fill_quad(q[0], q[1], q[2], q[3], slab);
@@ -5274,18 +5289,20 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             if (look.era == EraKind::Nozh) DrawLineV(lerp(q[0], q[3], 0.5f), lerp(q[1], q[2], 0.2f), lit(shade(slab, 0.55f)));
         }
     }
-    if (soviet) {  // the splash guard across the glacis
+    if (soviet && !deck_under) {  // the splash guard across the glacis
         DrawLineV(fr.at(g0, -hw, look.deck), glacis_at(0.5f, 0.0f), lit(shade(paint, 0.7f)));
         DrawLineV(glacis_at(0.5f, 0.0f), fr.at(g0, hw, look.deck), lit(shade(paint, 0.7f)));
     }
-    disc(fr.at(g0 - 0.06f, 0.0f, look.deck), 1.4f, shade(paint, 0.62f));  // the driver's hatch
-    for (const float c : {-hw + 0.03f, hw - 0.03f}) disc(glacis_at(0.55f, c), 1.0f, {210, 206, 170, 255});  // headlights
+    if (!deck_under) disc(fr.at(g0 - 0.06f, 0.0f, look.deck), 1.4f, shade(paint, 0.62f));  // the driver's hatch
+    if (!under(fr, look.deck - (look.deck - 2.0f) * 0.55f * 0.9f)) {
+        for (const float c : {-hw + 0.03f, hw - 0.03f}) disc(glacis_at(0.55f, c), 1.0f, {210, 206, 170, 255});  // headlights
+    }
 
     // Its back: fuel drums and the unditching log; a gas turbine's grilles; stowage.
     switch (look.rear) {
         case Rear::Drums: {
             if (wear >= 4) break;
-            for (int k = 0; k < 4; ++k) {
+            for (int k = 0; k < 4 && !deck_under; ++k) {
                 const float a = a0 + 0.08f + 0.05f * static_cast<float>(k);
                 DrawLineV(fr.at(a, -hw + 0.05f, look.deck), fr.at(a, hw - 0.05f, look.deck), lit(shade(paint, 0.62f)));
             }
@@ -5297,19 +5314,19 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         }
         case Rear::Turbine: {
             block(fr, a0 + 0.02f, a0 + 0.22f, -hw + 0.05f, hw - 0.05f, look.deck, look.deck + 0.8f, shade(paint, 0.7f));
-            for (int k = 0; k < 6; ++k) {
+            for (int k = 0; k < 6 && !under(fr, look.deck + 0.8f); ++k) {
                 const float a = a0 + 0.04f + 0.03f * static_cast<float>(k);
                 DrawLineV(fr.at(a, -hw + 0.06f, look.deck + 0.8f), fr.at(a, hw - 0.06f, look.deck + 0.8f), lit({34, 34, 30, 255}));
             }
             const Vector2 bk = fr.ground_of(-1.0f, 0.0f);
-            if (bk.x + bk.y > 0.0f) {  // the exhaust in the back plate
+            if (bk.x + bk.y > 0.0f && !under(fr, 6.0f)) {  // the exhaust in the back plate
                 fill_quad(fr.at(a0, -hw * 0.6f, 3.0f), fr.at(a0, hw * 0.6f, 3.0f), fr.at(a0, hw * 0.6f, 6.0f), fr.at(a0, -hw * 0.6f, 6.0f),
                           {30, 30, 28, 255});
             }
             break;
         }
         case Rear::Plain: {
-            for (int k = 0; k < 3; ++k) {
+            for (int k = 0; k < 3 && !deck_under; ++k) {
                 const float a = a0 + 0.06f + 0.05f * static_cast<float>(k);
                 DrawLineV(fr.at(a, -hw + 0.05f, look.deck), fr.at(a, hw - 0.05f, look.deck), lit(shade(paint, 0.66f)));
             }
@@ -5331,7 +5348,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     const bool slipped = wear >= 4;
     if (!slipped) {
         side_block(near, a0 - 0.01f, a1 - 0.03f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
-        for (float a = a0 + 0.03f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.06f) {
+        for (float a = a0 + 0.03f * static_cast<float>(frame); a < a1 - 0.04f && !under(fr, 1.4f); a += 0.06f) {
             DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.4f), lit({58, 58, 52, 255}));
         }
     } else {
@@ -5344,16 +5361,18 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
         side_block(near, a0 + 0.12f, a1 - 0.12f, out0, out1, 0.0f, 1.2f, rubber);
         const Vector2 sag_q[4] = {fr.at(a0 + 0.12f, near * hw, 5.0f), fr.at(a0 + 0.12f, near * w, 5.0f),
                                   fr.at(a0 + 0.26f, near * out1, 1.2f), fr.at(a0 + 0.26f, near * out0, 1.2f)};
-        fill_quad(sag_q[0], sag_q[1], sag_q[2], sag_q[3], shade(rubber, 1.1f));  // sagging off the sprocket
-        for (float a = a0 + 0.16f; a < a1 - 0.14f; a += 0.05f) {
+        if (!under(fr, 5.0f)) fill_quad(sag_q[0], sag_q[1], sag_q[2], sag_q[3], shade(rubber, 1.1f));  // sagging off the sprocket
+        for (float a = a0 + 0.16f; a < a1 - 0.14f && !under(fr, 1.2f); a += 0.05f) {
             DrawLineV(fr.at(a, near * out0, 1.2f), fr.at(a, near * out1, 1.2f), lit({62, 62, 56, 255}));
         }
         const Vector2 end0 = fr.at(a1 - 0.12f, near * out0, 0.6f);
         const Vector2 end1 = fr.at(a1 - 0.12f, near * out1, 0.6f);
         const Vector2 tip0 = fr.at(a1 + 0.02f, near * (out1 + 0.05f), 0.3f);
         const Vector2 tip1 = fr.at(a1 + 0.0f, near * (out1 + 0.14f), 0.3f);
-        fill_quad(end0, end1, tip1, tip0, shade(rubber, 0.9f));  // the loose end
-        DrawLineV(lerp(end0, tip0, 0.5f), lerp(end1, tip1, 0.5f), lit({62, 62, 56, 255}));
+        if (!under(fr, 0.6f)) {
+            fill_quad(end0, end1, tip1, tip0, shade(rubber, 0.9f));  // the loose end
+            DrawLineV(lerp(end0, tip0, 0.5f), lerp(end1, tip1, 0.5f), lit({62, 62, 56, 255}));
+        }
     }
     road_wheel(fr, a0 + 0.05f, c + near * 0.004f, 2.4f, steel);
     road_wheel(fr, a1 - 0.07f, c + near * 0.004f, 2.2f, steel);
@@ -5374,7 +5393,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             road_wheel(fr, a1 - 0.25f - (span - 0.2f) * static_cast<float>(i) / 2.0f, c + near * 0.004f, 1.0f, steel, 3.6f);
         }
     }
-    for (float a = a0 + 0.04f * static_cast<float>(frame); a < (slipped ? a0 + 0.12f : a1 - 0.04f); a += 0.08f) {
+    for (float a = a0 + 0.04f * static_cast<float>(frame); a < (slipped ? a0 + 0.12f : a1 - 0.04f) && !under(fr, 5.5f); a += 0.08f) {
         DrawLineV(fr.at(a, near * (hw - 0.02f), 5.5f), fr.at(a, near * w, 5.5f), lit({26, 26, 24, 255}));
     }
 
@@ -5423,7 +5442,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             if (torn(0x600u + static_cast<uint32_t>(k), wear)) continue;
             side_block(near, b, b + (look.length - 0.4f) / static_cast<float>(n) - 0.006f, hw, w + 0.025f, 3.6f, 6.9f,
                        shade(paint, 0.94f + 0.08f * static_cast<float>(k % 2)));
-            disc(fr.at(b + 0.02f, near * (w + 0.027f), 6.2f), 0.5f, shade(paint, 1.5f));
+            if (!under(fr, 6.2f)) disc(fr.at(b + 0.02f, near * (w + 0.027f), 6.2f), 0.5f, shade(paint, 1.5f));
         }
     }
     if (skirt_boxes || covered || (look.era == EraKind::Fy && era >= 2)) {
@@ -5431,12 +5450,12 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             const float b = a1 - 0.32f + 0.085f * static_cast<float>(k);
             if (torn(0x700u + static_cast<uint32_t>(k), wear)) continue;
             side_block(near, b, b + 0.078f, hw, w + 0.03f, 3.4f, 7.2f, shade(paint, 0.96f + 0.08f * static_cast<float>(k % 2)));
-            disc(fr.at(b + 0.02f, near * (w + 0.032f), 6.4f), 0.5f, shade(paint, 1.5f));
-            disc(fr.at(b + 0.058f, near * (w + 0.032f), 4.2f), 0.5f, shade(paint, 0.5f));
+            if (!under(fr, 6.4f)) disc(fr.at(b + 0.02f, near * (w + 0.032f), 6.4f), 0.5f, shade(paint, 1.5f));
+            if (!under(fr, 4.2f)) disc(fr.at(b + 0.058f, near * (w + 0.032f), 4.2f), 0.5f, shade(paint, 0.5f));
         }
     }
     const float sc = near * (w + (covered ? 0.03f : look.skirt == Skirt::None ? -0.08f : 0.016f));
-    if (wear < 4) fill_quad(fr.at(a0 + 0.2f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z1),
+    if (wear < 4 && !under(fr, stripe_z1)) fill_quad(fr.at(a0 + 0.2f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z0), fr.at(a0 + 0.5f, sc, stripe_z1),
               fr.at(a0 + 0.2f, sc, stripe_z1), team);
 }
 
@@ -5539,7 +5558,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
             const Vector2 p[7] = {{r * 1.7f, 0.0f}, {r * 0.4f, r * 0.95f}, {-r, r * 0.95f}, {-r - b, r * 0.8f},
                                   {-r - b, -r * 0.8f}, {-r, -r * 0.95f}, {r * 0.4f, -r * 0.95f}};
             layers(p, 7, 0.1f);
-            for (int k = 0; k < 7; ++k) {  // the chains hanging under the bustle, a ball at the end of each
+            for (int k = 0; k < 7 && !under(tf, z0 + 0.5f); ++k) {  // the chains hanging under the bustle, a ball at the end of each
                 const float c = -r * 0.75f + r * 1.5f * static_cast<float>(k) / 6.0f;
                 const Vector2 top = tf.at(-r - b + 0.01f, c, z0 + 0.5f);
                 DrawLineV(top, {top.x, top.y + 3.0f}, lit({52, 52, 46, 255}));
@@ -5561,7 +5580,9 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
     const int k1 = look.era == EraKind::SovietK1 ? std::min(era, 1) : era;
     for (const float sgn : {-1.0f, 1.0f}) {
         // Smoke grenade launchers forward on either side; a stowage box towards the back.
-        for (int k = 0; k < 3; ++k) disc(tf.at(r * 0.1f - 0.03f * static_cast<float>(k), sgn * r * 0.95f, z0 + h * 0.66f), 0.9f, {50, 52, 44, 255});
+        for (int k = 0; k < 3 && !under(tf, z0 + h * 0.66f); ++k) {
+            disc(tf.at(r * 0.1f - 0.03f * static_cast<float>(k), sgn * r * 0.95f, z0 + h * 0.66f), 0.9f, {50, 52, 44, 255});
+        }
         if (!western) block(tf, -r * 0.85f, -r * 0.25f, sgn > 0 ? r * 0.75f : -r, sgn > 0 ? r : -r * 0.75f, z0 + 1.0f, z0 + h * 0.75f, shade(paint, 0.9f));
         const bool wedges = (look.era == EraKind::Soviet && era >= 2) && !torn(0x800u + (sgn > 0 ? 1u : 0u), wear);
         if (wedges) {  // Kontakt-5's (and Relikt's) wedges, their bricks in chevrons
@@ -5766,7 +5787,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         engine::TankModel model;
         int era;   // reactive armor
         int wear;  // 0 whole .. 3 barely going, 4 a wreck, 5 a rusted one
-        int sink;  // 0 on firm ground, 1 in a bog, 2 under water
+        int sink;  // 0 on firm ground; in a bog 1 to its fenders, 3 to its deck, 4 its hull gone; 2 its turret's top only
     };
     const engine::TileMap& map = world.map();
     auto terrain_under = [&](Vector2 g) {
@@ -5779,9 +5800,11 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         const int era = world_era_[u.owner % world_era_.size()];
         // Every wear up front (cheap: a row of directions at once), so a hit never waits for a bake.
         for (int wear = 0; wear <= 5; ++wear) wanted.push_back({u.owner, def.model, wear >= 4 ? 0 : era, wear, 0});  // 5: rusted
-        if (terrain_under(to_vector2(u.pos)) == engine::Terrain::Swamp) {  // in a bog: its sunk look, as it gets worse
+        if (terrain_under(to_vector2(u.pos)) == engine::Terrain::Swamp) {  // in a bog: its sunk looks, as it gets worse
             const int now = wear_of(u.hp, def.max_hp);
-            for (int wear = now; wear <= std::min(now + 1, 3); ++wear) wanted.push_back({u.owner, def.model, era, wear, 1});
+            for (int wear = now; wear <= std::min(now + 1, 3); ++wear) {
+                for (const int sink : {1, 3, 4}) wanted.push_back({u.owner, def.model, era, wear, sink});
+            }
         }
         if (dump_dir()) {  // every kind of armor, to look at
             for (int e = 0; e <= 3; ++e) wanted.push_back({u.owner, def.model, e, 0, 0});
@@ -5791,7 +5814,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         if (!engine::unit_type(r.type).tank) continue;
         const engine::TankModel model = engine::unit_type(r.type).model;
         const engine::Terrain t = terrain_under(r.ground);
-        if (t == engine::Terrain::Water) {  // drowned: not burnt, under water
+        if (t == engine::Terrain::Water || r.sunk) {  // drowned, or gone under in a bog: not burnt, only its turret's top showing
             wanted.push_back({r.owner, model, world_era_[r.owner % world_era_.size()], 1, 2});
             continue;
         }
@@ -5855,7 +5878,11 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     const Vector2 S = iso_offset({-f.y, f.x});
                     Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
                              {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
-                    fr.sink = sink == 1 ? 5.0f : sink == 2 ? look.deck + look.turret_h * 0.75f : 0.0f;
+                    fr.sink = sink == 1   ? 5.0f
+                              : sink == 3 ? look.deck - 0.5f
+                              : sink == 4 ? look.deck + look.turret_h * 0.35f
+                              : sink == 2 ? look.deck + look.turret_h * 0.75f
+                                          : 0.0f;
                     if (part == SpritePart::TankHull) {
                         draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
                     } else {
@@ -6071,6 +6098,16 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         const Vector2 g1{ring.x + iso_offset(f).x * 0.8f * k, ring.y + iso_offset(f).y * 0.8f * k};
         DrawLineEx(g0, g1, 2.0f, {24, 46, 60, 110});
         draw_sprite(*turret, ring, unit(r.facing), 0);
+        return;
+    }
+    if (r.sunk) {
+        const SpriteSheet* turret = sheet(SpritePart::TankTurret, tank_variant(def.model, world_era_[r.owner % world_era_.size()], 1, 2), r.owner);
+        if (!turret) return;
+        const Frame fr = make_frame(map, r.ground, unit(r.hull));
+        const Vector2 size = tank_size(def.model);
+        mud_halo(fr, {size.x * 0.55f, size.y * 0.7f}, false, r.seed);
+        draw_sprite(*turret, fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f), unit(r.facing), 0);
+        mud_halo(fr, {size.x * 0.55f, size.y * 0.7f}, true, r.seed);
         return;
     }
     const int sink = under == engine::Terrain::Swamp ? 1 : 0;

@@ -1107,6 +1107,10 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
         if (def.missile_capacity > 0 && world.has_upgrade(u.owner, engine::UpgradeId::Atgm)) {
             supply = TextFormat("%s    ATGM %d / %d", supply, u.missiles, def.missile_capacity);
         }
+        if (u.mired > 0) {  // get it out while there's time
+            supply = TextFormat("%s    Sinking in the bog: %d%%", supply, static_cast<int>(u.mired * 100 / engine::kBogLimit));
+            supply_color = u.mired * 2 > engine::kBogLimit ? theme::kDanger : theme::kWarning;
+        }
     } else if (u.type == engine::UnitTypeId::Truck ||
                (def.supplies != engine::Resource::Count && u.order == engine::Order::Haul)) {
         std::tie(supply, supply_color) = truck_status(world, u);

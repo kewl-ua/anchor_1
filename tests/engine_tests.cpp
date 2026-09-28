@@ -4119,11 +4119,12 @@ Trip drive(Simulation& sim, EntityId id, int32_t x, int32_t y, int max_ticks) {
     for (trip.ticks = 0; trip.ticks < max_ticks; ++trip.ticks) {
         sim.step();
         const Unit* u = sim.world().find_unit(id);
+        if (!u) return trip;  // lost on the way (sunk in a bog)
         trip.touched_forest = trip.touched_forest || sim.world().map().terrain_at(u->pos) == Terrain::Forest;
         if (trip.ticks > 3 && u->order == Order::Idle) break;
     }
     const Unit* u = sim.world().find_unit(id);
-    trip.arrived = (u->pos - at(x, y)).length() < Fixed::from_ratio(1, 2);
+    trip.arrived = u && (u->pos - at(x, y)).length() < Fixed::from_ratio(1, 2);
     return trip;
 }
 
@@ -4141,6 +4142,17 @@ int crossing(Terrain ground, UnitTypeId who) {
 
 // Roads are fast (concrete faster than dirt), plowed land slows wheels,
 // a swamp swallows tracks and stops wheels; the route finder takes the road.
+bool lasts_ifv_ok() {
+    TileMap map(20, 10);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 20; ++x) map.set_terrain(x, y, Terrain::Swamp);
+    }
+    Simulation sim(1, map);
+    const EntityId id = sim.world_for_setup().spawn_unit(0, UnitTypeId::Ifv, at(10, 5));
+    for (int i = 0; i < kBogSeconds * kTicksPerSecond * 2; ++i) sim.step();
+    return sim.world().find_unit(id) != nullptr && sim.world().find_unit(id)->mired == 0;
+}
+
 void test_roads_fields_and_swamps() {
     const int tank_field = crossing(Terrain::Grass, UnitTypeId::Tank);
     const int tank_dirt = crossing(Terrain::DirtRoad, UnitTypeId::Tank);
@@ -4148,7 +4160,7 @@ void test_roads_fields_and_swamps() {
     CHECK(tank_road < tank_dirt && tank_dirt < tank_field);
     CHECK(crossing(Terrain::Road, UnitTypeId::Truck) * 100 < crossing(Terrain::Grass, UnitTypeId::Truck) * 70);
     CHECK(crossing(Terrain::Plowed, UnitTypeId::Truck) > crossing(Terrain::Grass, UnitTypeId::Truck));
-    CHECK(crossing(Terrain::Swamp, UnitTypeId::Tank) > 4 * tank_field);
+    CHECK(crossing(Terrain::Swamp, UnitTypeId::Tank) == 1000000);  // thirty tiles of bog: it sinks on the way (see test_bogs)
     CHECK(crossing(Terrain::Swamp, UnitTypeId::Truck) == 1000000);  // never gets in
     CHECK(crossing(Terrain::Swamp, UnitTypeId::Rifleman) > 2 * crossing(Terrain::Grass, UnitTypeId::Rifleman));
 
@@ -4171,6 +4183,95 @@ void test_roads_fields_and_swamps() {
         on_road_far = on_road_far || sim.world().find_unit(truck)->pos.y > Fixed::from_int(15);
     }
     CHECK(on_road_far);
+}
+
+// A tank in a bog sinks, slowly: through a narrow one it gets, slower and
+// slower; standing in it, it's lost twice as soon, a heavy one sooner than a
+// light one; lost, its crew comes back; out on firm ground it's free again.
+void test_bogs() {
+    auto strip = [](int width, UnitTypeId type) {
+        TileMap map(40, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 15; x < 15 + width; ++x) map.set_terrain(x, y, Terrain::Swamp);
+        }
+        Simulation sim(1, map);
+        const EntityId id = sim.world_for_setup().spawn_unit(0, type, at(4, 5));
+        return drive(sim, id, 34, 5, 20000);
+    };
+    const Trip narrow = strip(3, UnitTypeId::Tank);
+    CHECK(narrow.arrived);
+    CHECK(!strip(20, UnitTypeId::Tank).arrived);  // too wide: lost in it
+
+    // How long each lasts standing in a bog, and moving.
+    auto lasts = [](UnitTypeId type, bool moving) {
+        TileMap map(60, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 0; x < 60; ++x) map.set_terrain(x, y, Terrain::Swamp);
+        }
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        w.set_stock(0, {});
+        const EntityId id = w.spawn_unit(0, type, at(3, 5));
+        if (moving) issue(sim, make_move(0, {id}, 58, 5));
+        int t = 0;
+        while (sim.world().find_unit(id) && t < 20000) {
+            sim.step();
+            ++t;
+        }
+        CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Personnel)] == unit_type(type).cost[static_cast<size_t>(Resource::Personnel)]);
+        return t;
+    };
+    const int standing = lasts(UnitTypeId::Tank, false);
+    CHECK(std::abs(standing - kBogSeconds * kTicksPerSecond / 2) <= 2);
+    const int driving = lasts(UnitTypeId::Tank, true);
+    CHECK(driving > standing * 18 / 10 && driving <= kBogSeconds * kTicksPerSecond + 5);
+    CHECK(lasts(UnitTypeId::M1A1, false) < standing && lasts(UnitTypeId::T64BV, false) > standing);
+
+    // Sinking, it slows down; out of it, it's free.
+    TileMap map(40, 10);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 12; ++x) map.set_terrain(x, y, Terrain::Swamp);
+    }
+    Simulation sim(1, map);
+    const EntityId id = sim.world_for_setup().spawn_unit(0, UnitTypeId::T64BV, at(8, 5));
+    for (int i = 0; i < 400; ++i) sim.step();  // standing in it for a while
+    CHECK(sim.world().find_unit(id)->mired > kBogLimit / 3);
+    issue(sim, make_move(0, {id}, 30, 5));
+    Fixed first{};
+    for (int i = 0; i < 40; ++i) sim.step();
+    first = sim.world().find_unit(id)->pos.x;
+    CHECK(sim.world().find_unit(id)->mired > 0);
+    for (int i = 0; i < 600; ++i) sim.step();
+    CHECK(sim.world().find_unit(id)->mired == 0);  // out on firm ground
+    CHECK(sim.world().find_unit(id)->pos.x > first + Fixed::from_int(3));
+    // Only tanks: an IFV floats.
+    CHECK(lasts_ifv_ok());
+
+    // One that has sat in it a while crawls, next to one just got in.
+    auto crawl = [](int sat) {
+        TileMap map(40, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 0; x < 40; ++x) map.set_terrain(x, y, Terrain::Swamp);
+        }
+        Simulation sim(1, map);
+        const EntityId id = sim.world_for_setup().spawn_unit(0, UnitTypeId::T64BV, at(5, 5));
+        for (int i = 0; i < sat; ++i) sim.step();
+        const Fixed x0 = sim.world().find_unit(id)->pos.x;
+        issue(sim, make_move(0, {id}, 35, 5));
+        for (int i = 0; i < 30; ++i) sim.step();
+        return sim.world().find_unit(id)->pos.x - x0;
+    };
+    const Fixed fresh = crawl(0);
+    CHECK(fresh > Fixed{} && crawl(300) < fresh * 9 / 10);
+
+    // How far it's sunk is part of the game's state.
+    auto sum = [](int32_t mired) {
+        Simulation sim(1, TileMap(20, 10));
+        const EntityId id = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 5));
+        sim.world_for_setup().unit_for_setup(id)->mired = mired;
+        return sim.world().checksum();
+    };
+    CHECK(sum(0) != sum(1000));
 }
 
 // Sunflowers, reeds, an orchard and a crater hide a man, not a vehicle (wheat
@@ -5546,6 +5647,7 @@ int main() {
     test_vehicle_drives_around_forest();
     test_roads_fields_and_swamps();
     test_crops_swamps_and_craters();
+    test_bogs();
     test_shelling_leaves_craters();
     test_crater_kinds();
     test_shelling_shreds_trees();

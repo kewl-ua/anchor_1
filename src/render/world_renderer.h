@@ -75,6 +75,7 @@ private:
         Vector2 hull{1.0f, 0.0f};    // a tank's, when it was knocked out
         Vector2 facing{1.0f, 0.0f};
         uint32_t seed = 0;
+        bool sunk = false;  // a tank that went under in a bog
     };
     // Smoke, flames, clods of earth, spray: flying about for a moment. Only
     // for the eye: nothing in the game depends on them.

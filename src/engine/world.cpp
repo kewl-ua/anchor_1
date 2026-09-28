@@ -617,6 +617,7 @@ void World::step() {
 
     for (Unit& u : units_) update_unit(u);
     for (Unit& u : units_) u.still = u.moving ? 0 : u.still + 1;
+    update_bogs();
     update_repairs();
     // Projectiles move after units, so a unit that stepped aside this tick dodges.
     move_projectiles();
@@ -898,6 +899,7 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
         terrain_pct = std::max(kMinSoftGroundPercent, 100 - (100 - terrain_pct) * def.soft_ground_percent / 100);
     }
     if (terrain_pct > 0) speed = speed * terrain_pct / 100;
+    if (u.mired > 0) speed = speed * (100 - kBogSlowPercent * u.mired / kBogLimit) / 100;  // sinking in the bog
 
     u.facing = to_point;
     const FixedVec2 next = dist <= speed ? point : u.pos + to_point * (speed / dist);
@@ -1378,6 +1380,19 @@ void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
     }
 }
 
+void World::update_bogs() {
+    for (Unit& u : units_) {
+        const UnitTypeDef& def = def_of(u);
+        if (!def.tank || u.inside) continue;
+        if (map_.terrain_at(u.pos) != Terrain::Swamp) {
+            u.mired = 0;  // out on firm ground: free
+            continue;
+        }
+        u.mired = std::min(kBogLimit, u.mired + def.soft_ground_percent * (u.moving ? 1 : 2));
+        if (u.mired >= kBogLimit) u.hp = 0;  // gone under: see apply_damage_and_remove_dead
+    }
+}
+
 void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& weapon) {
     if (weapon.damage_type != DamageType::Explosive || weapon.splash_radius < kMediumBurst) return;
     const TilePos t = map_.clamp_tile(tile_of(at));
@@ -1531,7 +1546,8 @@ void World::apply_damage_and_remove_dead() {
     // A tank knocked out: its crew may get out (the men come back to the pool).
     for (const Unit& u : units_) {
         if (u.hp > 0 || !def_of(u).tank || u.owner >= kMaxPlayers) continue;
-        if (static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
+        // Sunk in a bog, slowly: the crew gets out. Knocked out: as its armour lets them.
+        if (u.mired >= kBogLimit || static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];
         }
     }
@@ -1639,6 +1655,7 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.missiles));
         mix(static_cast<uint8_t>(u.shell));
         mix(u.deployed ? 1 : 0);
+        mix(static_cast<uint32_t>(u.mired));
         mix(u.deploy_work);
         mix_vec(u.ranging_point);
         mix(u.ranging_shots);
