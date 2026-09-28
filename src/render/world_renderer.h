@@ -110,6 +110,7 @@ private:
     std::unordered_map<engine::EntityId, Vector2> track_last_;  // where each left its last mark
     void draw_track_marks(const engine::World& world, Rectangle view) const;
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
+    std::unordered_map<engine::EntityId, double> shot_at_;           // when (GetTime) each crew's weapon last fired: its recoil
     // Vehicles as last seen: what they had, how long since each fired (its
     // recoil) and was hit (a jolt, the way it was pushed).
     struct VehicleSeen {
@@ -186,7 +187,8 @@ private:
         int frames = 0;
         Vector2 origin{};  // where the ground point under the part is, in a frame
     };
-    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop, Gun, Plane, Radar };  // a tank's or an IFV's; a truck's and its radar; a towed gun; an aircraft; an AA gun's radar
+    // A tank's or an IFV's; a truck's and its radar; a towed gun; an aircraft; an AA gun's radar; a howitzer's barrel (it recoils).
+    enum class SpritePart : int { Hull, Turret, TruckBody, TruckTop, Gun, Plane, Radar, Barrel };
     // (part, its variant: a tank's reactive armor), owner.
     mutable std::map<std::pair<std::pair<int, int>, int>, SpriteSheet> sheets_;
     mutable RenderTexture2D bake_target_{};

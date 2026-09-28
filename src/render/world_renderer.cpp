@@ -371,6 +371,23 @@ constexpr int kTankLadder[] = {4, 0, 1, 2, 3};
 constexpr int kTankFrames = 5;
 constexpr float kHowitzerPitch[] = {0.0f, 8.0f, 16.0f, 26.0f, 40.0f};
 constexpr int kHowitzerFrames = 5;
+// A howitzer's barrel after a shot: thrown back in its cradle at once (the
+// long recoil, a quarter of its length), run out again over half a second.
+// Its sprite apart from the turret (the carriage), a frame for each angle
+// it's laid at and each state of the recoil.
+constexpr int kRecoilStates = 3;
+constexpr float kRecoilShare[kRecoilStates] = {0.0f, 0.12f, 0.24f};
+constexpr int kBarrelFrames = (kHowitzerFrames - 1) * kRecoilStates;
+int recoil_state(float since) { return since < 0.15f ? 2 : since < 0.5f ? 1 : 0; }
+// Whether a gun turned `dir` is drawn in front of its turret, as the bake
+// has it for the direction its sprite is drawn at (see draw_vehicle_turret).
+bool gun_toward_viewer(Vector2 dir, int dirs) {
+    float a = std::atan2(dir.y, dir.x);
+    if (a < 0.0f) a += 6.2831853f;
+    const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(dirs))) % dirs;
+    const float q = static_cast<float>(d) * 6.2831853f / static_cast<float>(dirs);
+    return std::cos(q) + std::sin(q) > 0.0f;
+}
 // A tile of height in a Frame's pixels: the view is from 30 degrees up.
 constexpr float kZPerTile = 39.2f;
 // A towed gun's or an aircraft's sprite sheets by its wear.
@@ -635,7 +652,8 @@ void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
     // angle while a carousel autoloader reloads it. A howitzer's as the
     // firing tables have it: the angle that throws a shell that far (half
     // the arcsine of the share of its reach), low while it's being set up or
-    // packed up, and it stays laid when it's done firing.
+    // packed up, raised ready once it's set up, and it stays laid when it's
+    // done firing.
     auto laid = [&](const engine::Unit& u, const VehicleSeen& v, bool tank) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const float reach = to_float(engine::weapon_of(u).range);
@@ -650,7 +668,7 @@ void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
         }
         if (!u.deployed || u.deploy_work > 0) return 1.0f;
         const float d = aim_range(u);
-        if (d < 0.0f) return std::max(1.0f, v.elev);
+        if (d < 0.0f) return v.elev > 1.5f ? v.elev : 2.0f;  // set up with nothing to fire at: raised, ready
         const float deg = 0.5f * std::asin(std::clamp(d / reach, 0.0f, 1.0f)) * 57.29578f;
         int best = 1;
         for (int i = 2; i < kHowitzerFrames; ++i) {
@@ -1186,11 +1204,13 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         shots[u.id] = u.last_shot_tick;
         const auto seen = shots_seen_.find(u.id);
         if (seen != shots_seen_.end() && u.last_shot_tick > seen->second && !u.inside && shows(world, u)) {
+            shot_at_[u.id] = GetTime();
             spawn_muzzle(world, u);
             fired(world, u);
         }
     }
     shots_seen_ = std::move(shots);
+    std::erase_if(shot_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
@@ -4858,16 +4878,21 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
     // Things in front of him on the ground: a mortar's tube on its plate, an AGS on its tripod.
     auto ahead_px = [&](float px) { return Vector2{x + fs.x * px, feet.y + fs.y * px}; };
     auto crew_weapon = [&] {
+        // Fired: a mortar's tube driven down into its plate; an AGS shaking on its tripod through its burst.
+        const auto fired = shot_at_.find(u.id);
+        const float since = fired != shot_at_.end() ? static_cast<float>(GetTime() - fired->second) : 99.0f;
         if (type == UnitTypeId::Mortar && crew_set) {
-            const Vector2 plate = ahead_px(6.0f);
+            const float jolt = since < 0.18f ? 1.0f - since / 0.18f : 0.0f;
+            const Vector2 plate = {ahead_px(6.0f).x, ahead_px(6.0f).y + jolt};
             DrawEllipse(static_cast<int>(plate.x), static_cast<int>(plate.y), 3.5f, 1.6f, lit({54, 56, 50, 255}));
-            const Vector2 muzzle{plate.x + fs.x * 3.0f, plate.y - 11.0f};
+            const Vector2 muzzle{plate.x + fs.x * 3.0f, plate.y - 11.0f + jolt * 1.5f};
             DrawLineEx({plate.x + fs.x * 4.0f + 1.0f, plate.y}, {plate.x + fs.x * 1.5f, plate.y - 6.0f}, 1.0f, lit({46, 48, 44, 255}));
             DrawLineEx(plate, muzzle, 2.6f, lit({66, 72, 58, 255}));
             DrawLineEx({plate.x - 0.6f, plate.y}, {muzzle.x - 0.6f, muzzle.y}, 0.8f, lit({100, 108, 88, 255}));
         }
         if (type == UnitTypeId::Ags && crew_set) {
-            const Vector2 base = ahead_px(6.0f);
+            const float shake = since < 0.4f && std::fmod(since, 0.08f) < 0.04f ? 1.2f : 0.0f;
+            const Vector2 base = {ahead_px(6.0f).x - fs.x * shake, ahead_px(6.0f).y - fs.y * shake};
             for (const float k : {-1.0f, 1.0f, 0.0f}) {
                 DrawLineEx({base.x, base.y - 4.0f}, {base.x + k * 3.5f - fs.x * (k == 0.0f ? 3.0f : 0.0f), base.y + (k == 0.0f ? 1.0f : 0.5f)},
                            1.0f, lit({50, 52, 48, 255}));
@@ -5303,23 +5328,60 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     // Alive: the engine's shudder on the idle, a sway on the move; a jolt
     // when it's hit; the gun's recoil when it fires rocking it back (a towed
     // gun thrown back whole).
-    float recoil = 0.0f;
+    float since = 99.0f;  // since it fired
     if (const auto seen = vehicles_seen_.find(u.id); seen != vehicles_seen_.end()) {
         const VehicleSeen& v = seen->second;
-        if (v.recoil < 0.25f) recoil = 1.0f - v.recoil / 0.25f;
+        since = v.recoil;
         if (v.jolt < 0.3f) {
             const float k = (1.0f - v.jolt / 0.3f) * 1.8f * std::sin(v.jolt * 70.0f);
             fr.o = {fr.o.x + v.jolt_dir.x * k, fr.o.y + v.jolt_dir.y * k};
         }
     }
-    Vector2 kick{};  // screen pixels: back from where the gun points
+    // How firing throws it back (pixels: the hull; the turret on top of
+    // it). A tank rocks back, its turret more. An SPG, the heavier gun,
+    // harder and longer (its barrel recoils in its cradle besides: its
+    // sprite). A rapid-fire gun (an autocannon, an AA gun, a machine gun)
+    // jitters as long as its burst lasts. A rocket off a launcher shoves
+    // it. A towed gun hops on its spades.
+    const engine::WeaponDef& weapon = engine::weapon_of(u);
+    const bool heavy = raises_gun(engine::unit_type(type).model);
+    const bool rapid = !engine::unit_type(type).tank && !heavy && !gun_leads && weapon.damage > 0 &&
+                       weapon.damage_type == engine::DamageType::Bullet;  // an autocannon, an AA gun, a machine gun
+    float hull_k = 0.0f;
+    float turret_k = 0.0f;
+    float hop = 0.0f;
+    if (gun_leads) {
+        if (since < 0.15f) {
+            hull_k = 1.0f - since / 0.15f;
+            hop = std::sin(since / 0.15f * 3.14159f) * 1.8f;
+        }
+    } else if (heavy) {
+        if (since < 0.45f) {
+            const float k = 1.0f - since / 0.45f;
+            hull_k = 2.2f * k * k;
+            turret_k = 0.6f * k * k;
+        }
+    } else if (rapid) {
+        if (since < 0.3f && std::fmod(since, 0.066f) < 0.033f) {
+            hull_k = 0.5f;
+            turret_k = 1.0f;
+        }
+    } else if (type == UnitTypeId::Mlrs) {
+        if (since < 0.18f) hull_k = 2.0f * (1.0f - since / 0.18f);
+    } else if (since < 0.25f) {
+        hull_k = 1.0f - since / 0.25f;
+        turret_k = 1.5f * hull_k;
+    }
+    Vector2 back{};  // a screen pixel back from where the gun points
     {
         const Vector2 d = iso_offset(facing);
         const float l = std::hypot(d.x, d.y);
-        if (l > 0.0f) kick = {-d.x / l * recoil, -d.y / l * recoil};
+        if (l > 0.0f) back = {-d.x / l, -d.y / l};
     }
+    const Vector2 kick{back.x * hull_k, back.y * hull_k};
+    const Vector2 turret_kick{back.x * turret_k, back.y * turret_k};
     if (gun_leads) {
-        fr.o = {fr.o.x + kick.x * 2.0f, fr.o.y + kick.y * 2.0f};
+        fr.o = {fr.o.x + kick.x, fr.o.y + kick.y - hop};
     } else {
         const float t = static_cast<float>(GetTime()) + static_cast<float>(u.id % 97) * 0.37f;
         const bool shudder = u.moving ? std::sin(t * 14.0f) > 0.35f : std::sin(t * 50.0f) > 0.8f;
@@ -5355,9 +5417,11 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         const int era = kit(model, u.owner);
         const SpriteSheet* hull_sheet = sheet(SpritePart::Hull, armor_variant(model, era, wear, depth), u.owner);
         const SpriteSheet* turret_sheet = sheet(SpritePart::Turret, armor_variant(model, era, wear, depth), u.owner);
+        int shown_depth = depth;
         if (bog && (!hull_sheet || !turret_sheet)) {
             hull_sheet = sheet(SpritePart::Hull, armor_variant(model, era, wear, 0), u.owner);
             turret_sheet = sheet(SpritePart::Turret, armor_variant(model, era, wear, 0), u.owner);
+            shown_depth = 0;
         }
         if (hull_sheet && turret_sheet) {
             const uint32_t seed = static_cast<uint32_t>(u.id) * 2654435761u;
@@ -5382,17 +5446,30 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
                     const float k = 1.4f * std::exp(-6.0f * t) * std::sin(t * 42.0f);
                     sway = {-d.y / dl * k, d.x / dl * k * 0.5f};
                 }
-            } else if (raises_gun(model)) {
-                turret_frame = u.deployed ? std::clamp(static_cast<int>(std::lround(elev)), 1, kHowitzerFrames - 1) : 0;
             }
-            draw_sprite(*turret_sheet, {ring.x + kick.x * 1.5f + sway.x, ring.y + kick.y * 1.5f + sway.y}, facing, turret_frame);
+            // A howitzer set up: its barrel apart from the turret, laid, recoiling after a shot.
+            const SpriteSheet* barrel = nullptr;
+            int barrel_frame = 0;
+            if (raises_gun(model) && u.deployed && wear < 4) {
+                barrel = sheet(SpritePart::Barrel, armor_variant(model, 0, wear >= 3 ? 3 : 0, shown_depth), u.owner);
+                if (barrel) {
+                    turret_frame = 1;  // the turret without its gun
+                    barrel_frame = (std::clamp(static_cast<int>(std::lround(elev)), 1, kHowitzerFrames - 1) - 1) * kRecoilStates +
+                                   recoil_state(since);
+                }
+            }
+            const Vector2 on_ring{ring.x + turret_kick.x + sway.x, ring.y + turret_kick.y + sway.y};
+            const bool front = barrel && gun_toward_viewer(facing, barrel->dirs);
+            if (barrel && !front) draw_sprite(*barrel, on_ring, facing, barrel_frame);
+            draw_sprite(*turret_sheet, on_ring, facing, turret_frame);
+            if (barrel && front) draw_sprite(*barrel, on_ring, facing, barrel_frame);
             if (const SpriteSheet* radar = sheet(SpritePart::Radar, armor_variant(model, era, wear, depth), u.owner)) {
                 // An AA gun's search radar turning round and round on its turret.
                 const Vector2 r = turret_ring_of(model);
                 const Frame tf = fr.turned(facing, r.x * kVehicleScale, r.y * kVehicleScale);
                 const float spin = static_cast<float>(GetTime()) * 2.2f + static_cast<float>(u.id);
                 const Vector2 at = tf.at(radar_at_of(model) * kVehicleScale, 0.0f);
-                draw_sprite(*radar, {at.x + kick.x * 1.5f, at.y + kick.y * 1.5f}, {std::cos(spin), std::sin(spin)}, 0);
+                draw_sprite(*radar, {at.x + turret_kick.x, at.y + turret_kick.y}, {std::cos(spin), std::sin(spin)}, 0);
             }
             if (bog) mud_halo(fr, armor_size(model), true, seed);  // and in front of it
             if (seen != vehicles_seen_.end() && seen->second.camo > 0.0f) {
@@ -5509,11 +5586,19 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     }
     if (has_gun_look(type_def.model)) {
-        if (const SpriteSheet* gun = sheet(SpritePart::Gun, small_variant(type_def.model, wear_of(u.hp, type_def.max_hp)), u.owner)) {
-            // Set up: the trails spread, the barrel laid for the range.
+        const int wear = wear_of(u.hp, type_def.max_hp);
+        if (const SpriteSheet* gun = sheet(SpritePart::Gun, small_variant(type_def.model, wear), u.owner)) {
+            // Set up: the trails spread, the barrel (its own sprite) laid for
+            // the range, recoiling in its cradle after a shot.
             const auto seen = vehicles_seen_.find(u.id);
             const float elev = seen != vehicles_seen_.end() && seen->second.elev >= 0.0f ? seen->second.elev : 1.0f;
-            draw_sprite(*gun, fr.o, fr.f, u.deployed ? std::clamp(static_cast<int>(std::lround(elev)), 1, kHowitzerFrames - 1) : 0);
+            const SpriteSheet* barrel =
+                u.deployed && wear < 4 ? sheet(SpritePart::Barrel, armor_variant(type_def.model, 0, wear >= 3 ? 3 : 0, 0), u.owner) : nullptr;
+            draw_sprite(*gun, fr.o, fr.f, barrel ? 1 : 0);
+            if (barrel) {
+                const int laid_at = std::clamp(static_cast<int>(std::lround(elev)), 1, kHowitzerFrames - 1);
+                draw_sprite(*barrel, fr.o, fr.f, (laid_at - 1) * kRecoilStates + recoil_state(since));
+            }
             if (seen != vehicles_seen_.end() && seen->second.camo > 0.0f) {  // nets and branches over it
                 camo_net(fr, 12.0f, 0.72f, 0.58f, seen->second.camo, static_cast<uint32_t>(u.id) * 2654435761u);
             }
@@ -7129,7 +7214,10 @@ void draw_aa_radar(const Frame& tf, const VehicleLook& look, int wear) {
     }
 }
 
-void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, int kit, int wear, int frame = 0, bool radar = true) {
+// `part`: 0 all of it; 1 a howitzer's turret without its gun, 2 the gun
+// alone, laid at `frame`, `recoil` of its length back in its cradle.
+void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, int kit, int wear, int frame = 0, bool radar = true,
+                         int part = 0, float recoil = 0.0f) {
     const float z0 = vehicle_turret_z(look);
     const float r = look.turret_r;
     const float h = look.turret_h;
@@ -7205,15 +7293,26 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
             return;
         }
         if (side_guns) return;
-        // A howitzer's gun laid to fire (set up) for the range; a burnt-out wreck's hanging down.
-        const Laid lay = laid(g0, look.gun, howitzer && !burnt ? kHowitzerPitch[std::clamp(frame, 0, kHowitzerFrames - 1)] : 0.0f);
-        const float sag = burnt ? -(gun_z - 1.5f) * 0.8f : lay.rise;
+        // A howitzer's gun laid to fire (set up) for the range, thrown back
+        // in its cradle after a shot (in a turret the breech goes in; on an
+        // open mount it shows, going back); a burnt-out wreck's hanging down.
+        const float deg = howitzer && !burnt ? kHowitzerPitch[std::clamp(frame, 0, kHowitzerFrames - 1)] : 0.0f;
+        const float length = look.gun - g0;
+        const float slide = howitzer && !burnt ? recoil * length : 0.0f;
+        const bool open = look.turret == TurretKind::OpenGun || look.turret == TurretKind::TruckGun;
+        const float u0 = open ? -slide : 0.0f;  // along it from its trunnions: where it shows from, to
+        const float u1 = length - slide;
+        const float ct = std::cos(deg * 0.0174533f);
+        const float st = std::sin(deg * 0.0174533f) * kZPerTile;
+        const float z_from = gun_z + u0 * st;
+        const float sag = burnt ? -(gun_z - 1.5f) * 0.8f : (u1 - u0) * st;
         const Color tube = look.gun_w >= 2.0f ? shade(paint, 0.62f) : metal;
         const bool brake = look.turret == TurretKind::Bmp2 || look.turret == TurretKind::Btr || look.turret == TurretKind::Module || howitzer;
-        barrel(tf, g0, lay.a1, twin ? 0.012f : 0.0f, gun_z, sag, look.gun_w, tube, brake);
+        barrel(tf, g0 + u0 * ct, g0 + u1 * ct, twin ? 0.012f : 0.0f, z_from, sag, look.gun_w, tube, brake);
         if (howitzer) {  // its fume extractor, a band round it
-            const float a = g0 + (lay.a1 - g0) * 0.4f;
-            const float z = gun_z + sag * 0.4f;
+            const float band = length * 0.4f - slide;
+            const float a = g0 + band * ct;
+            const float z = burnt ? gun_z + sag * 0.4f : gun_z + band * st;
             DrawLineEx(tf.at(a - 0.03f, 0.0f, z), tf.at(a + 0.03f, 0.0f, z), look.gun_w + 1.2f, lit(shade(tube, 0.85f)));
         }
         if (twin) barrel(tf, g0, look.gun + 0.04f, -0.04f, gun_z + 0.3f, sag, 1.1f, metal, true);  // the 30 mm beside the 100 mm
@@ -7222,7 +7321,11 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
             DrawLineEx(tf.at(g0, 0.0f, z0 + h + 0.2f), tf.at(look.gun * 0.8f, 0.0f, z0 + h + 0.2f), 1.0f, lit(metal));
         }
     };
-    if (!gun_front) gun();
+    if (part == 2) {  // the gun alone
+        gun();
+        return;
+    }
+    if (!gun_front && part == 0) gun();
     if (side_guns) guns_at(-near);
     auto layers = [&](const Vector2* pts, int n, float taper) {
         poly_solid(tf, pts, n, z0, z0 + h * 0.35f, low);
@@ -7434,7 +7537,7 @@ void draw_vehicle_turret(const Frame& tf, const VehicleLook& look, Color team, i
     const Vector2 af = vehicle_aerial_foot(look);
     if (!under(tf, z0 + h)) disc(tf.at(af.x, af.y, z0 + h), 0.9f, shade(paint, 0.6f));  // the aerial's base
     if (side_guns) guns_at(near);
-    if (gun_front) gun();
+    if (gun_front && part == 0) gun();
 }
 
 // --- Trucks in pixel art ----------------------------------------------------------------
@@ -8067,7 +8170,10 @@ const GunLook& gun_look_of(engine::VehicleModel m) {
 }
 float gun_barrel_of(engine::VehicleModel m) { return has_gun_look(m) ? gun_look_of(m).barrel : 0.6f; }
 
-void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team, int wear) {
+// `part` (set up): 0 all of it; 1 the carriage without the barrel, 2 the
+// barrel alone (its cradle and shield with it), laid at `frame`, `recoil`
+// of its length back in its cradle.
+void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team, int wear, int part = 0, float recoil = 0.0f) {
     const Color paint = look.paint;
     const Color dark = shade(paint, 0.62f);
     const bool burnt = wear >= 4;
@@ -8087,9 +8193,10 @@ void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team,
         const float a0 = set_up ? -0.12f : -0.1f;
         if (burnt || !set_up) {
             barrel(fr, a0, look.barrel, 0.0f, z, burnt ? -z * 0.6f : 0.0f, look.barrel_w, shade(paint, 0.78f), true);
-        } else {
+        } else {  // back in its cradle after a shot, the breech out behind it
             const float t = kHowitzerPitch[std::clamp(frame, 1, kHowitzerFrames - 1)] * 0.0174533f;
-            barrel(fr, a0 * std::cos(t), look.barrel * std::cos(t), 0.0f, z + a0 * std::sin(t) * kZPerTile,
+            const float slide = recoil * (look.barrel - a0);
+            barrel(fr, (a0 - slide) * std::cos(t), (look.barrel - slide) * std::cos(t), 0.0f, z + (a0 - slide) * std::sin(t) * kZPerTile,
                    (look.barrel - a0) * std::sin(t) * kZPerTile, look.barrel_w, shade(paint, 0.78f), true);
         }
         block(fr, -0.14f, 0.12f, -0.05f, 0.05f, z - 1.4f, z + 1.2f, shade(paint, 0.9f));  // the cradle, the recoil cylinders
@@ -8119,6 +8226,11 @@ void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team,
         return;
     }
     // Set up: the trails spread, the barrel raised over them.
+    if (part == 2) {
+        barrel_of();
+        shield();
+        return;
+    }
     switch (look.trails) {
         case 3:  // round its pivot, its wheels lifted off the ground
             for (const float deg : {180.0f, 60.0f, -60.0f}) trail(deg, 0.04f, 0.46f, 0.0f);
@@ -8139,6 +8251,7 @@ void draw_towed_gun(const Frame& fr, const GunLook& look, int frame, Color team,
             break;
     }
     camouflage(fr, look, -0.1f, 0.1f, -0.08f, 0.08f, z + 1.2f, 0x3Bu, 2);
+    if (part == 1) return;
     barrel_of();
     shield();
 }
@@ -8496,7 +8609,13 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
     }
     for (const auto& [owner, model, era, wear, sink] : wanted) {
         const int variant = armor_variant(model, era, wear, sink);
-        if (sheets_.count({{static_cast<int>(SpritePart::Hull), variant}, owner})) continue;
+        // A howitzer's barrel apart, laid and recoiling: one for the paint
+        // it has up to battered, one for the worn paint of barely going.
+        const bool still = wear >= 4 || sink == 2;
+        const int barrel_variant = armor_variant(model, 0, wear >= 3 ? 3 : 0, sink);
+        const bool want_barrel = raises_gun(model) && !still && !sheets_.count({{static_cast<int>(SpritePart::Barrel), barrel_variant}, owner});
+        const bool want_body = !sheets_.count({{static_cast<int>(SpritePart::Hull), variant}, owner});
+        if (!want_body && !want_barrel) continue;
         const bool apc = has_vehicle_look(model);
         TankLook look = look_of(apc ? engine::VehicleModel::Standard : model);
         VehicleLook carrier = vehicle_look_of(apc ? model : engine::VehicleModel::Bmp2);
@@ -8515,6 +8634,16 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                            : sink == 2 ? dims.turret_z + dims.turret_h * 0.75f
                                        : 0.0f;
         const int w = std::min(wear, 4);
+        if (want_barrel) {
+            bake(SpritePart::Barrel, barrel_variant, owner, kBarrelFrames, palette,
+                 TextFormat("barrel_%d_%d_%d_%d", static_cast<int>(model), wear >= 3 ? 3 : 0, sink, static_cast<int>(owner)),
+                 [&](Frame fr, int frame, std::vector<Whip>&) {
+                     fr.sink = sunk;
+                     draw_vehicle_turret(fr, carrier, team, era, w, frame / kRecoilStates + 1, false, 2, kRecoilShare[frame % kRecoilStates]);
+                 },
+                 kTallH);
+        }
+        if (!want_body) continue;
         bake(SpritePart::Hull, variant, owner, 2, palette,
              TextFormat("sheet_%d_%d_%d_%d_%d_%d", static_cast<int>(SpritePart::Hull), static_cast<int>(model), era, wear, sink, static_cast<int>(owner)),
              [&](Frame fr, int frame, std::vector<Whip>&) {
@@ -8525,23 +8654,23 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                      draw_tank_hull(fr, look, frame, era, team, w);
                  }
              });
-        // Its gun laid at each angle it's drawn at (a wreck's, a drowned one's, just the one).
-        const bool still = wear >= 4 || sink == 2;
-        const int turret_frames = still ? 1 : raises_gun(model) ? kHowitzerFrames : apc ? 1 : kTankFrames;
+        // A tank's gun laid at each angle it's drawn at; a howitzer's
+        // turret travelling, and set up without its gun (the barrel apart);
+        // a wreck's, a drowned one's, just the one.
+        const int turret_frames = still ? 1 : raises_gun(model) ? 2 : apc ? 1 : kTankFrames;
         bake(SpritePart::Turret, variant, owner, turret_frames, palette,
              TextFormat("sheet_%d_%d_%d_%d_%d_%d", static_cast<int>(SpritePart::Turret), static_cast<int>(model), era, wear, sink, static_cast<int>(owner)),
              [&](Frame fr, int frame, std::vector<Whip>& whips) {
                  fr.sink = sunk;
                  if (apc) {
-                     draw_vehicle_turret(fr, carrier, team, era, w, frame, false);  // (its radar apart, below)
+                     draw_vehicle_turret(fr, carrier, team, era, w, 0, false, frame == 1 ? 1 : 0);  // (its radar apart, below)
                  } else {
                      draw_tank_turret(fr, look, team, era, w, kTankPitch[frame]);
                  }
                  // The whip aerial: short, shot away when battered.
                  const Vector2 af = apc ? vehicle_aerial_foot(carrier) : aerial_foot(look);
                  if (wear < 3 || sink == 2) whips.push_back({fr.at(af.x, af.y, dims.turret_z + dims.turret_h), 11});
-             },
-             raises_gun(model) ? kTallH : kH);
+             });
         if (apc && has_radar(carrier)) {
             bake(SpritePart::Radar, variant, owner, 1, palette,
                  TextFormat("radar_%d_%d_%d_%d", static_cast<int>(model), wear, sink, static_cast<int>(owner)),
@@ -8603,16 +8732,24 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
             const std::vector<Color> palette = plane ? palette_of(craft.paint, craft.camo, craft.camo1, craft.camo2, team, {})
                                                      : palette_of(gun.paint, gun.camo, gun.camo1, gun.camo2, team, {});
             const int w = std::min(wear, 4);
-            bake(part, variant, owner, plane || wear >= 4 ? 1 : kHowitzerFrames, palette,
+            // A towed gun: packed; set up without its barrel (apart, laid and recoiling).
+            bake(part, variant, owner, plane || wear >= 4 ? 1 : 2, palette,
                  TextFormat("%s_%d_%d_%d", plane ? "plane" : "gun", static_cast<int>(model), wear, static_cast<int>(owner)),
                  [&](Frame fr, int frame, std::vector<Whip>&) {
                      if (plane) {
                          draw_plane(fr, craft, team, w);
                      } else {
-                         draw_towed_gun(fr, gun, frame, team, w);
+                         draw_towed_gun(fr, gun, frame, team, w, frame == 1 ? 1 : 0);
                      }
-                 },
-                 plane ? kH : kTallH);
+                 });
+            if (!plane && (wear == 0 || wear == 3)) {
+                bake(SpritePart::Barrel, armor_variant(model, 0, wear, 0), owner, kBarrelFrames, palette,
+                     TextFormat("barrel_%d_%d_0_%d", static_cast<int>(model), wear, static_cast<int>(owner)),
+                     [&](Frame fr, int frame, std::vector<Whip>&) {
+                         draw_towed_gun(fr, gun, frame / kRecoilStates + 1, team, w, 2, kRecoilShare[frame % kRecoilStates]);
+                     },
+                     kTallH);
+            }
         }
     }
     for (const auto& [owner, model, wear, sink, load] : trucks) {
