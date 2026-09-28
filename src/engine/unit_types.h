@@ -41,6 +41,9 @@ struct WeaponDef {
     // Air defence: can fire at aircraft in the air; `air_only` never at anything else.
     bool anti_air = false;
     bool air_only = false;
+    // Air defence: how high it reaches an aircraft (elevation levels; an
+    // aircraft cruising higher is out of its reach).
+    Fixed ceiling{};
     // Direct fire: beyond this (0: nowhere) the aim gets worse with the
     // distance, down to kFarAccuracyPercent at the full range.
     Fixed effective_range{};

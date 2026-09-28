@@ -316,21 +316,39 @@ inline constexpr Fixed kPumpReach = Fixed::from_int(2);
 // (sin^2 20 = 0.117): from nearly the same spot they only give a direction.
 inline constexpr int64_t kFixSinSqPermille = 117;
 
-// Aviation. Aircraft fly this high over the ground (elevation levels), see
-// and are seen from up there, and only air defence reaches them.
-inline constexpr Fixed kFlightHeight = Fixed::from_int(3);
+// Aviation. Aircraft cruise this high over the ground (elevation levels;
+// air defence reckons a level a tile up), climbing to it off the runway and
+// gliding down from it to land; they see from up there, and only air
+// defence reaches them, and only as high as it reaches (WeaponDef::ceiling).
+inline constexpr Fixed kCruiseHeight = Fixed::from_int(9);
+inline constexpr Fixed kClimbRate = Fixed::from_ratio(1, 5);  // levels a tick
+inline constexpr Fixed kLandApproach = Fixed::from_int(8);    // tiles out from the runway it starts down
 // A unit of fuel from the stock takes an aircraft this many tiles.
 inline constexpr int32_t kAircraftTilesPerFuel = 4;
 // On the airfield: a rocket and a unit of fuel every so often, from the stock.
 inline constexpr Tick kAirRearmInterval = 10;
-// The rocket run: it begins this far short of the target, lined up on it
-// within 15 degrees; a rocket every kRocketInterval, each at the ground this
-// far ahead of the aircraft and up to kRocketScatter off.
-inline constexpr Fixed kRunStart = Fixed::from_int(9);
+// The strike: a dive on the target from kDiveStart out, lined up on it
+// within 15 degrees (closer than kDiveNearest it flies on out and comes
+// round); down to kReleaseHeight as it gets to where it lets go, never over
+// the target: rockets from kRocketRelease out, one a tick, walking along
+// the target; bombs from kBombRelease, a string of them across it; each up
+// to kSalvoScatter off. Then it pulls out, climbing away.
+inline constexpr Fixed kDiveStart = Fixed::from_int(16);
+inline constexpr Fixed kDiveNearest = Fixed::from_int(12);
 inline constexpr Fixed kRunAlignedCos = Fixed::from_ratio(966, 1000);
-inline constexpr Fixed kRocketAhead = Fixed::from_int(5);
-inline constexpr Tick kRocketInterval = 2;
-inline constexpr Fixed kRocketScatter = Fixed::from_int(1);
+inline constexpr Fixed kReleaseHeight = Fixed::from_int(2);
+inline constexpr Fixed kDiveRate = Fixed::from_ratio(1, 2);  // levels a tick at most
+inline constexpr Fixed kRocketRelease = Fixed::from_int(9);
+inline constexpr Fixed kBombRelease = Fixed::from_int(7);
+inline constexpr Fixed kSalvoSpacing = Fixed::from_ratio(1, 4);  // along the target between rockets; bombs twice that
+inline constexpr Fixed kSalvoScatter = Fixed::from_int(1);
+// Air defence: the nearer and the lower an aircraft, the likelier a hit:
+// off its accuracy, up to this much (percent) for the slant range (at its
+// full reach) and up to this much for the height (at its ceiling); up to
+// kCloseAirBonus added close in, low down.
+inline constexpr int32_t kAirRangeOffPercent = 40;
+inline constexpr int32_t kAirHeightOffPercent = 20;
+inline constexpr int32_t kCloseAirBonus = 30;
 // Turning: the heading swings this much sideways a tick (8.5 degrees); this
 // close to the heading wanted, it's on it. Closer than kTurnClearance to the
 // target an aircraft flies straight on and comes round again.
@@ -496,6 +514,7 @@ struct Unit {
 
     bool silent = false;  // radio silence: no bearings on it, orders by courier
     bool airborne = false;  // an aircraft in the air: only air defence reaches it
+    Fixed altitude{};       // its height over the ground, levels (see kCruiseHeight)
 };
 
 // A shell or rocket in flight along a straight line of fire. It flies to a
@@ -876,7 +895,10 @@ private:
     void give_mission(Unit& plane, FixedVec2 point, EntityId target);
     void update_aircraft(Unit& u);
     void fly(Unit& u, FixedVec2 goal, Steer how);
-    void fire_rocket(Unit& u);
+    void release(Unit& u, int32_t salvo);
+    // Whether an aircraft is in reach of a unit's air defence: under its
+    // ceiling, and in its range counting the height (a level a tile).
+    bool air_in_reach(const Unit& u, const Unit& plane) const;
     void rearm_aircraft(Unit& u);
     const Structure* home_airfield(const Unit& u) const;
     FixedVec2 parking_spot(const Structure& airfield, EntityId self) const;

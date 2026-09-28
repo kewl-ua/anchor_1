@@ -4209,13 +4209,16 @@ void test_only_air_defence_reaches_aircraft() {
     CHECK(hp_of(b.sim, other) == unit_type(UnitTypeId::Su25).max_hp);
 }
 
-// A MANPADS crew under the aircraft's path: a missile hits about every
-// other time, and it never fires at anything on the ground.
+// A MANPADS crew by the target (the aircraft comes down to it in its
+// dive): a missile hits about every other time, and it never fires at
+// anything on the ground.
 void test_manpads() {
     int damaged = 0;
     for (uint64_t seed = 1; seed <= 20; ++seed) {
-        AirSetup a = air_setup(seed);
-        const EntityId crew = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(40, 21));
+        // (Seeds spread out: the missile is the first thing left to chance here, and the
+        // first draws of seeds next to each other come out much alike.)
+        AirSetup a = air_setup(seed * 7919u + 13u);
+        const EntityId crew = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(55, 21));
         issue(a.sim, fire_at(0, {a.plane}, 60, 20));
         fly_sortie(a);
         const int32_t lost = unit_type(UnitTypeId::Su25).max_hp - hp_of(a.sim, a.plane);
@@ -4244,6 +4247,99 @@ void test_manpads() {
     for (int i = 0; i < 100; ++i) village.step();
     CHECK(village.world().find_unit(inside)->last_shot_tick == kNeverFired);
     CHECK(hp_of(village, passer) == unit_type(UnitTypeId::Rifleman).max_hp);
+}
+
+// Aircraft cruise high and strike in a dive: they let go short of the
+// target, come down low to it, never right over it, and climb away. A
+// MANPADS crew under the way in can't reach them up there; one by the
+// target gets its chance as they come down. A Pantsir's missiles reach
+// them cruising.
+void test_dive_and_ceiling() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    const EntityId far_crew = w.spawn_unit(1, UnitTypeId::Manpads, at(30, 21));
+    const EntityId near_crew = w.spawn_unit(1, UnitTypeId::Manpads, at(55, 22));
+    w.unit_for_setup(a.plane)->hp = 100000;  // (to see the sortie through)
+    issue(sim, fire_at(0, {a.plane}, 60, 20));
+    Fixed highest{};
+    bool released = false;
+    Fixed release_height{};
+    Fixed release_distance{};
+    for (int i = 0; i < 400 && !released; ++i) {
+        sim.step();
+        const Unit* p = sim.world().find_unit(a.plane);
+        highest = max(highest, p->altitude);
+        for (const Projectile& q : sim.world().projectiles()) {
+            if (q.shooter != a.plane) continue;
+            released = true;
+            release_height = p->altitude;
+            release_distance = (p->pos - at(60, 20)).length();
+        }
+    }
+    CHECK(highest == kCruiseHeight);
+    CHECK(released && release_height <= kReleaseHeight + kDiveRate);
+    CHECK(release_distance >= Fixed::from_int(5));  // not over it
+    fly_sortie(a);
+    CHECK(sim.world().find_unit(far_crew)->last_shot_tick == kNeverFired);
+    CHECK(sim.world().find_unit(near_crew)->last_shot_tick != kNeverFired);
+
+    AirSetup b = air_setup();
+    const EntityId pantsir = b.sim.world_for_setup().spawn_unit(1, UnitTypeId::Pantsir, at(30, 21));
+    b.sim.world_for_setup().unit_for_setup(b.plane)->hp = 100000;
+    issue(b.sim, fire_at(0, {b.plane}, 60, 20));
+    fly_sortie(b);
+    CHECK(b.sim.world().find_unit(pantsir)->last_shot_tick != kNeverFired);
+}
+
+// Air defence reckons with the height: the slant range, height and all, has
+// to be within its reach (a Pantsir, with a radar watching: an aircraft
+// cruising by 10 tiles off to the side is out of it, 5 off in it); and the
+// lower the aircraft, the likelier a hit (a Tunguska at one cruising and at
+// one right down low, just as far off).
+void test_air_defence_height() {
+    auto pass_by = [](int y) {
+        AirSetup a = air_setup();
+        World& w = a.sim.world_for_setup();
+        const EntityId pantsir = w.spawn_unit(1, UnitTypeId::Pantsir, at(40, 30));
+        const EntityId radar = w.spawn_unit(1, UnitTypeId::AirRadar, at(42, 32));
+        w.unit_for_setup(radar)->deployed = true;
+        Unit* p = w.unit_for_setup(a.plane);
+        p->airborne = true;
+        p->altitude = kCruiseHeight;
+        p->pos = at(20, y);
+        p->facing = {Fixed::from_int(1), Fixed{}};
+        p->order = Order::AttackGround;
+        p->order_point = at(79, y);
+        p->hp = 100000;
+        for (int i = 0; i < 200; ++i) a.sim.step();
+        return a.sim.world().find_unit(pantsir)->last_shot_tick != kNeverFired;
+    };
+    CHECK(!pass_by(20));
+    CHECK(pass_by(25));
+
+    auto damage_at = [](Fixed height) {
+        AirSetup a = air_setup(5);
+        World& w = a.sim.world_for_setup();
+        w.spawn_unit(1, UnitTypeId::Tunguska, at(40, 22));
+        int32_t lost = 0;
+        for (int i = 0; i < 800; ++i) {  // held there, up at `height`
+            Unit* p = w.unit_for_setup(a.plane);
+            p->airborne = true;
+            p->altitude = height;
+            p->pos = at(40, 19);
+            p->hp = 100000;
+            p->order = Order::AttackGround;
+            p->order_point = at(79, 19);
+            p->shots_left = 0;
+            a.sim.step();
+            lost += 100000 - a.sim.world().find_unit(a.plane)->hp;
+        }
+        return lost;
+    };
+    const int32_t low = damage_at(Fixed::from_int(1));
+    const int32_t high = damage_at(kCruiseHeight);
+    CHECK(high > 0 && low > high * 5 / 4);
 }
 
 // An aircraft in the air is seen by whoever has it within his sight, over
@@ -4323,7 +4419,7 @@ void test_shilka() {
     for (uint64_t seed = 1; seed <= 10; ++seed) {
         for (const bool quiet : {false, true}) {
             AirSetup a = air_setup(seed);
-            const EntityId zsu = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Shilka, at(40, 22));
+            const EntityId zsu = a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Shilka, at(56, 22));  // by the target
             a.sim.world_for_setup().unit_for_setup(zsu)->silent = quiet;
             issue(a.sim, fire_at(0, {a.plane}, 60, 20));
             fly_sortie(a);
@@ -5637,14 +5733,18 @@ void test_signals_upgrades() {
 // cockpit armor takes 30% off every missile.
 void test_air_upgrades() {
     auto shilka_damage = [](bool tracking) {
-        AirSetup a = air_setup(4);
-        World& w = a.sim.world_for_setup();
-        if (tracking) w.upgrade_for_setup(1, UpgradeId::RadarTracking);
-        w.spawn_unit(1, UnitTypeId::Shilka, at(40, 21));
-        w.unit_for_setup(a.plane)->hp = 100000;
-        issue(a.sim, fire_at(0, {a.plane}, 60, 20));
-        fly_sortie(a);
-        return 100000 - hp_of(a.sim, a.plane);
+        int32_t damage = 0;
+        for (uint64_t seed = 1; seed <= 8; ++seed) {  // (its dive by the guns is short: over a few sorties)
+            AirSetup a = air_setup(seed);
+            World& w = a.sim.world_for_setup();
+            if (tracking) w.upgrade_for_setup(1, UpgradeId::RadarTracking);
+            w.spawn_unit(1, UnitTypeId::Shilka, at(56, 21));
+            w.unit_for_setup(a.plane)->hp = 100000;
+            issue(a.sim, fire_at(0, {a.plane}, 60, 20));
+            fly_sortie(a);
+            damage += 100000 - hp_of(a.sim, a.plane);
+        }
+        return damage;
     };
     const int32_t plain = shilka_damage(false);
     CHECK(plain > 0 && shilka_damage(true) > plain);
@@ -5653,9 +5753,9 @@ void test_air_upgrades() {
                             kCockpitArmorPercent / 100;
     int damaged = 0;
     for (uint64_t seed = 1; seed <= 10; ++seed) {
-        AirSetup a = air_setup(seed);
+        AirSetup a = air_setup(seed * 7919u + 13u);
         a.sim.world_for_setup().upgrade_for_setup(0, UpgradeId::CockpitArmor);
-        a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(40, 21));
+        a.sim.world_for_setup().spawn_unit(1, UnitTypeId::Manpads, at(55, 21));
         issue(a.sim, fire_at(0, {a.plane}, 60, 20));
         fly_sortie(a);
         const int32_t lost = unit_type(UnitTypeId::Su25).max_hp - hp_of(a.sim, a.plane);
@@ -6136,6 +6236,8 @@ int main() {
     test_bingo_fuel();
     test_only_air_defence_reaches_aircraft();
     test_manpads();
+    test_dive_and_ceiling();
+    test_air_defence_height();
     test_radar_sees_aircraft();
     test_shilka();
     test_airfield_losses();

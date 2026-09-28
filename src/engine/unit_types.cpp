@@ -371,7 +371,7 @@ constexpr UnitTypeDef kShilka = {
         .vehicle = true,
         .weapon = {.name = "23mm quad AA guns", .damage = 14, .damage_type = DamageType::Bullet, .range = tiles(7),
                    .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
-                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true},
+                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true, .ceiling = tiles(5)},
         .cost = {3, 0, 150, 80, 60},
         .train_time = seconds(35),
         .fuel_capacity = tiles(150),
@@ -522,6 +522,9 @@ constexpr UnitTypeDef aa_def(const AaSpec& a) {
     d.weapon.range = tiles(a.range);
     d.weapon.reload = seconds(a.reload, 100);
     d.weapon.accuracy = a.accuracy;
+    // Its guns reach a little higher than the Shilka's 23mm; the Pantsir's
+    // missiles and the Tunguska's reach the aircraft cruising, and higher.
+    d.weapon.ceiling = a.model == VehicleModel::Pantsir ? tiles(12) : a.model == VehicleModel::Tunguska ? tiles(10) : tiles(6);
     d.rounds_capacity = a.rounds;
     for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = kShilka.cost[r] * a.price / 100;
     d.train_time = kShilka.train_time * (50 + a.price / 2) / 100;
@@ -932,7 +935,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .vehicle = false,
         .weapon = {.name = "Igla missile", .damage = 160, .damage_type = DamageType::Explosive, .range = tiles(10),
                    .reload = seconds(10), .projectile_speed = tiles_per_second(20), .splash_radius = kNoSplash,
-                   .accuracy = 50, .miss_spread = tiles(0), .anti_air = true, .air_only = true},
+                   .accuracy = 50, .miss_spread = tiles(0), .anti_air = true, .air_only = true, .ceiling = tiles(5)},
         .cost = {1, 25, 0, 60, 0},
         .train_time = seconds(20),
         .rounds_capacity = 4,

@@ -81,12 +81,15 @@ void World::fly(Unit& u, FixedVec2 goal, Steer how) {
     u.fuel = max(Fixed{}, u.fuel - speed);
 }
 
-// One rocket of the run: at the ground a little ahead, scattered.
-void World::fire_rocket(Unit& u) {
+// One of the salvo let go in the dive (`salvo`: how many in all): at the
+// target, rockets walking along it, a string of bombs across it, scattered.
+void World::release(Unit& u, int32_t salvo) {
     const WeaponDef& weapon = unit_type(u.type).weapon;
-    FixedVec2 aim = u.pos + unit_vector(u.facing) * kRocketAhead;
-    aim.x += Fixed::from_raw(rng_.next_range(-kRocketScatter.raw, kRocketScatter.raw));
-    aim.y += Fixed::from_raw(rng_.next_range(-kRocketScatter.raw, kRocketScatter.raw));
+    const int32_t i = salvo - u.shots_left;  // which of them
+    const Fixed spacing = weapon.aerial_bomb ? kSalvoSpacing + kSalvoSpacing : kSalvoSpacing;
+    FixedVec2 aim = u.order_point + unit_vector(u.facing) * Fixed::from_raw(spacing.raw * (2 * i - (salvo - 1)) / 2);
+    aim.x += Fixed::from_raw(rng_.next_range(-kSalvoScatter.raw, kSalvoScatter.raw));
+    aim.y += Fixed::from_raw(rng_.next_range(-kSalvoScatter.raw, kSalvoScatter.raw));
     aim = clamp_to_map(aim, Fixed{});
     Projectile p;
     p.id = next_projectile_id_++;
@@ -98,7 +101,7 @@ void World::fire_rocket(Unit& u) {
     p.pos = u.pos;
     p.prev_pos = u.pos;
     p.target = aim;
-    p.origin_height = ground_at(u.pos) + kFlightHeight;
+    p.origin_height = ground_at(u.pos) + u.altitude;
     p.target_height = map_.surface_height(aim);
     p.weapon = weapon;
     p.lobbed = true;  // from above: over everything, down on whoever is there, trench or not
@@ -133,12 +136,15 @@ void World::rearm_aircraft(Unit& u) {
     }
 }
 
-// Takes off on a mission, flies to the target, makes one rocket run lined
-// up on it, and flies home to land and rearm. Short of fuel it turns back
-// early; with no airfield left to land on it is lost to the fight.
+// Takes off on a mission, climbs to cruise, flies to the target and dives
+// on it lined up (going round when it comes in too close to), lets its
+// rockets or bombs go short of it, pulls out and climbs away home, and glides
+// down to land and rearm. Short of fuel it turns back early; with no
+// airfield left to land on it is lost to the fight.
 void World::update_aircraft(Unit& u) {
     const bool on_mission = u.order == Order::Attack || u.order == Order::AttackGround;
     if (!u.airborne) {
+        u.altitude = Fixed{};
         if (!on_mission) return rearm_aircraft(u);
         if (u.rounds <= 0 || u.fuel <= kBingoReserve) {
             u.order = Order::Idle;  // not flying like this
@@ -146,14 +152,16 @@ void World::update_aircraft(Unit& u) {
         }
         u.airborne = true;  // takes off
         u.work = 0;
+        u.shots_left = 0;
     }
     if (u.fuel.raw <= 0) {
         u.hp = 0;  // came down
         return;
     }
     const Structure* home = home_airfield(u);
+    const bool diving = on_mission && u.shots_left > 0;
 
-    if (on_mission && u.shots_left == 0) {
+    if (on_mission && !diving) {
         if (u.order == Order::Attack) {
             const Unit* target = find_unit(u.order_target);
             if (target && !target->airborne && sees(u.owner, *target)) {
@@ -164,32 +172,50 @@ void World::update_aircraft(Unit& u) {
             }
         }
         // Bingo fuel: home while there's enough left to get there.
-        if (home && u.fuel <= (home->center - u.pos).length() + kBingoReserve) u.order = Order::Idle;
-    }
-
-    if (u.shots_left > 0) {
-        // The run: straight on, rockets away.
-        fly(u, u.pos, Steer::Straight);
-        if (u.work++ % kRocketInterval == 0) {
-            fire_rocket(u);
-            --u.shots_left;
-        }
-        if (u.shots_left <= 0 || u.rounds <= 0) {
+        if (home && u.fuel <= (home->center - u.pos).length() + kBingoReserve) {
+            u.order = Order::Idle;
             u.shots_left = 0;
-            u.order = Order::Idle;  // the mission is flown
-            u.order_target = 0;
         }
-        return;
     }
 
     if (u.order == Order::Attack || u.order == Order::AttackGround) {
-        // Right on top of the target it flies on and comes round again.
         const FixedVec2 to_target = u.order_point - u.pos;
         const Fixed dist = to_target.length();
+        const bool bombs = unit_type(u.type).weapon.aerial_bomb;
+        const Fixed let_go = bombs ? kBombRelease : kRocketRelease;
+        if (u.shots_left > 0) {
+            // The dive: down towards the target, lower the nearer, to where it lets go.
+            fly(u, u.order_point, dist >= kTurnClearance ? Steer::Turn : Steer::Straight);
+            const Fixed span = kDiveStart - let_go;
+            const Fixed k = max(Fixed{}, min(Fixed::from_int(1), (dist - let_go) / span));
+            const Fixed want = kReleaseHeight + (kCruiseHeight - kReleaseHeight) * k;
+            u.altitude = max(want, u.altitude - kDiveRate);
+            if (dist <= let_go && u.altitude <= kReleaseHeight + kDiveRate) {
+                release(u, u.work);  // (u.work: how many in the salvo)
+                --u.shots_left;
+                if (u.shots_left <= 0 || u.rounds <= 0) {
+                    u.shots_left = 0;
+                    u.order = Order::Idle;  // the mission is flown: pulling out
+                    u.order_target = 0;
+                }
+            } else if (dist < let_go - Fixed::from_int(2)) {
+                u.shots_left = -1;  // too steep, too close: out and round again
+            }
+            return;
+        }
+        u.altitude = min(kCruiseHeight, u.altitude + kClimbRate);
+        if (u.shots_left < 0) {  // going round: on out, then back
+            fly(u, u.pos, Steer::Straight);
+            if (dist >= kDiveStart) u.shots_left = 0;
+            return;
+        }
         fly(u, u.order_point, dist >= kTurnClearance ? Steer::Turn : Steer::Straight);
-        if (dist <= kRunStart && dot(unit_vector(u.facing), unit_vector(to_target)) >= kRunAlignedCos) {
-            u.shots_left = u.rounds;
-            u.work = 0;
+        const bool lined_up = dot(unit_vector(u.facing), unit_vector(to_target)) >= kRunAlignedCos;
+        if (dist < kDiveNearest && !lined_up) {
+            u.shots_left = -1;  // too close to come round on it: out and round
+        } else if (dist <= kDiveStart && dist >= let_go && lined_up) {
+            u.shots_left = u.rounds;  // into the dive
+            u.work = u.rounds;
         }
         return;
     }
@@ -200,9 +226,14 @@ void World::update_aircraft(Unit& u) {
     }
     const FixedVec2 spot = parking_spot(*home, u.id);
     const FixedVec2 to_spot = spot - u.pos;
+    const Fixed away = to_spot.length();
+    // Climbing away to cruise; gliding down the last of the way in.
+    const Fixed glide = kCruiseHeight * min(Fixed::from_int(1), away / kLandApproach);
+    u.altitude = min(glide, min(kCruiseHeight, u.altitude + kClimbRate));
     if (to_spot.length_sq_raw() <= square_raw(unit_type(u.type).speed)) {
         u.pos = spot;  // touch down
         u.airborne = false;
+        u.altitude = Fixed{};
         u.facing = {Fixed::from_int(1), Fixed{}};
         u.work = 0;
         return;
@@ -212,12 +243,15 @@ void World::update_aircraft(Unit& u) {
 
 // The nearest enemy aircraft in the air that the player sees within reach
 // of this unit's guns or missiles (the one it's on first).
+bool World::air_in_reach(const Unit& u, const Unit& plane) const {
+    const WeaponDef& weapon = weapon_of(u);
+    if (!plane.airborne || plane.altitude > weapon.ceiling) return false;
+    const Fixed reach = weapon.range + unit_type(u.type).radius + unit_type(plane.type).radius;
+    return (plane.pos - u.pos).length_sq_raw() + square_raw(plane.altitude) <= square_raw(reach);
+}
+
 const Unit* World::find_air_target(Unit& u) {
-    const Fixed reach = weapon_of(u).range + unit_type(u.type).radius;
-    auto in_reach = [&](const Unit& o) {
-        return o.airborne && o.owner != u.owner && sees(u.owner, o) &&
-               (o.pos - u.pos).length_sq_raw() <= square_raw(reach + unit_type(o.type).radius);
-    };
+    auto in_reach = [&](const Unit& o) { return o.airborne && o.owner != u.owner && sees(u.owner, o) && air_in_reach(u, o); };
     if (const Unit* current = find_unit(u.engaged); current && in_reach(*current)) return current;
     const Unit* best = nullptr;
     uint64_t best_sq = 0;
@@ -242,6 +276,15 @@ void World::fire_at_air(Unit& u, const Unit& target) {
     u.last_shot_tick = tick_;
     u.last_shot_at = target.pos;
     int32_t accuracy = weapon.accuracy;
+    {  // nearer and lower, likelier: off it for the slant range and the height, a bonus close in, low
+        const FixedVec2 slant{(target.pos - u.pos).length(), target.altitude};
+        const Fixed reach = weapon.range + def.radius + unit_type(target.type).radius;
+        const auto range_off = static_cast<int32_t>(static_cast<int64_t>(slant.length().raw) * kAirRangeOffPercent / std::max<int64_t>(1, reach.raw));
+        const auto height_off =
+            static_cast<int32_t>(static_cast<int64_t>(target.altitude.raw) * kAirHeightOffPercent / std::max<int64_t>(1, weapon.ceiling.raw));
+        const int32_t percent = std::clamp(100 + kCloseAirBonus - range_off - height_off, 10, 100 + kCloseAirBonus);
+        accuracy = std::min(95, accuracy * percent / 100);
+    }
     if (def.emitter && u.silent) accuracy = accuracy * kOpticalSightPercent / 100;  // radar off: by eye
     if (hungry(u.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
     if (has_upgrade(u.owner, UpgradeId::RadarTracking)) accuracy = accuracy * kRadarTrackingPercent / 100;
@@ -260,7 +303,7 @@ void World::fire_at_air(Unit& u, const Unit& target) {
     p.prev_pos = u.pos;
     p.target = target.pos;
     p.origin_height = ground_at(u.pos) + (def.vehicle ? kVehicleTop : kInfantryTop);
-    p.target_height = ground_at(target.pos) + kFlightHeight;
+    p.target_height = ground_at(target.pos) + target.altitude;
     p.weapon = weapon;
     p.at_air = true;
     p.homing = hit ? target.id : 0;
@@ -273,7 +316,7 @@ void World::move_missile(Projectile& p) {
     const Unit* plane = p.homing ? find_unit(p.homing) : nullptr;
     if (plane && plane->airborne) {
         p.target = plane->pos;
-        p.target_height = ground_at(plane->pos) + kFlightHeight;
+        p.target_height = ground_at(plane->pos) + plane->altitude;
     }
     p.prev_pos = p.pos;
     const Fixed speed = p.weapon.projectile_speed;

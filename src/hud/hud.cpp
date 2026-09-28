@@ -1023,11 +1023,16 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
             state = u.order == engine::Order::Idle ? (full ? "On the runway, ready" : "On the runway, rearming")
                                                    : "Taking off";
         } else if (u.shots_left > 0) {
-            state = "Rocket run";
+            state = def.weapon.aerial_bomb ? "Diving, bombs" : "Diving, rockets";
+        } else if (u.shots_left < 0) {
+            state = "Going round for another run";
         } else if (u.order == engine::Order::Attack || u.order == engine::Order::AttackGround) {
             state = "On a mission";
         } else {
             state = "Back to the airfield";
+        }
+        if (u.airborne) {  // how high (a cruising aircraft is above most air defence)
+            state = TextFormat("%s, height %d", state, static_cast<int>((u.altitude.raw + engine::Fixed::kOneRaw / 2) / engine::Fixed::kOneRaw));
         }
     }
     if (u.type == engine::UnitTypeId::Truck) {

@@ -814,8 +814,7 @@ void World::engage(Unit& u, const Unit& target) {
     if (target.airborne) {
         // Air defence fires at an aircraft in reach; nobody chases one.
         const FixedVec2 to_target = target.pos - u.pos;
-        const Fixed reach = weapon_of(u).range + def_of(u).radius + def_of(target).radius;
-        if (!weapon_of(u).anti_air || to_target.length_sq_raw() > square_raw(reach)) return;
+        if (!weapon_of(u).anti_air || !air_in_reach(u, target)) return;
         if (to_target.x.raw != 0 || to_target.y.raw != 0) u.facing = to_target;
         if (u.cooldown == 0 && !out_of_rounds(u)) fire_at_air(u, target);
         return;
@@ -1776,6 +1775,7 @@ uint64_t World::checksum() const {
         mix(u.perfect_burst ? 1 : 0);
         mix(u.silent ? 1 : 0);
         mix(u.airborne ? 1 : 0);
+        mix_fixed(u.altitude);
         mix(static_cast<uint8_t>(u.haul_cargo));
         mix(u.haul_depot);
         mix(u.serves);

@@ -141,13 +141,19 @@ void main() {
 constexpr Color kRadioColor = {120, 170, 255, 255};
 constexpr Color kBearingColor = {255, 160, 60, 255};
 
-// Aircraft in the air are drawn this high above their shadow, pixels.
-constexpr float kFlightLift =
-    static_cast<float>(engine::kFlightHeight.raw) / static_cast<float>(engine::Fixed::kOneRaw) * iso::kElevationStep;
+// Aircraft in the air are drawn as high above their shadow as they fly
+// (see engine::kCruiseHeight), pixels: easing to it frame by frame (the
+// engine moves it a tick at a time).
+std::unordered_map<engine::EntityId, float> g_drawn_height;
+float flight_lift(const engine::Unit& u) {
+    if (!u.airborne) return 0.0f;
+    const auto it = g_drawn_height.find(u.id);
+    return (it != g_drawn_height.end() ? it->second : to_float(u.altitude)) * iso::kElevationStep;
+}
 
 // How high a unit's body is above its feet, pixels.
 float body_lift(const engine::Unit& u) {
-    if (u.airborne) return kFlightLift;
+    if (u.airborne) return flight_lift(u);
     return engine::unit_type(u.type).vehicle ? 6.0f : 9.0f;
 }
 
@@ -570,7 +576,7 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
         height = m.y;
     } else if (def.aircraft) {
         reach = 0.3f;
-        height = kFlightLift;
+        height = flight_lift(u);
     }
     const bool big = def.vehicle || def.weapon.indirect;
     const Vector2 muzzle{g.x + f.x * reach, g.y + f.y * reach};
@@ -1519,6 +1525,17 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     if (track_marks_.size() > 6000) track_marks_.erase(track_marks_.begin(), track_marks_.begin() + static_cast<long>(track_marks_.size() - 6000));
     std::erase_if(track_last_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
 
+    // Aircraft: the heights they're drawn at easing to where they fly.
+    for (const engine::Unit& u : world.units()) {
+        if (!u.airborne) {
+            g_drawn_height.erase(u.id);
+            continue;
+        }
+        const float want = to_float(u.altitude);
+        auto [it, fresh] = g_drawn_height.try_emplace(u.id, want);
+        if (!fresh) it->second += (want - it->second) * std::min(1.0f, dt * 12.0f);
+    }
+    std::erase_if(g_drawn_height, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     // The particles fly, fall, spread and fade.
     for (Particle& p : particles_) {
         if (p.seed == 0) p.seed = ++particle_seed_ * 2654435761u | 1u;
@@ -8296,7 +8313,7 @@ void WorldRenderer::draw_aircraft(const engine::TileMap& map, const engine::Unit
     if (has_plane_look(def.model)) {
         if (const SpriteSheet* plane = sheet(SpritePart::Plane, small_variant(def.model, wear_of(u.hp, def.max_hp)), u.owner)) {
             if (u.airborne) draw_sprite(*plane, on_terrain(map, ground), f, 0, {0, 0, 0, 70});  // its shadow
-            draw_sprite(*plane, on_terrain(map, ground, u.airborne ? kFlightLift : 0.0f), f, 0);
+            draw_sprite(*plane, on_terrain(map, ground, flight_lift(u)), f, 0);
             return;
         }
     }
@@ -8315,7 +8332,7 @@ void WorldRenderer::draw_aircraft(const engine::TileMap& map, const engine::Unit
     };
     const Color color = shade(theme::player_color(u.owner), 0.8f);
     if (u.airborne) shape(0.0f, {0, 0, 0, 60}, {0, 0, 0, 50});
-    shape(u.airborne ? kFlightLift : 4.0f, color, shade(color, 0.8f));
+    shape(u.airborne ? flight_lift(u) : 4.0f, color, shade(color, 0.8f));
 }
 
 void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
@@ -12859,7 +12876,7 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
         const bool sweep = u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MgSweep;
         if (engine::weapon_of(u).projectile_speed.raw == 0 || sweep) {  // instant hit: draw the tracer
             const engine::Unit* target = world.find_unit(u.engaged);
-            const float lift = target && target->airborne ? kFlightLift : 6.0f;  // up at an aircraft
+            const float lift = target && target->airborne ? flight_lift(*target) : 6.0f;  // up at an aircraft
             DrawLineV(muzzle, on_terrain(map, to_vector2(u.last_shot_at), lift), {255, 235, 160, 140});
         }
     }

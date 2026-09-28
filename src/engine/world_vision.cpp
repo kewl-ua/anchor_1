@@ -265,7 +265,7 @@ void World::update_vision() {
             if (s->type == StructureType::Elevator) sight += Fixed::from_int(kElevatorSightBonus);
             look(u.owner, s->center, sight, window_height(s->id), s->id);
         } else {
-            look(u.owner, u.pos, def.sight, u.airborne ? kFlightHeight : eye_height(def), 0);
+            look(u.owner, u.pos, def.sight, u.airborne ? u.altitude : eye_height(def), 0);
         }
     }
     for (const Structure& s : structures_) {
