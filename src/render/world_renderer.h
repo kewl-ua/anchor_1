@@ -151,6 +151,8 @@ private:
     };
     mutable std::vector<FallingTree> falling_trees_;
     void update_work(const engine::World& world, float dt);
+    // Whether a rear trooper's load goes into a truck collecting nearby (not to the base's door): as the engine decides it.
+    static bool truck_takes_it(const engine::World& world, const engine::Unit& u);
     // Foot soldiers as last seen: their hp, and when (GetTime) they were last hit (they flinch).
     std::unordered_map<engine::EntityId, std::pair<int32_t, double>> hurt_;
     // Vehicles as last seen: what they had, how long since each fired (its

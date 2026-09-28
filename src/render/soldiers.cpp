@@ -15,7 +15,7 @@ namespace {
 // before the ground is squashed to half its height).
 constexpr float kPxPerTile = iso::kTileWidth * 0.5f * 1.41421356f;
 
-constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1, 2, 8, 8, 2};
+constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1, 2, 8, 8, 2, 8, 8};
 
 // A point on him: ahead, to his left, up (pixels).
 struct V3 {
@@ -64,6 +64,8 @@ struct Body {
     bool dirt = false;
     bool log = false;   // a log on his right shoulder, along the way he faces
     bool sack = false;  // a sack of stone on his back
+    bool bars = false;    // a bundle of short sawn bars in his arms
+    bool blocks = false;  // a few blocks of stone in his arms
     bool grenade = false;  // one in his right hand
     bool bipod = false;    // the machine gun on its legs
 };
@@ -200,7 +202,9 @@ Body pose(Kit kit, Pose p, int i) {
             break;
         }
         case Pose::CarryLog:
-        case Pose::CarrySack: {
+        case Pose::CarrySack:
+        case Pose::CarryBars:
+        case Pose::CarryBlocks: {
             // The walk under a load: shorter steps, leaning into it a little.
             const float t = static_cast<float>(i) / 8.0f * 6.2831853f;
             const float sw = std::sin(t);
@@ -220,11 +224,17 @@ Body pose(Kit kit, Pose p, int i) {
                 b.log = true;
                 b.hand[0] = b.shoulder[0] + V3{1.8f, 0.3f, 1.2f};
                 b.hand[1] = {b.pelvis.f + 0.4f - 1.4f * sw, 2.6f, b.pelvis.z - 0.2f};
-            } else {  // the sack over the right shoulder, held by its neck, bent under it
+            } else if (p == Pose::CarrySack) {  // the sack over the right shoulder, held by its neck, bent under it
                 upper(b, {0.9f, 0.0f, 13.9f - bob}, {1.4f, -0.2f, 16.8f - bob});
                 b.sack = true;
                 b.hand[0] = b.shoulder[0] + V3{0.3f, 0.2f, 1.6f};
                 b.hand[1] = {b.pelvis.f + 0.4f - 1.4f * sw, 2.6f, b.pelvis.z - 0.2f};
+            } else {  // an armful held against his chest, leaning back a little under it
+                upper(b, {0.3f, 0.0f, 14.3f - bob}, {0.6f, 0.0f, 17.4f - bob});
+                b.bars = p == Pose::CarryBars;
+                b.blocks = p == Pose::CarryBlocks;
+                b.hand[0] = {2.4f, -1.5f, 11.6f - bob};
+                b.hand[1] = {2.4f, 1.5f, 11.6f - bob};
             }
             break;
         }
@@ -742,6 +752,10 @@ Look look_of(Kit kit, Color team) {
     Look k;
     const Color olive = mix({98, 102, 62, 255}, team, 0.1f);
     k.cloth = {olive, {64, 72, 44, 255}, {112, 90, 58, 255}, true, 17u};
+    if (kit == Kit::Rear) {  // a work suit: plain faded cotton, a darker patch here and there (no camouflage)
+        const Color suit = mix({126, 118, 86, 255}, team, 0.06f);
+        k.cloth = {suit, shade(suit, 0.86f), shade(suit, 1.08f), true, 29u};
+    }
     const Color vest = kit == Kit::Assault ? Color{56, 60, 44, 255} : mix({84, 80, 56, 255}, team, 0.06f);
     k.vest = {vest, shade(vest, 0.8f), shade(vest, 1.1f), false, 5u};
     const Color helmet = mix({82, 92, 60, 255}, team, 0.1f);
@@ -985,6 +999,29 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
                              fig.end();
                          }});
     }
+    if (b.bars || b.blocks) {  // in front of him, over his hands
+        const V3 c = mix(b.hand[0], b.hand[1], 0.5f) + V3{0.6f, 0.0f, 0.9f};
+        parts.push_back({fig.depth(c) + 0.5f, [&, c] {
+                             fig.begin();
+                             if (b.bars) {  // three short bars, across him, stacked two and one, tied
+                                 const Paint wood{{186, 140, 86, 255}, {158, 116, 70, 255}, {210, 170, 116, 255}, true, 13u};
+                                 for (const V3 at : {V3{0.0f, 0.0f, -0.4f}, V3{0.0f, 0.0f, 0.9f}, V3{0.0f, 0.0f, 2.2f}}) {
+                                     fig.capsule(c + at + V3{0.0f, -2.9f, 0.0f}, c + at + V3{0.0f, 2.9f, 0.0f}, 0.75f, 0.75f, wood);
+                                 }
+                             } else {  // two blocks of stone and a smaller one on top
+                                 fig.ball(c + V3{0.0f, -1.2f, 0.0f}, 1.6f, {{186, 182, 172, 255}});
+                                 fig.ball(c + V3{0.0f, 1.2f, 0.1f}, 1.5f, {{160, 156, 148, 255}});
+                                 fig.ball(c + V3{0.1f, 0.0f, 1.8f}, 1.3f, {{204, 200, 190, 255}});
+                             }
+                             fig.end();
+                             if (b.bars) {  // the cut ends, the twine
+                                 fig.begin(1.0f, false);
+                                 fig.rod(c + V3{0.8f, -1.6f, -1.0f}, c + V3{0.8f, -1.6f, 2.8f}, {90, 70, 44, 255});  // the twine
+                                 fig.rod(c + V3{0.8f, 1.6f, -1.0f}, c + V3{0.8f, 1.6f, 2.8f}, {90, 70, 44, 255});
+                                 fig.end();
+                             }
+                         }});
+    }
     if (b.grenade) {
         parts.push_back({fig.depth(b.hand[0]) + 0.4f, [&] {
                              fig.begin(1.0f, false);
@@ -1012,10 +1049,15 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
                          if (kit == Kit::Sniper) {
                              fig.brim(b.head + V3{0.0f, 0.0f, 0.7f}, 3.4f, {118, 112, 76, 255});
                              fig.ball(b.head + V3{-0.1f, 0.0f, 1.2f}, 2.1f, {{124, 118, 80, 255}}, 0.3f);
-                         } else if (kit == Kit::Rear) {
-                             fig.ball(b.head + V3{-0.1f, 0.0f, 0.9f}, 2.2f, {shade(look.cloth.base, 0.92f)}, 0.4f);
-                             fig.capsule(b.head + look_dir * 1.4f + V3{0.0f, 0.0f, 0.8f}, b.head + look_dir * 3.2f + V3{0.0f, 0.0f, 0.6f}, 0.6f, 0.6f,
-                                         {shade(look.cloth.base, 0.7f)});
+                         } else if (kit == Kit::Rear) {  // a peaked field cap: its band, its flat top, the peak, a cockade
+                             const Color cap = mix({92, 96, 64, 255}, look.team, 0.06f);
+                             fig.ball(b.head + V3{-0.1f, 0.0f, 1.3f}, 2.15f, {cap}, 0.2f);  // (only over the brow: the face below it)
+                             fig.brim(b.head + V3{-0.15f, 0.0f, 2.9f}, 1.9f, shade(cap, 1.15f));
+                             fig.capsule(b.head + look_dir * 1.6f + V3{0.0f, 0.0f, 1.1f}, b.head + look_dir * 3.2f + V3{0.0f, 0.0f, 0.9f}, 0.5f, 0.45f,
+                                         {shade(cap, 0.6f)});
+                             fig.end();
+                             fig.begin(1.0f, false);
+                             fig.dot(b.head + look_dir * 1.9f + V3{0.0f, 0.0f, 2.0f}, {214, 170, 60, 255});
                          } else {
                              fig.ball(b.head + V3{-0.15f, 0.0f, 0.75f}, 2.6f, look.helmet, 0.5f);
                          }

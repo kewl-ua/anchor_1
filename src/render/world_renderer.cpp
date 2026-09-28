@@ -9505,7 +9505,12 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u
             const float stroke = static_cast<float>(u.work % needed) / static_cast<float>(needed);
             return {rock ? Pose::Quarry : Pose::Work, stroke < 0.5f ? 0 : 1};
         }
-        if (u.carrying > 0) return {rock ? Pose::CarrySack : Pose::CarryLog, u.moving ? static_cast<int>(t * 8.0f) % 8 : 0};
+        if (u.carrying > 0) {
+            // To a truck by the wood: the whole log, the sack; all the way to the base: an armful of short bars, of blocks.
+            const bool truck = drawn_world_ && truck_takes_it(*drawn_world_, u);
+            const Pose carry = truck ? (rock ? Pose::CarrySack : Pose::CarryLog) : (rock ? Pose::CarryBlocks : Pose::CarryBars);
+            return {carry, u.moving ? static_cast<int>(t * 8.0f) % 8 : 0};
+        }
     }
     if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
     const bool digging = u.order == Order::Ability &&
@@ -14089,6 +14094,28 @@ float WorldRenderer::gun_elevation(const engine::Unit& u) const {
 // dust, now and then a spark. A tree whose turn it was comes down: over it
 // goes from its stump, away from the axe. A load handed in: thrown up into
 // the truck's bed (the bed filling), or down by the door of the depot.
+bool WorldRenderer::truck_takes_it(const engine::World& world, const engine::Unit& u) {
+    const Vector2 at = to_vector2(u.pos);
+    float truck = 1e18f;
+    for (const engine::Unit& t : world.units()) {
+        if (t.owner != u.owner || t.order != engine::Order::Collect) continue;
+        const Vector2 park = to_vector2(t.order_point);
+        truck = std::min(truck, (park.x - at.x) * (park.x - at.x) + (park.y - at.y) * (park.y - at.y));
+    }
+    if (truck >= 1e18f) return false;
+    float door = 1e18f;
+    for (const engine::Structure& s : world.structures()) {
+        if (s.owner != u.owner || !s.built) continue;
+        if (s.type != engine::StructureType::Headquarters && engine::role_of(s) != engine::StructureType::Warehouse) continue;
+        for (const engine::TilePos& tile : s.tiles) {
+            const float dx = std::max({static_cast<float>(tile.x) - at.x, 0.0f, at.x - static_cast<float>(tile.x + 1)});
+            const float dy = std::max({static_cast<float>(tile.y) - at.y, 0.0f, at.y - static_cast<float>(tile.y + 1)});
+            door = std::min(door, dx * dx + dy * dy);
+        }
+    }
+    return truck < door;
+}
+
 void WorldRenderer::update_work(const engine::World& world, float dt) {
     const engine::TileMap& map = world.map();
     const double now = GetTime();
@@ -14171,8 +14198,8 @@ void WorldRenderer::update_work(const engine::World& world, float dt) {
             p.ground = {g.x + f.x * 0.1f, g.y + f.y * 0.1f};
             p.life = 0.45f;
             p.vel = {(to.x - p.ground.x) / p.life, (to.y - p.ground.y) / p.life};
-            p.size = rock ? 1.0f : 0.0f;
-            p.dir = {15.0f, z1};
+            p.size = truck ? (rock ? 1.0f : 0.0f) : (rock ? 3.0f : 2.0f);  // (to the door: the armful)
+            p.dir = {truck ? 15.0f : 11.0f, z1};
             p.color = WHITE;
             particles_.push_back(p);
             heave_at_[u.id] = now;
@@ -14696,7 +14723,16 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
             case Particle::Kind::Toss: {  // a log turning over as it flies, a sack; up and over, down into the bed
                 const float z = p.dir.x + (p.dir.y - p.dir.x) * t + 10.0f * 4.0f * t * (1.0f - t);
                 const Vector2 c{g.x, g.y - z};
-                if (p.size < 0.5f) {
+                if (p.size > 2.5f) {  // blocks of stone
+                    for (const float k : {-1.5f, 1.5f}) {
+                        DrawRectangleRec({std::round(c.x + k - 2.0f), std::round(c.y - 2.0f), 4.0f, 3.0f}, lit({40, 36, 30, 255}));
+                        DrawRectangleRec({std::round(c.x + k - 1.5f), std::round(c.y - 1.5f), 3.0f, 2.0f}, lit({150, 146, 138, 255}));
+                    }
+                } else if (p.size > 1.5f) {  // a bundle of bars
+                    DrawRectangleRec({std::round(c.x - 4.0f), std::round(c.y - 3.0f), 8.0f, 5.0f}, lit({40, 30, 22, 255}));
+                    DrawRectangleRec({std::round(c.x - 3.0f), std::round(c.y - 2.0f), 6.0f, 1.5f}, lit({172, 134, 90, 255}));
+                    DrawRectangleRec({std::round(c.x - 3.0f), std::round(c.y - 0.5f), 6.0f, 1.5f}, lit({146, 108, 68, 255}));
+                } else if (p.size < 0.5f) {
                     const float a = t * 2.8f + static_cast<float>(p.seed % 7u) * 0.3f;
                     const Vector2 d{std::cos(a) * 5.0f, std::sin(a) * 2.2f};
                     DrawLineEx({c.x - d.x, c.y - d.y}, {c.x + d.x, c.y + d.y}, 4.4f, lit({34, 26, 20, 255}));  // (its outline)

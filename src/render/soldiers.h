@@ -28,6 +28,8 @@ enum class Pose : uint8_t {
     CarryLog,   // walking with a log on his shoulder
     CarrySack,  // walking with a sack of stone on his back
     Heave,      // throwing his load up into a truck's bed, down by a door: lifting it, away
+    CarryBars,    // walking to the base with a bundle of short sawn bars in his arms (no truck at the wood)
+    CarryBlocks,  // the same with a few blocks of stone
     Count,
 };
 
@@ -41,7 +43,7 @@ enum class Kit : uint8_t {
     Sapper,      // a short carbine, a big pack
     Radio,       // a carbine, the radio on his back, its whip aerial (a signaller)
     Igla,        // a MANPADS tube
-    Rear,        // no carrier, a cap; an axe, a spade (a rear trooper)
+    Rear,        // a plain work suit, no carrier, a peaked cap; an axe, a pick, a spade (a rear trooper)
     Mortar,      // the tube carried on his back
     Ags,         // the AGS carried on his back
     Count,
