@@ -432,9 +432,17 @@ uint8_t along_structure(const Structure& s, FixedVec2 at) {
     return static_cast<uint8_t>(std::clamp<int64_t>((p - start) * 256 / length, 0, 255));
 }
 
+// What has walls to bring down: houses, blocks, masts, a base's buildings
+// (not earthworks, obstacles, a bridge, a runway, a scout's post).
+static bool has_walls(StructureType t) {
+    return !is_fieldwork(t) && !is_obstacle(t) && t != StructureType::Dugout && t != StructureType::Pillbox &&
+           t != StructureType::Bridge && t != StructureType::Airfield && t != StructureType::ObservationPost;
+}
+
 void World::hurt_structure(const Structure& s, const WeaponDef& weapon, FixedVec2 at) {
-    if (weapon.damage_type == DamageType::Bullet) return;  // rifles don't knock down walls
-    const int32_t damage = weapon.structure_damage > 0 ? weapon.structure_damage : weapon.damage;
+    const bool walls = weapon.wall_damage > 0 && has_walls(s.type);
+    if (weapon.damage_type == DamageType::Bullet && !walls) return;  // rifles don't knock down walls (an IFV's cannon does)
+    const int32_t damage = walls ? weapon.wall_damage : weapon.structure_damage > 0 ? weapon.structure_damage : weapon.damage;
     const int32_t amount = damage - structure_type(s.type).armor[static_cast<size_t>(weapon.damage_type)];
     if (amount > 0) pending_damage_.push_back({s.id, amount});
     if (weapon.aerial_bomb) {  // a bomb from the air: the section of it where it fell comes down
@@ -1269,6 +1277,8 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
         if (const Unit* victim = first_unit_on(line, start, end, shooter.id, hit_t)) {
             hurt(*victim, weapon, shot);
             end = hit_t;
+        } else if (weapon.wall_damage > 0 && end < Fixed::from_int(1)) {  // a heavy machine gun into the walls
+            if (const Structure* s = structure_at(map_.clamp_tile(tile_of(line.point(end))))) hurt_structure(*s, weapon, line.point(end));
         }
         shooter.last_shot_at = line.point(end);
         return;
@@ -1380,8 +1390,9 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
         splash(p, spot, weapon);
     };
     switch (p.shell) {
-        case Shell::Cluster:
+        case Shell::Cluster:  // (each bomblet still kills whoever is in the open by it)
             weapon.damage = weapon.damage * kBombletPercent / 100;
+            weapon.wall_damage = weapon.wall_damage * kBombletPercent / 100;
             weapon.splash_radius = kBombletSplash;
             for (int i = 0; i < kClusterBomblets; ++i) {
                 FixedVec2 spot = at;
@@ -1390,8 +1401,10 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
                 blow(clamp_to_map(spot, Fixed{}));
             }
             return;
-        case Shell::Incendiary:
+        case Shell::Incendiary:  // a weaker burst: not every man in it dies of it
             weapon.damage = weapon.damage * kIncendiaryBurstPercent / 100;
+            weapon.wall_damage = weapon.wall_damage * kIncendiaryBurstPercent / 100;
+            weapon.lethal = false;
             blow(at);
             fires_.push_back({at, kFireRadius, tick_ + kFireTicks, p.owner});
             smokes_.push_back({clamp_to_map(at + kPlumeDrift, Fixed{}), kFireRadius + Fixed::from_ratio(1, 2), tick_ + kFireTicks,
@@ -1399,6 +1412,8 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
             return;
         case Shell::Phosphorus:
             weapon.damage = weapon.damage * kPhosphorusBurstPercent / 100;
+            weapon.wall_damage = weapon.wall_damage * kPhosphorusBurstPercent / 100;
+            weapon.lethal = false;
             blow(at);
             smokes_.push_back({at, kPhosphorusSmokeRadius, tick_ + kPhosphorusSmokeTicks, SmokeKind::Screen, tick_});
             fires_.push_back({at, kPhosphorusFireRadius, tick_ + kPhosphorusFireTicks, p.owner});
@@ -1486,7 +1501,10 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
 
 void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
     if (weapon.damage_type != DamageType::Explosive || weapon.splash_radius.raw <= 0) return;
-    const int32_t hits = weapon.splash_radius >= kHeavyBurst ? 2 : 1;
+    // A tank's shell, a heavy one tears the trees apart where it bursts; a
+    // mortar bomb, a grenade strips their branches.
+    const bool heavy = weapon.damage >= kTreeBreakingDamage;
+    const int32_t hits = heavy ? 3 : weapon.splash_radius >= kHeavyBurst ? 2 : 1;
     const Fixed reach = weapon.splash_radius + Fixed::from_ratio(1, 2);
     const TilePos c = tile_of(at);
     const int32_t r = reach.to_int() + 1;
@@ -1496,7 +1514,7 @@ void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
             const Terrain t = map_.terrain(x, y);
             if (t != Terrain::Forest && t != Terrain::Orchard && t != Terrain::Urban) continue;
             if ((tile_center({x, y}) - at).length_sq_raw() > square_raw(reach)) continue;
-            map_.add_shred(x, y, hits + (x == c.x && y == c.y ? 1 : 0));  // worst where it burst
+            map_.add_shred(x, y, hits + (x == c.x && y == c.y ? (heavy ? 2 : 1) : 0));  // worst where it burst
         }
     }
 }
@@ -1572,8 +1590,13 @@ int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
 
 void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) {
     // The walls of a trench or foxhole take it instead.
-    if (const int32_t cover = cover_percent(victim, shot);
-        cover > 0 && static_cast<int32_t>(rng_.next_below(100)) < cover) {
+    const int32_t cover = cover_percent(victim, shot);
+    if (cover > 0 && static_cast<int32_t>(rng_.next_below(100)) < cover) return;
+    // A tank's shell, a gun's, an autocannon's round: a man on foot it hits
+    // is dead, and so is one in its burst (in a trench, unless its walls
+    // took it, above).
+    if (weapon.lethal && !def_of(victim).vehicle && !def_of(victim).aircraft) {
+        pending_damage_.push_back({victim.id, std::max(victim.hp, def_of(victim).max_hp), !shot.blast || shot.on_it});
         return;
     }
     const auto type = static_cast<size_t>(weapon.damage_type);

@@ -43,10 +43,11 @@ constexpr UnitTypeDef kT72B3 = {
         .vehicle = true,
         // Ten times a rifleman's reach; far out it's less sure (see effective_range),
         // and it takes someone seeing that far.
+        // Its burst kills a man in the open a tile round, tears the trees apart, brings a house down in four.
         .weapon = {.name = "125mm HE shell", .damage = 75, .damage_type = DamageType::Explosive,
                    .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(30),
-                   .splash_radius = tiles(1, 2), .accuracy = 80, .miss_spread = tiles(1),
-                   .effective_range = tiles(15)},
+                   .splash_radius = tiles(1), .accuracy = 80, .miss_spread = tiles(1),
+                   .effective_range = tiles(15), .lethal = true, .wall_damage = kTankWallDamage},
         .cost = {3, 0, 150, 100, 100},
         .train_time = seconds(40),
         .fuel_capacity = tiles(150),
@@ -55,7 +56,7 @@ constexpr UnitTypeDef kT72B3 = {
         .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
                        .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(45),
                        .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1),
-                       .effective_range = tiles(15), .kinetic = true},
+                       .effective_range = tiles(15), .kinetic = true, .lethal = true},
         .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
                       AbilityId::RadioSilence, AbilityId::CallSupply},
         .ability_count = 6,
@@ -123,9 +124,11 @@ constexpr TankSpec kTankSpecs[] = {
 };
 
 // The BMP-2: the IFV the others are measured against, both sides have it.
+// An IFV's cannon, a heavy machine gun: a man it hits is dead; a house comes down in twelve.
 constexpr WeaponDef k30mm = {.name = "30mm autocannon", .damage = 14, .damage_type = DamageType::Bullet,
                              .range = tiles(6), .reload = seconds(3, 5), .projectile_speed = tiles_per_second(25),
-                             .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1)};
+                             .splash_radius = kNoSplash, .accuracy = 70, .miss_spread = tiles(1), .lethal = true,
+                             .wall_damage = kIfvWallDamage};
 constexpr UnitTypeDef kBmp2 = {
         .name = "BMP-2",
         .short_name = "BMP2",
@@ -172,7 +175,7 @@ constexpr ApcGunDef apc_gun(ApcGun gun) {
     auto auto_cannon = [](const char* name, int32_t damage, int32_t range, Tick reload, uint8_t accuracy) {
         return WeaponDef{.name = name, .damage = damage, .damage_type = DamageType::Bullet, .range = tiles(range),
                          .reload = reload, .projectile_speed = tiles_per_second(25), .splash_radius = kNoSplash,
-                         .accuracy = accuracy, .miss_spread = tiles(1)};
+                         .accuracy = accuracy, .miss_spread = tiles(1), .lethal = true, .wall_damage = kIfvWallDamage};
     };
     switch (gun) {
         case ApcGun::Pkt:
@@ -183,7 +186,7 @@ constexpr ApcGunDef apc_gun(ApcGun gun) {
         case ApcGun::Hmg:
             return {{.name = "12.7mm machine gun", .damage = 8, .damage_type = DamageType::Bullet, .range = tiles(7),
                      .reload = seconds(3, 10), .projectile_speed = kInstantHit, .splash_radius = kNoSplash, .accuracy = 60,
-                     .miss_spread = tiles(1)},
+                     .miss_spread = tiles(1), .lethal = true, .wall_damage = kIfvWallDamage},
                     {}, 600, 20};
         case ApcGun::Auto20: return {auto_cannon("20mm autocannon", 11, 6, seconds(1, 2), 70), {}, 250, 8};
         case ApcGun::Auto25: return {auto_cannon("25mm Bushmaster", 13, 7, seconds(11, 20), 75), {}, 200, 6};
@@ -193,16 +196,16 @@ constexpr ApcGunDef apc_gun(ApcGun gun) {
         case ApcGun::Grom:
             return {{.name = "73mm HE-FRAG", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(7),
                      .reload = seconds(3), .projectile_speed = tiles_per_second(10), .splash_radius = tiles(2, 5),
-                     .accuracy = 70, .miss_spread = tiles(1)},
+                     .accuracy = 70, .miss_spread = tiles(1), .lethal = true, .wall_damage = 100},
                     {.name = "73mm HEAT", .damage = 110, .damage_type = DamageType::AntiTank, .range = tiles(7),
                      .reload = seconds(3), .projectile_speed = tiles_per_second(10), .splash_radius = kNoSplash,
-                     .accuracy = 70, .miss_spread = tiles(1), .structure_damage = 60},
+                     .accuracy = 70, .miss_spread = tiles(1), .structure_damage = 60, .lethal = true},
                     40, 1};
         case ApcGun::Gun100:
             return {k30mm,
                     {.name = "100mm HE-FRAG", .damage = 50, .damage_type = DamageType::Explosive, .range = tiles(9),
-                     .reload = seconds(4), .projectile_speed = tiles_per_second(12), .splash_radius = tiles(1, 2),
-                     .accuracy = 75, .miss_spread = tiles(1)},
+                     .reload = seconds(4), .projectile_speed = tiles_per_second(12), .splash_radius = tiles(3, 4),
+                     .accuracy = 75, .miss_spread = tiles(1), .lethal = true, .wall_damage = 120},
                     150, 5};
     }
     return {k30mm, {}, 150, 5};
@@ -309,7 +312,7 @@ constexpr UnitTypeDef kGvozdika = {
         .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
                    .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
                    .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                   .min_range = tiles(4)},
+                   .min_range = tiles(4), .lethal = true, .wall_damage = 110 * kShellWallPercent / 100},
         .cost = {4, 0, 200, 60, 60},
         .train_time = seconds(40),
         .fuel_capacity = tiles(160),
@@ -342,7 +345,7 @@ constexpr UnitTypeDef kD30 = {
         .weapon = {.name = "122mm HE shell", .damage = 110, .damage_type = DamageType::Explosive,
                    .range = tiles(60), .reload = seconds(6), .projectile_speed = tiles_per_second(9),
                    .splash_radius = tiles(3, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                   .min_range = tiles(5)},
+                   .min_range = tiles(5), .lethal = true, .wall_damage = 110 * kShellWallPercent / 100},
         .cost = {4, 0, 150, 60, 30},
         .train_time = seconds(40),
         .rounds_capacity = 30,
@@ -371,7 +374,7 @@ constexpr UnitTypeDef kShilka = {
         .vehicle = true,
         .weapon = {.name = "23mm quad AA guns", .damage = 14, .damage_type = DamageType::Bullet, .range = tiles(7),
                    .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
-                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true, .ceiling = tiles(5)},
+                   .accuracy = 55, .miss_spread = tiles(1), .anti_air = true, .ceiling = tiles(5), .lethal = true},
         .cost = {3, 0, 150, 80, 60},
         .train_time = seconds(35),
         .fuel_capacity = tiles(150),
@@ -400,7 +403,7 @@ constexpr UnitTypeDef kSu25 = {
         .vehicle = true,
         .weapon = {.name = "S-8 rockets", .damage = 60, .damage_type = DamageType::Explosive, .range = tiles(9),
                    .reload = 0, .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5),
-                   .accuracy = 100, .miss_spread = tiles(0)},
+                   .accuracy = 100, .miss_spread = tiles(0), .lethal = true, .wall_damage = kTankWallDamage},
         .cost = {1, 0, 250, 80, 120},
         .train_time = seconds(60),
         .fuel_capacity = tiles(240),
@@ -450,6 +453,7 @@ constexpr UnitTypeDef gun_def(const UnitTypeDef& base, const GunSpec& g) {
     d.armor = g.armor;
     d.mass = base.mass * g.hp / base.max_hp;
     d.weapon.damage = g.damage;
+    d.weapon.wall_damage = g.damage * kShellWallPercent / 100;
     d.weapon.splash_radius = tiles(g.burst, 10);
     d.weapon.range = tiles(g.range);
     d.weapon.reload = seconds(g.reload, 10);
@@ -568,12 +572,13 @@ constexpr UnitTypeDef kSu34 =
     su25_like("Su-34", "SU34", VehicleModel::Su34, 380, {5, 15, 15}, 130,
               {.name = "FAB-500 bombs", .damage = 220, .damage_type = DamageType::Explosive, .range = tiles(9), .reload = 0,
                .projectile_speed = tiles_per_second(8), .splash_radius = tiles(12, 5), .accuracy = 100, .miss_spread = tiles(0),
-               .aerial_bomb = true},
+               .aerial_bomb = true, .lethal = true, .wall_damage = 1200},
               6, 170, 150, 50);
 constexpr UnitTypeDef kA10 =
     su25_like("A-10C Thunderbolt II", "A10", VehicleModel::A10, 420, {8, 20, 20}, 90,
               {.name = "Hydra 70 rockets", .damage = 60, .damage_type = DamageType::Explosive, .range = tiles(9), .reload = 0,
-               .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5), .accuracy = 100, .miss_spread = tiles(0)},
+               .projectile_speed = tiles_per_second(25), .splash_radius = tiles(6, 5), .accuracy = 100, .miss_spread = tiles(0),
+               .lethal = true, .wall_damage = kTankWallDamage},
               19, 150, 125, 70);
 
 constexpr UnitTypeDef kUnitTypes[] = {
@@ -775,7 +780,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .weapon = {.name = "82mm mortar bomb", .damage = 45, .damage_type = DamageType::Explosive,
                    .range = tiles(20), .reload = seconds(3), .projectile_speed = tiles_per_second(7),
                    .splash_radius = tiles(1), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                   .min_range = tiles(3)},
+                   .min_range = tiles(3), .lethal = true, .wall_damage = 45 * kShellWallPercent / 100},
         .cost = {2, 50, 0, 40, 0},
         .train_time = seconds(20),
         .rounds_capacity = 40,
@@ -798,7 +803,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .vehicle = false,
         .weapon = {.name = "30mm grenade", .damage = 20, .damage_type = DamageType::Explosive, .range = tiles(8),
                    .reload = seconds(1, 2), .projectile_speed = tiles_per_second(9), .splash_radius = tiles(4, 5),
-                   .accuracy = 60, .miss_spread = tiles(3, 2), .lobbed = true},
+                   .accuracy = 60, .miss_spread = tiles(3, 2), .lobbed = true, .lethal = true},
         .cost = {2, 50, 0, 50, 0},
         .train_time = seconds(20),
         .rounds_capacity = 150,
@@ -820,7 +825,8 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .wheeled = true,
         .weapon = {.name = "122mm rocket", .damage = 55, .damage_type = DamageType::Explosive, .range = tiles(70),
                    .reload = seconds(1), .projectile_speed = tiles_per_second(12), .splash_radius = tiles(6, 5),
-                   .accuracy = 100, .miss_spread = tiles(0), .indirect = true, .min_range = tiles(8)},
+                   .accuracy = 100, .miss_spread = tiles(0), .indirect = true, .min_range = tiles(8), .lethal = true,
+                   .wall_damage = 55 * kShellWallPercent / 100},
         .cost = {3, 0, 180, 80, 40},
         .train_time = seconds(45),
         .rounds_capacity = 40,
@@ -1029,8 +1035,8 @@ constexpr AbilityDef kAbilities[] = {
      .range = tiles(50), .cooldown = seconds(20),
      .weapon = {.name = "125mm HE-FRAG shell", .damage = 75, .damage_type = DamageType::Explosive,
                 .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(30),
-                .splash_radius = tiles(5, 4), .accuracy = 85, .miss_spread = tiles(1),
-                .effective_range = tiles(15)}},
+                .splash_radius = tiles(7, 4), .accuracy = 85, .miss_spread = tiles(1),
+                .effective_range = tiles(15), .lethal = true, .wall_damage = kTankWallDamage}},
     {.name = "Switch rounds (reloads the gun): a tank's HE / AP, a BMP-1's HE / HEAT, the 30 mm / the 100 mm", .label = "HE / AP",
      .target = AbilityTarget::Instant, .range = tiles(0), .cooldown = 0},
     // Fired along the front, not aimed at anyone: whoever is in the way gets it.
@@ -1044,7 +1050,7 @@ constexpr AbilityDef kAbilities[] = {
      .range = tiles(6), .cooldown = seconds(10),
      .weapon = {.name = "30mm grenade", .damage = 30, .damage_type = DamageType::Explosive, .range = tiles(6),
                 .reload = 0, .projectile_speed = tiles_per_second(10), .splash_radius = tiles(1),
-                .accuracy = 75, .miss_spread = tiles(1)}},
+                .accuracy = 75, .miss_spread = tiles(1), .lethal = true}},
     {.name = "Dig a trench (drag a line)", .label = "Trench", .target = AbilityTarget::Line,
      .range = tiles(0), .cooldown = 0},
     {.name = "Dig a foxhole here: hits -50%, own accuracy -20%", .label = "Foxhole",
@@ -1069,15 +1075,15 @@ constexpr AbilityDef kAbilities[] = {
      .target = AbilityTarget::Point, .range = tiles(8), .cooldown = seconds(15),
      .weapon = {.name = "30mm grenade", .damage = 20, .damage_type = DamageType::Explosive, .range = tiles(8),
                 .reload = 0, .projectile_speed = tiles_per_second(9), .splash_radius = tiles(4, 5), .accuracy = 100,
-                .miss_spread = tiles(0), .lobbed = true}},
+                .miss_spread = tiles(0), .lobbed = true, .lethal = true}},
     {.name = "Salvo: every rocket in the launcher at a point", .label = "Salvo", .target = AbilityTarget::Point,
      .range = tiles(70), .cooldown = 0},
     {.name = "Fire from a covered position, like artillery: each shot wears the barrel (1% HP)",
      .label = "Indirect", .target = AbilityTarget::Point, .range = tiles(60), .cooldown = 0,
      .weapon = {.name = "125mm HE shell, indirect", .damage = 75, .damage_type = DamageType::Explosive,
                 .range = tiles(60), .reload = seconds(4), .projectile_speed = tiles_per_second(12),
-                .splash_radius = tiles(1, 2), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
-                .min_range = tiles(3)}},
+                .splash_radius = tiles(1), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
+                .min_range = tiles(3), .lethal = true, .wall_damage = kTankWallDamage}},
     {.name = "Anti-personnel mine (5 ammunition)", .label = "AP mine", .target = AbilityTarget::Point,
      .range = tiles(0), .cooldown = 0},
     {.name = "Anti-tank mine (10 ammunition)", .label = "AT mine", .target = AbilityTarget::Point,

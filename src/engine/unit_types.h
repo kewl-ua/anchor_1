@@ -59,7 +59,20 @@ struct WeaponDef {
     // An aircraft's heavy bomb: a block of flats it hits has a section of it
     // brought down (how it looks; see Structure::bombed).
     bool aerial_bomb = false;
+    // A tank's shell, a gun's, a mortar bomb, an autocannon's round, a heavy
+    // machine gun's: a man on foot it hits, or in its burst, is dead (in a
+    // trench the walls may still take it; see World::cover_percent).
+    bool lethal = false;
+    // Against the walls of a building (a house, a block of flats, a mast, a
+    // base's buildings; not field works, obstacles, a bridge), if not the
+    // usual: a tank's shell brings a house down in 4, an IFV's cannon in 12.
+    int32_t wall_damage = 0;
 };
+// A house (600, nothing against these) comes down in 4 of a tank's shells,
+// in 12 of an IFV's bursts; a gun's shell hits walls at twice its damage.
+inline constexpr int32_t kTankWallDamage = 150;
+inline constexpr int32_t kIfvWallDamage = 50;
+inline constexpr int32_t kShellWallPercent = 200;
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.
 enum class UpgradeId : uint8_t {

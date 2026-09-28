@@ -1684,7 +1684,7 @@ void test_riders_on_armor() {
         CHECK(m && m->riding == ifv && m->pos == v->pos);
     }
     const EntityId gunner = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, at(40, 15));
-    sim.world_for_setup().unit_for_setup(gunner)->hp = 100000;
+    sim.world_for_setup().unit_for_setup(ifv)->rounds = 0;  // (its cannon would have him at once)
     for (int i = 0; i < 200; ++i) sim.step();
     int hurt_on_top = 0;
     for (EntityId id : on_top) hurt_on_top += hp_of(sim, id) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
@@ -1725,12 +1725,15 @@ void test_riders_on_armor() {
 }
 
 // A shell or a mortar bomb bursting on armor with men on top: they take it
-// at half again its full force (a man standing there in the open: the full).
+// at half again its full force (a man standing there in the open: the
+// full). An HE bomb kills them outright, either way; the weaker burst of an
+// incendiary one shows it. (The first blow each takes.)
 int32_t mortar_loss(bool riding) {
     int32_t total = 0;
     for (uint64_t seed = 1; seed <= 6; ++seed) {
         Simulation sim(seed, TileMap(40, 24));
         World& w = sim.world_for_setup();
+        w.upgrade_for_setup(1, UpgradeId::IncendiaryShells);
         const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, post());
         w.unit_for_setup(man)->hp = 100000;
         if (riding) {
@@ -1742,10 +1745,11 @@ int32_t mortar_loss(bool riding) {
             w.unit_for_setup(man)->riding = ifv;
         }
         const EntityId mortar = w.spawn_unit(1, UnitTypeId::Mortar, {post().x + Fixed::from_int(14), post().y});
+        sim.schedule(sim.world().tick(), load_shell(1, {mortar}, Shell::Incendiary));
         Command fire = make_order(CommandType::AttackGround, 1, {mortar}, 0, 0);
         fire.target = post();
-        sim.schedule(sim.world().tick(), fire);
-        for (int i = 0; i < 600; ++i) sim.step();
+        sim.schedule(sim.world().tick() + 1, fire);
+        for (int i = 0; i < 1200 && hp_of(sim, man) == 100000; ++i) sim.step();
         total += 100000 - hp_of(sim, man);
     }
     return total;
@@ -3630,10 +3634,10 @@ void test_burning_wreck_smoke() {
 // A burst of a tile and more raises dust and smoke: three quarters as wide,
 // a few seconds, hiding what's behind it.
 void test_burst_dust() {
-    {  // a tank's shell, a small burst: none
+    {  // a grenade's, a small burst: none
         Simulation shot(1, TileMap(40, 20));
-        const EntityId tank = shot.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
-        shot.schedule(0, fire_at(0, {tank}, 12, 10));
+        const EntityId tank = shot.world_for_setup().spawn_unit(0, UnitTypeId::Ags, at(5, 10));
+        shot.schedule(0, fire_at(0, {tank}, 11, 10));
         bool burst = false;
         for (int i = 0; i < 40; ++i) {
             shot.step();
@@ -5193,6 +5197,119 @@ void test_highway_and_bridges() {
     CHECK(trip.arrived && trip.ticks < 900);
 }
 
+// A tank's shell kills every man on foot out in the open within its burst
+// (a tile round); a step beyond it, nobody's hurt.
+void test_tank_shell_kills_in_the_open() {
+    CHECK(unit_type(UnitTypeId::Tank).weapon.splash_radius >= Fixed::from_int(1));
+    for (uint64_t seed = 1; seed <= 5; ++seed) {
+        Simulation sim(seed, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+        std::vector<EntityId> men;
+        for (const FixedVec2 p : {at(14, 10), at_half(29, 21), at_half(27, 19), at_half(33, 20), at(18, 10)}) {
+            men.push_back(w.spawn_unit(1, UnitTypeId::Rifleman, p));
+        }
+        std::vector<FixedVec2> where;
+        for (EntityId id : men) where.push_back(sim.world().find_unit(id)->pos);
+        sim.schedule(0, fire_at(0, {tank}, 14, 10));
+        for (int i = 0; i < 300 && sim.world().recent_impacts().empty(); ++i) sim.step();
+        CHECK(!sim.world().recent_impacts().empty());
+        if (sim.world().recent_impacts().empty()) continue;
+        const FixedVec2 burst = sim.world().recent_impacts().front().pos;
+        const Fixed reach = unit_type(UnitTypeId::Tank).weapon.splash_radius + unit_type(UnitTypeId::Rifleman).radius;
+        for (size_t i = 0; i < men.size(); ++i) {
+            const Fixed d = (where[i] - burst).length();
+            if (d <= reach) CHECK(sim.world().find_unit(men[i]) == nullptr);
+            if (d > reach + Fixed::from_int(1)) CHECK(hp_of(sim, men[i]) == unit_type(UnitTypeId::Rifleman).max_hp);
+        }
+    }
+    // In a trench, a burst from the tile beside him isn't sure death: the
+    // walls may take it (if they don't, he's dead all the same). Out in the
+    // open, the same burst kills him every time.
+    auto survivors = [](bool dug_in) {
+        int alive = 0;
+        for (uint64_t seed = 1; seed <= 12; ++seed) {
+            Simulation sim(seed, TileMap(40, 20));
+            World& w = sim.world_for_setup();
+            if (dug_in) w.place_structure(StructureType::Trench, 1, {14, 10}, 1, 1);
+            const EntityId man = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(29, 21));
+            w.unit_for_setup(man)->still = kSettleTicks + 1;
+            w.unit_for_setup(man)->rounds = 0;  // (not answering)
+            const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(3, 10));  // (out of his sight: he stays put)
+            sim.schedule(0, fire_at(0, {tank}, 15, 10));
+            bool reached = false;
+            for (int i = 0; i < 300 && !reached && sim.world().find_unit(man); ++i) {
+                const FixedVec2 stood = sim.world().find_unit(man)->pos;  // (he may step about, answering)
+                sim.step();
+                for (const Impact& b : sim.world().recent_impacts()) {
+                    if (b.tick + 1 < sim.world().tick()) continue;
+                    const Fixed d = (b.pos - stood).length();
+                    reached = reached || (tile_of(b.pos) != tile_of(stood) &&
+                                          d + Fixed::from_ratio(1, 5) <= unit_type(UnitTypeId::Tank).weapon.splash_radius);
+                }
+            }
+            if (!reached) continue;
+            alive += sim.world().find_unit(man) ? 1 : 0;
+        }
+        return alive;
+    };
+    CHECK(survivors(true) > 0);
+    CHECK(survivors(false) == 0);
+}
+
+// An IFV's cannon, a heavy machine gun: a man hit is dead (a rifle's round
+// only wounds him).
+void test_cannon_kills_with_a_hit() {
+    auto first_hit_kills = [](UnitTypeId shooter) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        w.spawn_unit(0, shooter, at(5, 10));
+        const EntityId man = w.spawn_unit(1, UnitTypeId::Rifleman, at(9, 10));
+        const int32_t full = unit_type(UnitTypeId::Rifleman).max_hp;
+        for (int i = 0; i < 600 && hp_of(sim, man) == full; ++i) sim.step();
+        return sim.world().find_unit(man) == nullptr;
+    };
+    CHECK(first_hit_kills(UnitTypeId::Ifv));
+    CHECK(first_hit_kills(UnitTypeId::M113));  // its 12.7 mm
+    CHECK(first_hit_kills(UnitTypeId::Btr82a));
+    CHECK(!first_hit_kills(UnitTypeId::Rifleman));
+}
+
+// Walls: a house comes down in 4 of a tank's shells, 12 hits of an IFV's
+// cannon or a heavy machine gun, 3 of a 122 mm gun's shells.
+int32_t hits_to_bring_down(UnitTypeId shooter, int32_t distance, int32_t& per_hit) {
+    Simulation sim(1, TileMap(60, 20));
+    World& w = sim.world_for_setup();
+    const EntityId house = w.place_structure(StructureType::House, kNoOwner, {5 + distance, 10}, 1, 1);
+    const EntityId gun = w.spawn_unit(0, shooter, at(5, 10));
+    w.unit_for_setup(gun)->rounds = 1000;
+    sim.schedule(0, fire_at(0, {gun}, 5 + distance, 10));
+    int32_t hp = structure_type(StructureType::House).max_hp;
+    int32_t hits = 0;
+    per_hit = 0;
+    for (int i = 0; i < 20000; ++i) {
+        sim.step();
+        const Structure* s = sim.world().find_structure(house);
+        const int32_t now = s ? s->hp : 0;
+        if (now < hp) {
+            ++hits;
+            per_hit = std::max(per_hit, hp - now);
+            hp = now;
+        }
+        if (!s) break;
+    }
+    return hp <= 0 ? hits : -1;
+}
+
+void test_guns_bring_houses_down() {
+    int32_t per_hit = 0;
+    CHECK(hits_to_bring_down(UnitTypeId::Tank, 8, per_hit) == 4 && per_hit == kTankWallDamage);
+    CHECK(hits_to_bring_down(UnitTypeId::Ifv, 5, per_hit) == 12 && per_hit == kIfvWallDamage);
+    CHECK(hits_to_bring_down(UnitTypeId::M113, 5, per_hit) == 12 && per_hit == kIfvWallDamage);
+    CHECK(hits_to_bring_down(UnitTypeId::Howitzer, 20, per_hit) == 3);
+    CHECK(hits_to_bring_down(UnitTypeId::Rifleman, 4, per_hit) == -1);  // rifles don't
+}
+
 // Shelling cuts up the trees round each burst, the worse the more bursts
 // and the heavier they are, worst where it burst, up to snapped-off trunks;
 // open ground and the woods out of reach stay as they were.
@@ -5212,7 +5329,7 @@ void test_shelling_shreds_trees() {
             for (int x = 22; x < 40; ++x) most = std::max<int>(most, sim.world().map().shred(x, y));
         }
     }
-    CHECK(most == 3);  // one 122 mm shell: 2 round it, 3 where it burst
+    CHECK(most == 5);  // one 122 mm shell tears them apart: 3 round it, 5 where it burst
     for (int i = 0; i < 4000; ++i) sim.step();
     int top = 0;
     int cut = 0;
@@ -6597,6 +6714,9 @@ int main() {
     test_shelling_leaves_craters();
     test_crater_kinds();
     test_shelling_shreds_trees();
+    test_tank_shell_kills_in_the_open();
+    test_cannon_kills_with_a_hit();
+    test_guns_bring_houses_down();
     test_highway_and_bridges();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();

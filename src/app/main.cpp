@@ -871,6 +871,43 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if (options.scene == "shelling" && options.mode == Options::Mode::Offline) {
+        // Offline: at the village house nearest our base a tank shells it
+        // (down in four), an IFV opens up on a squad of the enemy's standing
+        // in the open beside it (a man a hit).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const Vector2 b = render::to_vector2(base);
+        engine::World& w = game.world_for_setup();
+        const engine::TileMap& map = world.map();
+        std::optional<engine::TilePos> house;
+        float best = 1e9f;
+        for (const engine::Structure& s : world.structures()) {
+            if (s.type != engine::StructureType::House || s.tiles.size() >= engine::kSpaciousTiles || s.look != engine::HouseLook::House) continue;
+            const engine::TilePos t = s.tiles.front();
+            // (open ground where the tank and the IFV stand)
+            const bool open = map.contains_tile(t.x - 8, t.y + 4) && map.passable({t.x - 8, t.y + 1}, engine::MoveClass::Vehicle) &&
+                              map.passable({t.x - 6, t.y + 4}, engine::MoveClass::Vehicle);
+            const float dist = std::hypot(static_cast<float>(t.x) - b.x, static_cast<float>(t.y) - b.y);
+            if (open && dist < best) {
+                best = dist;
+                house = t;
+            }
+        }
+        if (!house) return std::nullopt;
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        auto tile = [](int x, int y) {
+            return engine::FixedVec2{engine::Fixed::from_int(x) + engine::Fixed::from_ratio(1, 2), engine::Fixed::from_int(y) + engine::Fixed::from_ratio(1, 2)};
+        };
+        const engine::EntityId tank = w.spawn_unit(me, engine::UnitTypeId::Tank, tile(house->x - 8, house->y + 1));
+        game.submit({.type = engine::CommandType::AttackGround, .units = {tank}, .target = tile(house->x, house->y)});
+        w.spawn_unit(me, engine::UnitTypeId::Ifv, tile(house->x - 6, house->y + 4));
+        for (int i = 0; i < 5; ++i) {
+            engine::Unit* m = w.unit_for_setup(w.spawn_unit(enemy, engine::UnitTypeId::Rifleman, tile(house->x - 1 + i % 3, house->y + 4 + i / 3)));
+            m->rounds = 0;  // (not answering)
+        }
+        return Vector2{static_cast<float>(house->x) - 3.0f, static_cast<float>(house->y) + 2.5f};
+    }
+
     if ((options.scene == "tower" || options.scene == "posts") && options.mode == Options::Mode::Offline) {
         // Offline. "tower": at the cell tower nearest our base, a scout goes up
         // it, a signaller climbs it with a DF aerial. "posts": three scouts make
