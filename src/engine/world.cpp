@@ -1255,6 +1255,7 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
     auto blow = [&](FixedVec2 spot) {
         recent_impacts_.push_back({tick_, spot, p.shooter_type, weapon.splash_radius});
         maybe_crater(p, spot, weapon);
+        shred_trees(spot, weapon);
         splash(p, spot, weapon);
     };
     switch (p.shell) {
@@ -1322,6 +1323,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
     maybe_crater(p, at, weapon);
+    shred_trees(at, weapon);
 
     // Thrown in through a window or down a dugout's entrance: the men
     // inside take it, walls or not.
@@ -1357,6 +1359,23 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         }
     }
     if (direct_hit) hurt(*direct_hit, weapon, {p.origin, p.shooter_elevation, false, p.lobbed});
+}
+
+void World::shred_trees(FixedVec2 at, const WeaponDef& weapon) {
+    if (weapon.damage_type != DamageType::Explosive || weapon.splash_radius.raw <= 0) return;
+    const int32_t hits = weapon.splash_radius >= kHeavyBurst ? 2 : 1;
+    const Fixed reach = weapon.splash_radius + Fixed::from_ratio(1, 2);
+    const TilePos c = tile_of(at);
+    const int32_t r = reach.to_int() + 1;
+    for (int32_t y = c.y - r; y <= c.y + r; ++y) {
+        for (int32_t x = c.x - r; x <= c.x + r; ++x) {
+            if (!map_.contains_tile(x, y)) continue;
+            const Terrain t = map_.terrain(x, y);
+            if (t != Terrain::Forest && t != Terrain::Orchard && t != Terrain::Urban) continue;
+            if ((tile_center({x, y}) - at).length_sq_raw() > square_raw(reach)) continue;
+            map_.add_shred(x, y, hits + (x == c.x && y == c.y ? 1 : 0));  // worst where it burst
+        }
+    }
 }
 
 void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& weapon) {

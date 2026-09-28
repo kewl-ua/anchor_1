@@ -625,6 +625,18 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     }
 
     remember(world);
+    // The trees' state as seen: updated for the tiles in view.
+    if (map.revision() != shred_revision_ || seen_shred_.size() != static_cast<size_t>(map.width() * map.height())) {
+        if (seen_shred_.size() != static_cast<size_t>(map.width() * map.height())) seen_shred_.assign(static_cast<size_t>(map.width() * map.height()), 0);
+        for (int ty = 0; ty < map.height(); ++ty) {
+            for (int tx = 0; tx < map.width(); ++tx) {
+                const uint8_t now = map.shred(tx, ty);
+                uint8_t& seen = seen_shred_[static_cast<size_t>(ty * map.width() + tx)];
+                if (now != seen && fog(world, tx, ty) == kInView) seen = now;
+            }
+        }
+        shred_revision_ = map.revision();
+    }
 
     // Shells and rockets that went off since the last frame: where they
     // actually burst, which may be a tree or a soldier in the way.
@@ -793,7 +805,36 @@ struct Tree {
     float girth = 1.0f;
     float bend = 0.0f;    // sideways bow of the trunk, pixels at size 1 (+: to the right)
     uint32_t seed = 0;    // for the lumps of its crown
+    uint8_t shred = 0;    // cut up by shelling, 0 whole .. TileMap::kMaxShred
 };
+
+// How much foliage a tree has left, cut up by shelling (1: all of it), and
+// the bark its trunk and branches show. Set around each tree drawn.
+float g_leaf = 1.0f;
+float g_bare = 0.0f;
+Color g_bark{72, 54, 38, 255};
+
+// Bare branches in a crown's oval, from the trunk's top up and out: when the
+// leaves are going, then gone, broken off short the worse it's been hit, a
+// twig or two on each; splintered pale where they snapped.
+void draw_limbs(Vector2 c, float w, float h, uint32_t seed) {
+    if (g_bare <= 0.1f) return;
+    auto rnd = [seed](int i, int salt) { return hash_unit(tile_hash(static_cast<int>(seed >> 2) + i * 11 + salt * 97, i * 5 + salt)); };
+    const Vector2 foot{c.x, c.y + h * 0.45f};
+    const int limbs = 5;
+    for (int i = 0; i < limbs; ++i) {
+        const float a = -2.6f + 2.2f * static_cast<float>(i) / static_cast<float>(limbs - 1) + (rnd(i, 1) - 0.5f) * 0.4f;  // up and out
+        const float full = 0.55f + 0.4f * rnd(i, 2);
+        const float len = full * (1.0f - 0.55f * g_bare * rnd(i, 3));  // broken off short
+        const Vector2 end{foot.x + std::cos(a) * w * 0.5f * len, foot.y + std::sin(a) * h * 0.75f * len};
+        const float thick = 1.6f - 0.15f * static_cast<float>(i % 3);
+        DrawLineEx(foot, end, thick, lit(shade(g_bark, 0.85f)));
+        if (len < full * 0.8f) disc(end, thick * 0.6f, {206, 190, 150, 255});  // snapped: the pale wood
+        const Vector2 mid{(foot.x + end.x) * 0.5f, (foot.y + end.y) * 0.5f};
+        const float t = a + (rnd(i, 4) < 0.5f ? 0.7f : -0.7f);
+        DrawLineV(mid, {mid.x + std::cos(t) * w * 0.14f, mid.y + std::sin(t) * h * 0.18f}, lit(shade(g_bark, 0.75f)));
+    }
+}
 
 // `line`: 0 a forest tile, 1 or 2 a tree line along x or y, 3 a tile standing
 // alone. `left`: the share of the wood still standing (0..1).
@@ -895,10 +936,15 @@ void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint,
         return hash_unit(tile_hash(static_cast<int>(seed >> 3) + i * 7 + salt * 131, i * 13 - salt * 17));
     };
     const bool far = g_zoom < 0.6f;
-    DrawEllipse(static_cast<int>(c.x + w * 0.05f), static_cast<int>(c.y + h * 0.06f), w * 0.45f, h * 0.45f,
-                lit(shade(leaf, 0.46f * tint)));
+    draw_limbs(c, w, h, seed);
+    if (g_leaf <= 0.02f) return;
+    if (g_leaf > 0.55f) {
+        DrawEllipse(static_cast<int>(c.x + w * 0.05f), static_cast<int>(c.y + h * 0.06f), w * 0.45f * g_leaf, h * 0.45f * g_leaf,
+                    lit(shade(leaf, 0.46f * tint)));
+    }
     const int tufts = far ? 8 : 16;
     for (int i = 0; i < tufts; ++i) {
+        if (rnd(i, 21) >= g_leaf) continue;  // stripped
         const float a = (static_cast<float>(i) + rnd(i, 5)) * 6.2831853f / static_cast<float>(tufts);
         const float reach = 0.9f + 0.16f * rnd(i, 9);
         const Vector2 at{c.x + std::cos(a) * w * 0.5f * reach, c.y + std::sin(a) * h * 0.5f * reach};
@@ -924,6 +970,7 @@ void draw_crown(Vector2 c, float w, float h, float lump, Color leaf, float tint,
     std::sort(clumps.begin(), clumps.begin() + count, [](const Clump& a, const Clump& b) { return a.k < b.k; });
     for (int i = 0; i < count; ++i) {
         const Clump& l = clumps[static_cast<size_t>(i)];
+        if (hash_unit(tile_hash(static_cast<int>(seed >> 4) + i * 29, i * 3 + 7)) >= g_leaf) continue;  // stripped
         disc({l.at.x + l.r * 0.25f, l.at.y + l.r * 0.3f}, l.r, shade(leaf, l.k * 0.72f * tint));
         disc(l.at, l.r * 0.8f, shade(leaf, l.k * tint));
         if (!far) disc({l.at.x - l.r * 0.3f, l.at.y - l.r * 0.34f}, l.r * 0.38f, shade(leaf, l.k * 1.25f * tint));
@@ -939,8 +986,42 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
         return;
     }
     const float spread = t.kind == TreeKind::Oak ? 1.5f : t.kind == TreeKind::Poplar ? 0.6f : t.kind == TreeKind::Apple ? 0.8f : 1.0f;
-    // Its shadow on the ground, away from the light (upper left).
-    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread, 3.4f * s,
+    // Cut up by shelling: the leaves going, the branches broken, at worst the trunk snapped.
+    g_bare = std::clamp(static_cast<float>(t.shred) / 6.0f, 0.0f, 1.0f);
+    g_leaf = 1.0f - g_bare;
+    switch (t.kind) {
+        case TreeKind::Oak: g_bark = {78, 62, 46, 255}; break;
+        case TreeKind::Beech: g_bark = {146, 142, 134, 255}; break;
+        case TreeKind::Birch: g_bark = {222, 220, 208, 255}; break;
+        case TreeKind::Pine: g_bark = {146, 92, 62, 255}; break;
+        case TreeKind::Apple: g_bark = {92, 70, 50, 255}; break;
+        default: g_bark = {72, 54, 38, 255}; break;
+    }
+    if (t.shred >= 3) {  // branches fallen round it
+        for (int i = 0; i < 1 + t.shred / 3; ++i) {
+            const uint32_t hi = tile_hash(static_cast<int>(t.seed >> 3) + i * 19, i * 7);
+            const float a = hash_unit(hi) * 6.2831853f;
+            const Vector2 p{b.x + std::cos(a) * 7.0f * s, b.y + std::sin(a) * 3.0f * s};
+            const float r = hash_unit(hi >> 8) * 3.14f;
+            DrawLineEx({p.x - std::cos(r) * 4.0f * s, p.y - std::sin(r) * 1.5f * s}, {p.x + std::cos(r) * 4.0f * s, p.y + std::sin(r) * 1.5f * s},
+                       1.3f, lit(shade(g_bark, 0.7f)));
+        }
+    }
+    if (t.shred >= 7) {
+        // Snapped off: a stump of a trunk, splintered pale at the break, a stub or two.
+        DrawEllipse(static_cast<int>(b.x + 3.0f * s), static_cast<int>(b.y + 1.0f * s), 4.0f * s, 1.8f * s, lit({16, 24, 12, 60}));
+        const float height = (5.0f + 5.0f * hash_unit(t.seed >> 6)) * s * t.height;
+        const Vector2 top = draw_trunk(b, height, 3.2f * s * t.girth, 2.4f * s * t.girth, t.bend * s * 0.5f, g_bark);
+        const float lean = (hash_unit(t.seed >> 9) - 0.5f) * 3.0f * s;
+        fill_triangle({top.x - 1.4f * s * t.girth, top.y + 1.0f}, {top.x + 1.4f * s * t.girth, top.y + 1.0f}, {top.x + lean, top.y - 3.0f * s},
+                      {214, 198, 158, 255});
+        DrawLineEx({top.x, top.y + height * 0.35f}, {top.x + 4.0f * s, top.y + height * 0.2f}, 1.2f, lit(shade(g_bark, 0.8f)));
+        g_leaf = 1.0f;
+        g_bare = 0.0f;
+        return;
+    }
+    // Its shadow on the ground, away from the light (upper left): thinner as the crown thins.
+    DrawEllipse(static_cast<int>(b.x + 5.0f * s), static_cast<int>(b.y + 1.5f * s), 9.0f * s * spread * (0.4f + 0.6f * g_leaf), 3.4f * s,
                 lit({16, 24, 12, 70}));
     const float bend = t.bend * s;
     switch (t.kind) {
@@ -1005,7 +1086,14 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
                 const float y0 = b.y - bare - 6.0f * static_cast<float>(k) * s + (old ? 2.0f * s : 0.0f);
                 const float apex_y = y0 - (10.0f - static_cast<float>(k)) * s;
                 const float x = top.x;
-                fill_triangle({x - wid, y0 + 1.0f * s}, {x + wid, y0 + 1.0f * s}, {x, apex_y}, shade(needles, 0.5f));
+                if (g_leaf > 0.6f) fill_triangle({x - wid, y0 + 1.0f * s}, {x + wid, y0 + 1.0f * s}, {x, apex_y}, shade(needles, 0.5f));
+                if (g_bare > 0.1f) {  // the boughs showing, broken
+                    for (const float u : {-1.0f, 1.0f}) {
+                        const float len = wid * (1.0f - 0.5f * g_bare * hash_unit(tile_hash(static_cast<int>(t.seed) + k, static_cast<int>(u * 3.0f))));
+                        DrawLineEx({x, y0 - 2.0f * s}, {x + u * len, y0 + 0.5f * s}, 1.1f, lit(shade(g_bark, 0.6f)));
+                    }
+                    DrawLineEx({x, y0}, {x, apex_y}, 1.3f, lit(shade(g_bark, 0.7f)));
+                }
                 constexpr int kRows = 4;
                 for (int row = 0; row < kRows; ++row) {
                     const float f = static_cast<float>(row + 1) / kRows;
@@ -1013,6 +1101,7 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
                     const int n = row + 2;
                     for (int i = 0; i < n; ++i) {
                         const float u = static_cast<float>(i) / static_cast<float>(n - 1) * 2.0f - 1.0f;  // -1 left .. 1 right
+                        if (hash_unit(tile_hash(static_cast<int>(t.seed >> 7) + k * 13 + row * 3 + i, i * 5)) >= g_leaf) continue;  // stripped
                         const float jitter = (hash_unit(tile_hash(static_cast<int>(t.seed >> 5) + k * 17 + row * 5 + i, i)) - 0.5f) * s;
                         const Vector2 at{x + u * wid * f * 0.85f + jitter, y + std::fabs(u) * 1.4f * s - 1.0f * s};
                         const float r = (1.4f + 0.5f * static_cast<float>(row)) * s * 0.8f;
@@ -1048,9 +1137,11 @@ void draw_tree(const engine::TileMap& map, const Tree& t) {
             const float tall = t.height;
             const float half = 13.0f * s * tall;
             const float mid = top.y - half;
-            DrawEllipse(static_cast<int>(top.x + 0.6f * s), static_cast<int>(mid), 5.0f * s, half, lit(shade(leaf, 0.5f)));
+            if (g_leaf > 0.6f) DrawEllipse(static_cast<int>(top.x + 0.6f * s), static_cast<int>(mid), 5.0f * s, half, lit(shade(leaf, 0.5f)));
             constexpr int kClumps = 11;
+            if (g_bare > 0.1f) DrawLineEx(top, {top.x, mid - half * (1.0f - 0.5f * g_bare)}, 1.4f, lit(shade(g_bark, 0.8f)));  // the bare stem
             for (int i = 0; i < kClumps; ++i) {
+                if (hash_unit(tile_hash(static_cast<int>(t.seed >> 6) + i * 23, i)) >= g_leaf) continue;  // stripped
                 const float f = static_cast<float>(i) / (kClumps - 1);  // 0 at the bottom
                 const float y = mid + half * 0.86f - f * half * 1.72f;
                 const float along = (y - mid) / half;
@@ -2811,6 +2902,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Vector2 g = lerp(to_vector2(p.prev_pos), to_vector2(p.pos), alpha);
         if (in_view(world, g)) drawables.push_back({.depth = g.x + g.y, .projectile = &p});
     }
+    auto shred_at = [&](int tx, int ty) -> uint8_t {
+        const size_t i = static_cast<size_t>(ty * map.width() + tx);
+        return i < seen_shred_.size() ? seen_shred_[i] : 0;
+    };
     // Scenery comes from the remembered ground: what the fog hides stays as it
     // was; what stands behind a spoil tip is out of sight.
     for_each_visible_tile(map, view, [&](int tx, int ty) {
@@ -2828,6 +2923,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 t.girth = 0.9f + 0.2f * hash_unit(hk >> 24);
                 t.bend = (hash_unit(hk >> 6) - 0.5f) * 3.0f;
                 t.seed = hk;
+                t.shred = shred_at(tx, ty);
                 drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
                 break;
             }
@@ -2841,6 +2937,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                     t.girth = 0.9f + 0.2f * hash_unit(hk >> 12);
                     t.bend = (hash_unit(hk >> 20) - 0.5f) * 3.0f;
                     t.seed = hk;
+                    t.shred = shred_at(tx, ty);
                     drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
                 }
                 break;
@@ -2857,7 +2954,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 size_t count = 0;
                 const std::array<Tree, 3> trees = trees_on_tile(tx, ty, line, std::clamp(left, 0.0f, 1.0f), count);
                 for (size_t i = 0; i < count; ++i) {
-                    const Tree& t = trees[i];
+                    Tree t = trees[i];
+                    t.shred = shred_at(tx, ty);
                     drawables.push_back({.depth = t.ground.x + t.ground.y, .tree = t, .light = light});
                 }
                 break;
@@ -2976,6 +3074,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_house(map, d.house_x, d.house_y, d.damage);
         } else {
             draw_tree(map, d.tree);
+            g_leaf = 1.0f;
+            g_bare = 0.0f;
         }
     }
     g_light = 1.0f;

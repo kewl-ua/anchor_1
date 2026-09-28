@@ -500,6 +500,8 @@ public:
 
     Tick tick() const { return tick_; }
     const TileMap& map() const { return map_; }
+    // For scenario setup and tests only: the map itself.
+    TileMap& map_for_setup() { return map_; }
     FixedVec2 size() const { return map_.size(); }
     Rng& rng() { return rng_; }
     const std::vector<Unit>& units() const { return units_; }
@@ -849,6 +851,8 @@ private:
     void explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit);
     // A burst on open ground may leave a crater there.
     void maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& weapon);
+    // A burst cuts up the trees round it: in a wood, an orchard, a village yard.
+    void shred_trees(FixedVec2 at, const WeaponDef& weapon);
     void hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot);
     void apply_damage_and_remove_dead();
     void separate_units();

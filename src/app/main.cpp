@@ -402,6 +402,38 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
+    if (options.scene == "shelled_wood" && options.mode == Options::Mode::Offline) {
+        // Offline: the woods near the base cut up more and more across the
+        // view, whole on the left to snapped off on the right; the howitzer
+        // and the rockets shelling a wood ahead.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        engine::TileMap& map = w.map_for_setup();
+        const Vector2 look = render::to_vector2(ahead(12.0f, 0.0f));
+        for (int dy = -14; dy <= 14; ++dy) {
+            for (int dx = -14; dx <= 14; ++dx) {
+                const int x = static_cast<int>(look.x) + dx;
+                const int y = static_cast<int>(look.y) + dy;
+                if (!map.contains_tile(x, y)) continue;
+                const int across = (dx - dy + 28) * 9 / 56;  // 0 at the left of the view .. 9 at the right
+                map.add_shred(x, y, across);
+            }
+        }
+        const engine::EntityId howitzer = w.spawn_unit(me, engine::UnitTypeId::Howitzer, ahead(4.0f, 1.0f));
+        const engine::EntityId scout = w.spawn_unit(me, engine::UnitTypeId::Scout, ahead(10.0f, 0.0f));
+        const engine::EntityId mlrs = w.spawn_unit(me, engine::UnitTypeId::Mlrs, ahead(3.0f, -2.0f));
+        game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(20.0f, 0.0f)});
+        game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(19.0f, 3.0f)});
+        game.submit({.type = engine::CommandType::Ability, .units = {mlrs}, .target = ahead(20.0f, -3.0f),
+                     .ability = static_cast<uint8_t>(engine::AbilityId::Salvo)});
+        return look;
+    }
+
     if (options.scene == "damage" && options.mode == Options::Mode::Offline) {
         // Offline: T-72B3s and Leopard 2A6s whole, scratched, battered and
         // barely going; two of each knocked out by riflemen (one losing its

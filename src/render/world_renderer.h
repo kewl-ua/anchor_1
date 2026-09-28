@@ -218,6 +218,8 @@ private:
     bool reveal_ = false;
     // The ground as the viewer last saw it, and others' buildings likewise.
     std::vector<engine::Terrain> seen_terrain_;
+    std::vector<uint8_t> seen_shred_;  // the trees' state as last seen
+    uint32_t shred_revision_ = 0;
     std::map<engine::EntityId, engine::Structure> remembered_;
     uint32_t remembered_revision_ = 0;
     // Each station's track, from its wall to the end of the line.

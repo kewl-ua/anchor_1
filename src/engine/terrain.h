@@ -169,7 +169,8 @@ public:
           elevation_(static_cast<size_t>(width * height), 0),
           terrain_(static_cast<size_t>(width * height), Terrain::Grass),
           resource_(static_cast<size_t>(width * height), 0),
-          crater_(static_cast<size_t>(width * height), 0) {}
+          crater_(static_cast<size_t>(width * height), 0),
+          shred_(static_cast<size_t>(width * height), 0) {}
 
     int32_t width() const { return width_; }
     int32_t height() const { return height_; }
@@ -210,6 +211,18 @@ public:
     uint8_t crater_from(int32_t tx, int32_t ty) const { return static_cast<uint8_t>(crater_[index(tx, ty)] >> 4); }
     void set_crater(int32_t tx, int32_t ty, CraterKind kind, uint8_t from) {
         crater_[index(tx, ty)] = static_cast<uint8_t>(static_cast<uint8_t>(kind) | ((from & 7u) << 4));
+        ++revision_;
+    }
+
+    // How badly the trees of a tile have been cut up by shelling: 0 whole, up
+    // to kMaxShred, bare trunks snapped off.
+    static constexpr uint8_t kMaxShred = 8;
+    uint8_t shred(int32_t tx, int32_t ty) const { return shred_[index(tx, ty)]; }
+    void add_shred(int32_t tx, int32_t ty, int32_t hits) {
+        uint8_t& s = shred_[index(tx, ty)];
+        const int32_t now = std::min<int32_t>(kMaxShred, s + hits);
+        if (now == s) return;
+        s = static_cast<uint8_t>(now);
         ++revision_;
     }
 
@@ -274,6 +287,7 @@ private:
     std::vector<Terrain> terrain_;
     std::vector<int32_t> resource_;
     std::vector<uint8_t> crater_;  // kind | from << 4
+    std::vector<uint8_t> shred_;   // see shred()
     uint32_t revision_ = 0;
     uint32_t blocking_revision_ = 0;
 };

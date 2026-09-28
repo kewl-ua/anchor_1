@@ -4413,6 +4413,83 @@ void test_highway_and_bridges() {
     CHECK(trip.arrived && trip.ticks < 900);
 }
 
+// Shelling cuts up the trees round each burst, the worse the more bursts
+// and the heavier they are, worst where it burst, up to snapped-off trunks;
+// open ground and the woods out of reach stay as they were.
+void test_shelling_shreds_trees() {
+    TileMap map(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) map.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation sim(1, map);
+    const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(4, 10));
+    sim.world_for_setup().unit_for_setup(gun)->rounds = 30;
+    issue(sim, fire_at(0, {gun}, 30, 10));
+    int most = 0;
+    for (int i = 0; i < 400 && most == 0; ++i) {
+        sim.step();
+        for (int y = 0; y < 20; ++y) {
+            for (int x = 22; x < 40; ++x) most = std::max<int>(most, sim.world().map().shred(x, y));
+        }
+    }
+    CHECK(most == 3);  // one 122 mm shell: 2 round it, 3 where it burst
+    for (int i = 0; i < 4000; ++i) sim.step();
+    int top = 0;
+    int cut = 0;
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 40; ++x) {
+            const int s = sim.world().map().shred(x, y);
+            top = std::max(top, s);
+            cut += s > 0 ? 1 : 0;
+            if (x < 22) CHECK(s == 0);  // no trees there
+        }
+    }
+    CHECK(top == TileMap::kMaxShred && cut >= 6);
+    CHECK(sim.world().map().shred(38, 1) == 0);  // out of reach
+
+    // A mortar bomb's a light burst: a tree hit by one is only thinned.
+    TileMap wood(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) wood.set_terrain(x, y, Terrain::Forest);
+    }
+    Simulation light(1, wood);
+    const EntityId mortar = light.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(12, 10));
+    issue(light, fire_at(0, {mortar}, 28, 10));
+    int first = 0;
+    for (int i = 0; i < 600 && first == 0; ++i) {
+        light.step();
+        for (int y = 0; y < 20; ++y) {
+            for (int x = 22; x < 40; ++x) first = std::max<int>(first, light.world().map().shred(x, y));
+        }
+    }
+    CHECK(first == 2);
+    int thinned = 0;
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 40; ++x) thinned += light.world().map().shred(x, y) > 0 ? 1 : 0;
+    }
+    CHECK(thinned <= 9);  // only round the burst
+
+    // Only where there are trees: every other tile open ground, it stays as it was.
+    TileMap patchy(40, 20);
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) patchy.set_terrain(x, y, (x + y) % 2 == 0 ? Terrain::Grass : Terrain::Forest);
+    }
+    Simulation mixed(1, patchy);
+    const EntityId howitzer = mixed.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(4, 10));
+    mixed.world_for_setup().unit_for_setup(howitzer)->rounds = 10;
+    issue(mixed, fire_at(0, {howitzer}, 30, 10));
+    for (int i = 0; i < 2000; ++i) mixed.step();
+    int in_wood = 0;
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 22; x < 40; ++x) {
+            const int sh = mixed.world().map().shred(x, y);
+            if ((x + y) % 2 == 0) CHECK(sh == 0);
+            in_wood += sh;
+        }
+    }
+    CHECK(in_wood > 0);
+}
+
 void test_vehicle_drives_around_forest() {
     Simulation sim(1, forest_wall_map());
     const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(10, 5));
@@ -5471,6 +5548,7 @@ int main() {
     test_crops_swamps_and_craters();
     test_shelling_leaves_craters();
     test_crater_kinds();
+    test_shelling_shreds_trees();
     test_highway_and_bridges();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
