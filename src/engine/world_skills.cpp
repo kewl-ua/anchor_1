@@ -56,14 +56,42 @@ void World::update_research() {
 }
 
 void World::update_smoke() {
-    const size_t before = smokes_.size();
     std::erase_if(smokes_, [&](const Smoke& s) { return tick_ >= s.clears; });
-    if (smokes_.size() != before) sight_cache_.clear();  // lines of sight have changed
 }
 
-bool World::in_smoke(FixedVec2 p) const {
-    return std::any_of(smokes_.begin(), smokes_.end(),
-                       [&](const Smoke& s) { return (p - s.center).length_sq_raw() <= square_raw(s.radius); });
+// A line of sight into a screen or through it is blind; through thin smoke,
+// once it has run through more than kThinSmokeSight of it.
+bool World::smoke_hides(FixedVec2 from, FixedVec2 to, const std::vector<const Smoke*>& near) const {
+    // In 1/256 of a tile, so the products below stay well inside 64 bits.
+    const int64_t ax = from.x.raw >> 8;
+    const int64_t ay = from.y.raw >> 8;
+    const int64_t dx = (to.x.raw >> 8) - ax;
+    const int64_t dy = (to.y.raw >> 8) - ay;
+    const auto len = static_cast<int64_t>(isqrt(static_cast<uint64_t>(dx * dx + dy * dy)));
+    int64_t thin = 0;
+    for (const Smoke* s : near) {
+        const int64_t fx = (s->center.x.raw >> 8) - ax;
+        const int64_t fy = (s->center.y.raw >> 8) - ay;
+        const int64_t r = s->radius.raw >> 8;
+        // How far along the line it passes nearest the smoke's middle, how near.
+        const int64_t along = len > 0 ? (fx * dx + fy * dy) / len : 0;
+        const int64_t off_sq = std::max<int64_t>(0, fx * fx + fy * fy - along * along);
+        if (off_sq >= r * r) continue;
+        const auto half = static_cast<int64_t>(isqrt(static_cast<uint64_t>(r * r - off_sq)));  // half the chord
+        const int64_t inside = std::min(len, along + half) - std::max<int64_t>(0, along - half);
+        if (inside <= 0) continue;
+        if (s->kind == SmokeKind::Screen) return true;
+        thin += inside;
+        if (thin > (kThinSmokeSight.raw >> 8)) return true;
+    }
+    return false;
+}
+
+// A burst of a tile and more raises dust and smoke for a few seconds (not off the water).
+void World::raise_dust(FixedVec2 at, const WeaponDef& weapon) {
+    if (weapon.splash_radius < kDustSplash || map_.terrain_at(at) == Terrain::Water) return;
+    const Tick lasts = kDustTicks + static_cast<Tick>((weapon.splash_radius * kDustTicksPerTile).to_int());
+    smokes_.push_back({at, weapon.splash_radius * kDustPercent / 100, tick_ + lasts, SmokeKind::Dust, tick_});
 }
 
 std::vector<TilePos> trench_line(TilePos a, TilePos b) {
@@ -178,8 +206,7 @@ void World::apply_ability(const Command& cmd) {
             FixedVec2 facing = u->facing;
             if (facing.x.raw == 0 && facing.y.raw == 0) facing = {Fixed::from_int(1), Fixed{}};
             const FixedVec2 ahead = u->pos + facing * (kSmokeAhead / facing.length());
-            smokes_.push_back({clamp_to_map(ahead, Fixed{}), kSmokeRadius, tick_ + kSmokeTicks});
-            sight_cache_.clear();  // lines of sight have changed
+            smokes_.push_back({clamp_to_map(ahead, Fixed{}), kSmokeRadius, tick_ + kSmokeTicks, SmokeKind::Screen, tick_});
             u->ability_ready[static_cast<size_t>(slot)] = tick_ + ability_def(id).cooldown;
             continue;
         }

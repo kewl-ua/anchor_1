@@ -3174,7 +3174,7 @@ void test_guns_deploy_and_pack_up() {
     for (Tick i = 0; i + 2 < setup; ++i) sim.step();
     CHECK(sim.world().find_unit(gun)->last_shot_tick == kNeverFired);
     CHECK(!sim.world().find_unit(gun)->deployed);
-    for (int i = 0; i < 10; ++i) sim.step();
+    for (int i = 0; i < 10 + kLayStepTicks; ++i) sim.step();  // set up, then laid
     CHECK(sim.world().find_unit(gun)->deployed);
     CHECK(sim.world().find_unit(gun)->last_shot_tick != kNeverFired);
 
@@ -3446,6 +3446,10 @@ void test_smoke_screen() {
     w.unit_for_setup(tank)->rounds = 0;  // it only hides here, it doesn't shoot the enemy's eyes out
     const EntityId enemy = w.spawn_unit(1, UnitTypeId::Truck, at(15, 10));
     w.spawn_unit(0, UnitTypeId::Truck, at(10, 6));  // another pair of eyes, beside the screen
+    // One of ours just inside the screen's edge, as an enemy tank to the side sees it (a screen isn't thin smoke).
+    const EntityId edge = w.spawn_unit(0, UnitTypeId::Truck, at(12, 11));
+    const EntityId side = w.spawn_unit(1, UnitTypeId::Tank, at(12, 16));
+    w.unit_for_setup(side)->rounds = 0;
     for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
     CHECK(seen(sim, 0, enemy) && seen(sim, 1, tank));
     issue(sim, {.type = CommandType::Stop, .player = 0, .units = {tank}});
@@ -3454,9 +3458,122 @@ void test_smoke_screen() {
     for (Tick i = 0; i < 2 * kVisionInterval + 2; ++i) sim.step();
     CHECK(sim.world().smokes().size() == 1);
     CHECK(!seen(sim, 1, tank));
+    CHECK(!seen(sim, 1, edge));
     for (Tick i = 0; i < kSmokeTicks; ++i) sim.step();
     CHECK(sim.world().smokes().empty());
     CHECK(seen(sim, 1, tank));
+}
+
+// A knocked-out vehicle burns: its smoke hides what's behind it until it
+// burns out. It's thin smoke: a line of sight gets through a little of it
+// (a man just inside its edge is seen), not through the thick of it.
+void test_burning_wreck_smoke() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const EntityId eyes = w.spawn_unit(0, UnitTypeId::Tank, at(4, 10));
+    w.unit_for_setup(eyes)->rounds = 0;
+    const EntityId far = w.spawn_unit(1, UnitTypeId::Truck, at(14, 10));
+    // Its smoke blown off it (see kPlumeDrift): the line of sight passes 0.85 of a tile off its middle.
+    const EntityId wreck = w.spawn_unit(1, UnitTypeId::Truck, {Fixed::from_int(9), Fixed::from_ratio(1168, 100)});
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(seen(sim, 0, far));
+    w.unit_for_setup(wreck)->hp = 0;  // knocked out
+    sim.step();
+    CHECK(sim.world().smokes().size() == 1 && sim.world().smokes().front().kind == SmokeKind::Plume);
+    const EntityId near = w.spawn_unit(1, UnitTypeId::Truck, at(9, 10));  // just inside its edge
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!seen(sim, 0, far));
+    CHECK(seen(sim, 0, near));
+    for (Tick i = 0; i < kPlumeTicks; ++i) sim.step();
+    CHECK(sim.world().smokes().empty());
+    CHECK(seen(sim, 0, far));
+
+    // Nor does an observation post see through it.
+    Simulation post(1, TileMap(40, 20));
+    World& pw = post.world_for_setup();
+    const EntityId scout = pw.spawn_unit(0, UnitTypeId::Scout, at(2, 10));
+    const EntityId beyond = pw.spawn_unit(1, UnitTypeId::Truck, at(15, 10));  // out of his own sight, in his sector's
+    const EntityId burning = pw.spawn_unit(1, UnitTypeId::Truck, {Fixed::from_int(9), Fixed::from_ratio(1100, 100)});
+    issue(post, observe(0, {scout}, 20, 10));
+    for (Tick i = 0; i < 4 * kVisionInterval; ++i) post.step();
+    CHECK(seen(post, 0, beyond));
+    pw.unit_for_setup(burning)->hp = 0;
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) post.step();
+    CHECK(!seen(post, 0, beyond));
+}
+
+// A burst of a tile and more raises dust and smoke: three quarters as wide,
+// a few seconds, hiding what's behind it.
+void test_burst_dust() {
+    {  // a tank's shell, a small burst: none
+        Simulation shot(1, TileMap(40, 20));
+        const EntityId tank = shot.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(5, 10));
+        shot.schedule(0, fire_at(0, {tank}, 12, 10));
+        bool burst = false;
+        for (int i = 0; i < 40; ++i) {
+            shot.step();
+            burst = burst || !shot.world().recent_impacts().empty();
+        }
+        CHECK(burst && shot.world().smokes().empty());
+    }
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+    issue(sim, fire_at(0, {mortar}, 15, 10));
+    const Smoke* dust = nullptr;
+    for (int i = 0; i < 400 && !dust; ++i) {
+        sim.step();
+        for (const Smoke& s : sim.world().smokes()) {
+            if (s.kind == SmokeKind::Dust) dust = &s;
+        }
+    }
+    CHECK(dust != nullptr);
+    if (!dust) return;
+    issue(sim, {.type = CommandType::Stop, .player = 0, .units = {mortar}});
+    const Fixed splash = unit_type(UnitTypeId::Mortar).weapon.splash_radius;
+    CHECK(dust->radius == splash * kDustPercent / 100);
+    CHECK(dust->clears - sim.world().tick() + 1 == kDustTicks + static_cast<Tick>((splash * kDustTicksPerTile).to_int()));
+    const Tick clears = dust->clears;
+    // Either side of it, three tiles off.
+    const TilePos mid = tile_of(dust->center);
+    const EntityId eyes = w.spawn_unit(0, UnitTypeId::Tank, {Fixed::from_int(mid.x - 3), Fixed::from_int(mid.y)});
+    w.unit_for_setup(eyes)->rounds = 0;
+    const EntityId other = w.spawn_unit(1, UnitTypeId::Truck, {Fixed::from_int(mid.x + 3), Fixed::from_int(mid.y)});
+    for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
+    CHECK(!seen(sim, 0, other));
+    while (sim.world().tick() <= clears + kVisionInterval) sim.step();
+    CHECK(seen(sim, 0, other));
+}
+
+// The crew lays the gun for the range before it fires, a step of
+// elevation at a time (see elevation_step); set up, it stands ready at the second.
+void test_guns_lay_before_firing() {
+    auto first_shot = [](int32_t x) {  // a D-30 set up at (5, 10), told to fire at (x, 10)
+        Simulation sim(1, TileMap(80, 20));
+        const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(5, 10));
+        Unit* u = sim.world_for_setup().unit_for_setup(gun);
+        u->deployed = true;
+        u->laid = u->laying_to = kReadyStep;
+        sim.schedule(0, fire_at(0, {gun}, x, 10));
+        for (int i = 0; i < 100; ++i) {
+            sim.step();
+            if (sim.world().find_unit(gun)->last_shot_tick != kNeverFired) return i;
+        }
+        return -1;
+    };
+    // Its reach is 60: half of it as it stands (the 2nd step), a quarter (the 1st), nearly all (the 4th).
+    const int ready = first_shot(35);
+    const int lower = first_shot(20);
+    const int higher = first_shot(62);
+    CHECK(ready >= 0);
+    CHECK(lower == ready + kLayStepTicks - 1);
+    CHECK(higher == ready + 2 * kLayStepTicks - 1);
+
+    Simulation sim(1, TileMap(40, 20));
+    const EntityId gun = sim.world_for_setup().spawn_unit(0, UnitTypeId::Howitzer, at(5, 10));
+    issue(sim, use_ability(0, {gun}, AbilityId::Deploy, 0, 0));
+    for (Tick i = 0; i < unit_type(UnitTypeId::Howitzer).deploy_time + 5; ++i) sim.step();
+    CHECK(sim.world().find_unit(gun)->deployed && sim.world().find_unit(gun)->laid == kReadyStep);
 }
 
 // Trains: a new schedule brings them every 45 s, heavier ones bring half as much again.
@@ -5627,7 +5744,10 @@ void test_artillery_shells() {
     CHECK(fire.sim.world().find_structure(store)->hp == out);  // burnt out
 
     ShellRun wp = fire_shell(Shell::Phosphorus);
-    CHECK(wp.sim.world().smokes().size() == 1 && wp.sim.world().smokes().front().radius == kPhosphorusSmokeRadius);
+    const std::vector<Smoke>& wp_smoke = wp.sim.world().smokes();  // a screen (and the burst's dust)
+    const auto screen = std::find_if(wp_smoke.begin(), wp_smoke.end(), [](const Smoke& s) { return s.kind == SmokeKind::Screen; });
+    CHECK(screen != wp_smoke.end() && screen->radius == kPhosphorusSmokeRadius);
+    CHECK(std::count_if(wp_smoke.begin(), wp_smoke.end(), [](const Smoke& s) { return s.kind == SmokeKind::Screen; }) == 1);
     CHECK(wp.sim.world().fires().size() == 1 && wp.sim.world().fires().front().radius == kPhosphorusFireRadius);
 }
 
@@ -5929,6 +6049,7 @@ int main() {
     test_artillery_brackets_its_target();
     test_ranging_follows_the_target();
     test_guns_deploy_and_pack_up();
+    test_guns_lay_before_firing();
     test_guns_hold_fire_unless_ordered();
     test_firing_guns_give_themselves_away();
     test_gun_pits();
@@ -5940,6 +6061,8 @@ int main() {
     test_self_propelled_howitzer();
     test_research();
     test_smoke_screen();
+    test_burning_wreck_smoke();
+    test_burst_dust();
     test_train_upgrades();
     test_upgrade_effects();
     test_mines();

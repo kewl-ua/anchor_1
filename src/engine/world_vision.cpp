@@ -113,7 +113,6 @@ bool World::line_of_sight(FixedVec2 from, Fixed eye, TilePos target, EntityId ow
         const TilePos tile = tile_of(p);
         if (tile == target) break;         // the rest of the way is on the tile itself
         if (tile == from_tile) continue;   // still on our own tile
-        if (!smokes_.empty() && in_smoke(p)) return false;  // nothing is seen into smoke or through it
         const Fixed h = eye + (to_height - eye) * t;
         const Fixed ground = ground_at(p);
         if (h < ground) return false;
@@ -229,13 +228,28 @@ void World::update_vision() {
         explored_[p].resize(tiles, 0);
     }
 
+    // Smoke hides what's behind it and in it (see smoke_hides): of the lines
+    // of sight the ground and the trees leave, the smoke near the eyes cuts some.
+    std::vector<const Smoke*> near;
+    auto smoke_near = [&](FixedVec2 from, int32_t radius) {
+        near.clear();
+        for (const Smoke& s : smokes_) {
+            if ((s.center - from).length_sq_raw() <= square_raw(Fixed::from_int(radius + 1) + s.radius)) near.push_back(&s);
+        }
+    };
+    auto hidden_by_smoke = [&](FixedVec2 from, int32_t i) {
+        return !near.empty() && smoke_hides(from, tile_center({i % map_.width(), i / map_.width()}), near);
+    };
     auto look = [&](PlayerId player, FixedVec2 pos, Fixed sight, Fixed eye, EntityId own_structure) {
         const TilePos tile = map_.clamp_tile(tile_of(pos));
         const int32_t radius = sight.to_int() + kSightPerLevel * map_.elevation(tile.x, tile.y);
         if (radius <= 0) return;
         std::vector<uint8_t>& vis = visible_[player];
         std::vector<uint8_t>& seen = explored_[player];
+        const FixedVec2 from = tile_center(tile);
+        smoke_near(from, radius);
         for (int32_t i : sight_from(tile, radius, eye, own_structure)) {
+            if (hidden_by_smoke(from, i)) continue;
             vis[static_cast<size_t>(i)] = 1;
             seen[static_cast<size_t>(i)] = 1;
         }
@@ -273,7 +287,9 @@ void World::update_vision() {
         const int32_t optics = has_upgrade(u.owner, UpgradeId::Optics) ? kOpticsSectorTiles : 0;
         const int32_t radius = def.sector_range.to_int() + optics + kSightPerLevel * map_.elevation(tile.x, tile.y);
         Sector sector{u.owner, from, {}, u.order_point - from, radius};
+        smoke_near(from, radius);
         for (int32_t i : sight_from(tile, radius, eye_height(def), 0)) {
+            if (hidden_by_smoke(from, i)) continue;
             const int64_t tx = i % map_.width() - tile.x;
             const int64_t ty = i / map_.width() - tile.y;
             // Within 45 degrees of the direction: cos^2 >= 1/2.

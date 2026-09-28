@@ -1296,6 +1296,7 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
     auto blow = [&](FixedVec2 spot) {
         recent_impacts_.push_back({tick_, spot, p.shooter_type, weapon.splash_radius});
         maybe_crater(p, spot, weapon);
+        raise_dust(spot, weapon);
         shred_trees(spot, weapon);
         splash(p, spot, weapon);
     };
@@ -1314,12 +1315,13 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
             weapon.damage = weapon.damage * kIncendiaryBurstPercent / 100;
             blow(at);
             fires_.push_back({at, kFireRadius, tick_ + kFireTicks, p.owner});
+            smokes_.push_back({clamp_to_map(at + kPlumeDrift, Fixed{}), kFireRadius + Fixed::from_ratio(1, 2), tick_ + kFireTicks,
+                               SmokeKind::Plume, tick_});
             return;
         case Shell::Phosphorus:
             weapon.damage = weapon.damage * kPhosphorusBurstPercent / 100;
             blow(at);
-            smokes_.push_back({at, kPhosphorusSmokeRadius, tick_ + kPhosphorusSmokeTicks});
-            sight_cache_.clear();  // lines of sight have changed
+            smokes_.push_back({at, kPhosphorusSmokeRadius, tick_ + kPhosphorusSmokeTicks, SmokeKind::Screen, tick_});
             fires_.push_back({at, kPhosphorusFireRadius, tick_ + kPhosphorusFireTicks, p.owner});
             return;
         default:
@@ -1364,6 +1366,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
     const WeaponDef& weapon = p.weapon;
     recent_impacts_.push_back({tick_, at, p.shooter_type, weapon.splash_radius});
     maybe_crater(p, at, weapon);
+    raise_dust(at, weapon);
     shred_trees(at, weapon);
 
     // Thrown in through a window or down a dugout's entrance: the men
@@ -1603,6 +1606,13 @@ void World::apply_damage_and_remove_dead() {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];
         }
     }
+    // A vehicle knocked out burns: its smoke hides what's behind it a while
+    // (not one gone under the water or into a bog).
+    for (const Unit& u : units_) {
+        if (u.hp > 0 || !def_of(u).vehicle || u.inside) continue;
+        if (map_.terrain_at(u.pos) == Terrain::Water || u.mired >= kBogLimit) continue;
+        smokes_.push_back({clamp_to_map(u.pos + kPlumeDrift, Fixed{}), kPlumeRadius, tick_ + kPlumeTicks, SmokeKind::Plume, tick_});
+    }
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
     for (Structure& s : structures_) {
         std::erase_if(s.garrison, [this](EntityId id) { return find_unit(id) == nullptr; });
@@ -1708,6 +1718,8 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(u.shell));
         mix(u.deployed ? 1 : 0);
         mix(static_cast<uint32_t>(u.mired));
+        mix(static_cast<uint32_t>(u.laid) | static_cast<uint32_t>(u.laying_to) << 8);
+        mix(static_cast<uint32_t>(u.lay_work));
         mix(u.lock);
         mix(static_cast<uint32_t>(u.lock_ticks));
         mix(u.deploy_work);
@@ -1752,6 +1764,8 @@ uint64_t World::checksum() const {
         mix_vec(s.center);
         mix_fixed(s.radius);
         mix(s.clears);
+        mix(static_cast<uint32_t>(s.kind));
+        mix(s.made);
     }
     for (const Fire& f : fires_) {
         mix_vec(f.center);

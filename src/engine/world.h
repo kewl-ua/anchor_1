@@ -275,6 +275,23 @@ inline constexpr int32_t kShovelWorkPercent = 67;  // of the digging time
 inline constexpr Fixed kSmokeRadius = Fixed::from_int(2);
 inline constexpr Fixed kSmokeAhead = Fixed::from_int(2);
 inline constexpr Tick kSmokeTicks = 20 * kTicksPerSecond;
+// Thin smoke (not a screen): a line of sight gets through this much of it, no more.
+inline constexpr Fixed kThinSmokeSight = Fixed::from_ratio(3, 4);
+// A knocked-out vehicle burning (a fire on the ground too): its smoke this
+// wide round it, blown this way off it by the wind, this long.
+inline constexpr Fixed kPlumeRadius = Fixed::from_int(1);
+inline constexpr FixedVec2 kPlumeDrift{Fixed::from_ratio(1, 2), Fixed::from_ratio(-1, 3)};
+inline constexpr Tick kPlumeTicks = 30 * kTicksPerSecond;
+// A burst of a tile and more (a shell's, a rocket's, a bomb's): its dust
+// and smoke three quarters as wide, hanging 2 s and 1.5 s a tile of the burst.
+inline constexpr Fixed kDustSplash = Fixed::from_int(1);
+inline constexpr int32_t kDustPercent = 75;
+inline constexpr Tick kDustTicks = 2 * kTicksPerSecond;
+inline constexpr int32_t kDustTicksPerTile = 3 * kTicksPerSecond / 2;
+// Laying a gun for the range (see elevation_step): this long a step of its
+// elevation, changed; set up, it stands ready at this step.
+inline constexpr int32_t kLayStepTicks = 7;
+inline constexpr uint8_t kReadyStep = 2;
 
 // Electronic warfare. Orders to a unit keeping radio silence go by courier,
 // this long, unless a relay is close: the headquarters, a command vehicle
@@ -340,11 +357,16 @@ struct Courier {
     Command cmd;
 };
 
-// A smoke screen: nothing is seen into or through it.
+// Smoke on the field. A screen (smoke grenades, phosphorus): nothing is
+// seen into or through it. The rest is thin (see kThinSmokeSight): a
+// burning wreck's or a fire's plume, a burst's dust and smoke.
+enum class SmokeKind : uint8_t { Screen, Plume, Dust };
 struct Smoke {
     FixedVec2 center{};
     Fixed radius{};
     Tick clears = 0;
+    SmokeKind kind = SmokeKind::Screen;
+    Tick made = 0;
 };
 
 // Ground burning where an incendiary or phosphorus shell landed.
@@ -447,6 +469,11 @@ struct Unit {
     // A tank in a bog sinks, slowly: how far it's gone (see kBogLimit). Out on
     // firm ground it's free again; at the limit it's lost.
     int32_t mired = 0;
+    // A gun's elevation, in steps (see elevation_step; 0 travelling), and
+    // the step it's being laid to, how far along.
+    uint8_t laid = 0;
+    uint8_t laying_to = 0;
+    int32_t lay_work = 0;
     // A tank on the move: the enemy its gunner holds, and for how long (see kLockTicks).
     EntityId lock = 0;
     int32_t lock_ticks = 0;
@@ -834,7 +861,9 @@ private:
     void update_research();
     void update_smoke();
     void update_bogs();
-    bool in_smoke(FixedVec2 p) const;
+    // Whether smoke hides `to` from `from` (of the smokes near the observer).
+    bool smoke_hides(FixedVec2 from, FixedVec2 to, const std::vector<const Smoke*>& near) const;
+    void raise_dust(FixedVec2 at, const WeaponDef& weapon);
     // Work a job takes a unit, shortened by the owner's upgrades (shovels).
     Tick work_needed(const Unit& u, Tick base) const;
     void find_mines();
@@ -863,6 +892,9 @@ private:
     // true once done.
     bool deploy_step(Unit& u);
     bool pack_step(Unit& u);
+    // Laying the gun for the range to `aim`: true once it's laid.
+    uint8_t elevation_step(const Unit& u, FixedVec2 aim, const WeaponDef& weapon) const;
+    bool lay_step(Unit& u, FixedVec2 aim, const WeaponDef& weapon);
     void engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowField>& path, TilePos goal,
                          const WeaponDef& weapon);
     // `wear`: HP the shot costs the gun (a tank's barrel, fired as artillery).

@@ -35,6 +35,7 @@ bool World::deploy_step(Unit& u) {
     if (++u.deploy_work >= time) {
         u.deployed = true;
         u.deploy_work = 0;
+        u.laid = u.laying_to = kReadyStep;  // raised, ready
     }
     return u.deployed;
 }
@@ -44,8 +45,35 @@ bool World::pack_step(Unit& u) {
     if (++u.deploy_work >= deploy_ticks(u)) {
         u.deployed = false;
         u.deploy_work = 0;
+        u.laid = u.laying_to = 0;
+        u.lay_work = 0;
     }
     return !u.deployed;
+}
+
+// The elevation for the range, in steps, as the firing tables have it: the
+// angle that throws a shell that far is half the arcsine of the share of
+// the reach; steps of 8, 16, 26 and 40 degrees (the sine of twice the half
+// way angles: 407, 669, 914 per mille).
+uint8_t World::elevation_step(const Unit& u, FixedVec2 aim, const WeaponDef& weapon) const {
+    if (weapon.range.raw <= 0) return 1;
+    const int64_t permille = static_cast<int64_t>((aim - u.pos).length().raw) * 1000 / weapon.range.raw;
+    return permille < 407 ? 1 : permille < 669 ? 2 : permille < 914 ? 3 : 4;
+}
+
+// The crew lays the gun before it fires, a step of elevation at a time
+// (while it loads).
+bool World::lay_step(Unit& u, FixedVec2 aim, const WeaponDef& weapon) {
+    const uint8_t step = elevation_step(u, aim, weapon);
+    if (u.laid == step) return true;
+    if (u.laying_to != step) {
+        u.laying_to = step;
+        u.lay_work = 0;
+    }
+    if (++u.lay_work < std::abs(step - u.laid) * kLayStepTicks) return false;
+    u.laid = step;
+    u.lay_work = 0;
+    return true;
 }
 
 // A fire mission at a point: get within range (packing up to move), set up,
@@ -60,7 +88,9 @@ void World::engage_indirect(Unit& u, FixedVec2 aim, std::shared_ptr<const FlowFi
     }
     if (dist_sq < square_raw(weapon.min_range)) return;  // too close to lob at
     if (to_aim.x.raw != 0 || to_aim.y.raw != 0) u.facing = to_aim;
-    if (!deploy_step(u) || u.cooldown > 0 || out_of_rounds(u)) return;
+    if (!deploy_step(u)) return;
+    const bool laid = lay_step(u, aim, weapon);
+    if (!laid || u.cooldown > 0 || out_of_rounds(u)) return;
     fire_indirect(u, aim, weapon);
 }
 

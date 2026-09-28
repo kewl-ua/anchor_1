@@ -667,14 +667,7 @@ void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
             return step;
         }
         if (!u.deployed || u.deploy_work > 0) return 1.0f;
-        const float d = aim_range(u);
-        if (d < 0.0f) return v.elev > 1.5f ? v.elev : 2.0f;  // set up with nothing to fire at: raised, ready
-        const float deg = 0.5f * std::asin(std::clamp(d / reach, 0.0f, 1.0f)) * 57.29578f;
-        int best = 1;
-        for (int i = 2; i < kHowitzerFrames; ++i) {
-            if (std::fabs(kHowitzerPitch[i] - deg) < std::fabs(kHowitzerPitch[best] - deg)) best = i;
-        }
-        return static_cast<float>(best);
+        return static_cast<float>(u.laying_to > 0 ? u.laying_to : engine::kReadyStep);  // as its crew lays it
     };
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
@@ -875,7 +868,7 @@ void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
 // A tank on fire: smoke off its engine deck, grey while it's battered, black
 // and thick with flames licking up when it's barely going or burnt out.
 void WorldRenderer::spawn_fire(Vector2 at, float height, int wear, float dt) {
-    const float smoke_rate = wear >= 4 ? 6.0f : wear == 3 ? 7.0f : 3.0f;
+    const float smoke_rate = wear >= 4 ? 3.0f : wear == 3 ? 7.0f : 3.0f;  // (a wreck's plume: the engine's smoke, drawn apart)
     const float flame_rate = wear >= 3 ? 10.0f : 0.0f;
     // As many as the time since the last frame calls for.
     auto count = [&](float rate) {
@@ -1272,6 +1265,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
 
     // The particles fly, fall, spread and fade.
     for (Particle& p : particles_) {
+        if (p.seed == 0) p.seed = ++particle_seed_ * 2654435761u | 1u;
         p.age += dt;
         p.ground = {p.ground.x + p.vel.x * dt, p.ground.y + p.vel.y * dt};
         p.z += p.vz * dt;
@@ -3848,24 +3842,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         }
     }
 
-    // Smoke screens: billowing puffs over whatever is in them.
-    for (const engine::Smoke& s : world.smokes()) {
-        const Vector2 c = to_vector2(s.center);
-        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
-        const engine::Tick ticks_left = s.clears > world.tick() ? s.clears - world.tick() : 0;
-        const float left = std::clamp(static_cast<float>(ticks_left) / engine::kSmokeTicks, 0.0f, 1.0f);
-        // The grenades land, the cloud blooms out; it thins out at the end.
-        const float age = static_cast<float>(engine::kSmokeTicks - std::min(ticks_left, engine::kSmokeTicks)) / engine::kTicksPerSecond;
-        const float bloom = std::clamp((age - 0.3f) / 1.5f, 0.0f, 1.0f);
-        const float r = to_float(s.radius) * (0.25f + 0.75f * bloom);
-        const float fade = std::min(1.0f, left * 4.0f) * std::clamp((age - 0.3f) / 0.4f, 0.0f, 1.0f);
-        for (int i = 0; i < 7; ++i) {
-            const float a = static_cast<float>(i) * 0.9f;
-            const Vector2 g{c.x + std::cos(a) * r * 0.5f, c.y + std::sin(a) * r * 0.5f};
-            fill_ground_ellipse(on_terrain(map, g, 10.0f + static_cast<float>(i % 3) * 6.0f), r * 0.6f,
-                                ColorAlpha({200, 200, 196, 255}, 0.55f * fade));
-        }
-    }
+    // Smoke screens, burning wrecks' plumes, bursts' dust: over whatever is in them.
+    draw_smoke(world);
 
     // Aircraft in the air: a shadow on the ground, the aircraft high above it.
     for (const engine::Unit& u : world.units()) {
@@ -9052,6 +9030,186 @@ void WorldRenderer::draw_services(const engine::World& world, float alpha) const
 
 // Smoke in soft puffs fading as it spreads, clods of earth dark against the
 // ground, flames going from yellow to red as they rise and die, spray.
+// A disc of smoke shaded round: lit from above on the left (as the houses
+// are), shading off to its lower right, soft in its middle.
+void shaded_disc(Vector2 c, float rad, Color light, Color dark, float alpha) {
+    constexpr int kMaxSides = 16;
+    // The unit circle, and how lit each point of its rim is (towards the
+    // light, up and to the left), once for each number of sides.
+    struct Rim {
+        std::array<Vector2, kMaxSides + 1> p{};
+        std::array<float, kMaxSides + 1> k{};
+    };
+    static const std::array<Rim, kMaxSides + 1> rims = [] {
+        std::array<Rim, kMaxSides + 1> out{};
+        for (int n = 3; n <= kMaxSides; ++n) {
+            for (int i = 0; i <= n; ++i) {
+                const float t = static_cast<float>(i) * 6.2831853f / static_cast<float>(n);
+                out[static_cast<size_t>(n)].p[static_cast<size_t>(i)] = {std::cos(t), std::sin(t)};
+                out[static_cast<size_t>(n)].k[static_cast<size_t>(i)] = 0.5f + 0.5f * (-std::cos(t) * 0.6f - std::sin(t) * 0.8f);
+            }
+        }
+        return out;
+    }();
+    const int sides = std::clamp(static_cast<int>(rad * 0.6f) + 7, 7, kMaxSides);
+    const Rim& rim = rims[static_cast<size_t>(sides)];
+    const auto a = static_cast<unsigned char>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+    auto colour = [&](float k) {
+        return Color{static_cast<unsigned char>(dark.r + (light.r - dark.r) * k), static_cast<unsigned char>(dark.g + (light.g - dark.g) * k),
+                     static_cast<unsigned char>(dark.b + (light.b - dark.b) * k), a};
+    };
+    const Color mid = colour(0.58f);
+    const Texture2D shapes = GetShapesTexture();
+    const Rectangle sr = GetShapesTextureRectangle();
+    const float u = (sr.x + sr.width * 0.5f) / static_cast<float>(shapes.width);
+    const float v = (sr.y + sr.height * 0.5f) / static_cast<float>(shapes.height);
+    rlCheckRenderBatchLimit(4 * sides);
+    rlSetTexture(shapes.id);
+    rlBegin(RL_QUADS);
+    auto vertex = [&](Vector2 p, Color col) {
+        rlNormal3f(g_grain.x, g_grain.y, g_grain.z);
+        rlColor4ub(col.r, col.g, col.b, col.a);
+        rlTexCoord2f(u, v);
+        rlVertex2f(p.x, p.y);
+    };
+    for (int i = 0; i < sides; ++i) {  // a fan round its middle (its triangles as quads, the way the shapes batch)
+        const Vector2 p0{c.x + rim.p[static_cast<size_t>(i)].x * rad, c.y + rim.p[static_cast<size_t>(i)].y * rad};
+        const Vector2 p1{c.x + rim.p[static_cast<size_t>(i) + 1].x * rad, c.y + rim.p[static_cast<size_t>(i) + 1].y * rad};
+        const Color c1 = colour(rim.k[static_cast<size_t>(i) + 1]);
+        vertex(c, mid);
+        vertex(p1, c1);
+        vertex(p0, colour(rim.k[static_cast<size_t>(i)]));
+        vertex(p0, colour(rim.k[static_cast<size_t>(i)]));
+    }
+    rlEnd();
+    rlSetTexture(0);
+}
+
+// A puff of smoke, fluffy: smaller puffs bulging out round its top, each
+// shaded from its lit top to its shadowed underside.
+void puff(Vector2 at, float r, Color light, Color dark, float alpha, uint32_t seed) {
+    if (alpha <= 0.02f || r < 0.5f) return;
+    if (r >= 3.5f) {
+        const int bulges = r < 6.0f ? 2 : 3 + static_cast<int>(seed % 2);
+        for (int i = 0; i < bulges; ++i) {
+            const uint32_t h = seed * 2654435761u + static_cast<uint32_t>(i) * 40503u;
+            const float a = -3.0f + 2.9f * (static_cast<float>(i) + 0.5f) / static_cast<float>(bulges) + static_cast<float>((h >> 8) % 100) * 0.003f;
+            const float br = r * (0.5f + 0.15f * static_cast<float>((h >> 16) % 100) * 0.01f);
+            shaded_disc({at.x + std::cos(a) * r * 0.62f, at.y + std::sin(a) * r * 0.55f}, br, shade(light, 1.04f), dark, alpha);
+        }
+    }
+    shaded_disc(at, r, light, dark, alpha);
+}
+
+// The smoke on the field, as clouds of puffs, drawn back to front. A screen:
+// a mound of white, blooming out as its grenades land, thinning out at the
+// end. A burning wreck's (a fire's) plume: a column of black leaning off
+// with the wind, going grey as it rises. A burst's dust and smoke: a brown
+// dome rolling out, a ring of it on the ground, settling.
+void WorldRenderer::draw_smoke(const engine::World& world) const {
+    const engine::TileMap& map = world.map();
+    const float now = static_cast<float>(GetTime());
+    struct Puff {
+        float depth;
+        Vector2 at;
+        float r;
+        Color light;
+        Color dark;
+        float alpha;
+        uint32_t seed;
+    };
+    std::vector<Puff> puffs;
+    const Vector2 drift = to_vector2(engine::kPlumeDrift);
+    for (const engine::Smoke& s : world.smokes()) {
+        const Vector2 c = to_vector2(s.center);
+        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
+        const float age = static_cast<float>(world.tick() - std::min(world.tick(), s.made)) / engine::kTicksPerSecond;
+        const float left = static_cast<float>(s.clears > world.tick() ? s.clears - world.tick() : 0) / engine::kTicksPerSecond;
+        const float span = std::max(0.1f, age + left);
+        const float radius = to_float(s.radius);
+        const uint32_t seed = tile_hash(static_cast<int>(s.center.x.raw >> 6) ^ static_cast<int>(s.made * 7u),
+                                        static_cast<int>(s.center.y.raw >> 6));
+        auto rnd = [&](int i, int k) { return hash_unit(tile_hash(static_cast<int>(seed & 0xFFFF) + i * 31, k * 17 + static_cast<int>(seed >> 16))); };
+        switch (s.kind) {
+            case engine::SmokeKind::Screen: {
+                const float bloom = std::clamp((age - 0.3f) / 1.5f, 0.0f, 1.0f);
+                const float appear = std::clamp((age - 0.3f) / 0.3f, 0.0f, 1.0f);
+                const float end = std::clamp(left / 3.0f, 0.0f, 1.0f);  // breaking up, shrinking away
+                if (appear <= 0.0f || end <= 0.0f) break;
+                const float r = radius * (0.3f + 0.7f * bloom);
+                const float top = 34.0f * (0.45f + 0.55f * bloom);  // how high the mound stands in its middle
+                // Its body: big puffs low in it; then smaller ones over its
+                // surface, all round it: the bumps of a cumulus.
+                const int core = 5 + static_cast<int>(radius * 2.0f);
+                const int n = core + 16 + static_cast<int>(radius * 10.0f);
+                for (int i = 0; i < n; ++i) {
+                    if (rnd(i, 7) > end * 1.2f) continue;  // the last seconds: fewer of them
+                    const bool body = i < core;
+                    const float a = rnd(i, 1) * 6.2831853f;
+                    const float d = std::sqrt(rnd(i, 2)) * r * (body ? 0.5f : 0.9f);
+                    const Vector2 g{c.x + std::cos(a) * d, c.y + std::sin(a) * d};
+                    const float middle = std::sqrt(std::max(0.0f, 1.0f - (d / std::max(0.01f, r)) * (d / std::max(0.01f, r))));
+                    const float z = (body ? 0.35f : 0.75f + 0.25f * rnd(i, 3)) * top * middle + 4.0f + 1.5f * std::sin(now * 0.8f + static_cast<float>(i));
+                    const float f = std::clamp(z / (top + 6.0f), 0.0f, 1.0f);  // high up: lighter
+                    const float pr = (body ? 17.0f + 6.0f * rnd(i, 4) : 8.0f + 6.0f * rnd(i, 4)) * (0.55f + 0.45f * bloom) *
+                                     (0.5f + 0.5f * end) * (0.8f + 0.2f * middle) * (1.0f + 0.06f * std::sin(now * 1.3f + static_cast<float>(i) * 1.7f));
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr, mix({172, 174, 176, 255}, {250, 250, 246, 255}, f),
+                                     mix({74, 78, 86, 255}, {150, 150, 150, 255}, f), appear, seed + static_cast<uint32_t>(i)});
+                }
+                break;
+            }
+            case engine::SmokeKind::Plume: {
+                // Thick while it burns; thinning out its last five seconds.
+                const float fade = std::min(1.0f, left / 5.0f) * std::clamp(age / 1.5f, 0.0f, 1.0f);
+                if (fade <= 0.0f) break;
+                const Vector2 base{c.x - drift.x, c.y - drift.y};
+                const float dl = std::max(0.01f, std::hypot(drift.x, drift.y));
+                const Vector2 lean{drift.x / dl, drift.y / dl};
+                const int n = 10 + static_cast<int>(radius * 4.0f);
+                for (int i = 0; i < n; ++i) {
+                    const float f = std::fmod(static_cast<float>(i) / static_cast<float>(n) + now * 0.07f + rnd(i, 1) * 0.05f, 1.0f);  // rising
+                    const float side = (rnd(i, 2) - 0.5f) * radius * 0.5f * (0.4f + f);
+                    const Vector2 g{base.x + lean.x * f * radius * 1.8f - lean.y * side, base.y + lean.y * f * radius * 1.8f + lean.x * side};
+                    const float z = 6.0f + f * 62.0f;
+                    const float pr = (4.0f + 10.0f * f) * (0.8f + 0.4f * rnd(i, 3)) * (0.8f + 0.2f * radius);
+                    const float a = std::min(1.0f, f / 0.08f) * (1.0f - std::max(0.0f, f - 0.65f) / 0.35f);
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.6f + 0.4f * a), mix({70, 66, 62, 255}, {176, 174, 170, 255}, f),
+                                     mix({20, 18, 16, 255}, {100, 98, 96, 255}, f), std::min(1.0f, 1.4f * a) * fade, seed + static_cast<uint32_t>(i)});
+                }
+                break;
+            }
+            case engine::SmokeKind::Dust: {
+                const float k = std::clamp(age / span, 0.0f, 1.0f);
+                const float fade = std::pow(1.0f - k, 0.7f) * std::clamp(age / 0.2f, 0.0f, 1.0f);
+                if (fade <= 0.0f) break;
+                const float r = radius * (0.55f + 0.6f * std::sqrt(k));
+                const int ring = 6 + static_cast<int>(radius * 3.0f);
+                for (int i = 0; i < ring; ++i) {  // rolling out along the ground
+                    const float a = (static_cast<float>(i) + rnd(i, 5)) * 6.2831853f / static_cast<float>(ring);
+                    const Vector2 g{c.x + std::cos(a) * r, c.y + std::sin(a) * r};
+                    puffs.push_back({g.x + g.y, on_terrain(map, g, 2.5f), 4.5f + 3.0f * rnd(i, 6) + 2.5f * k, {196, 184, 160, 255},
+                                     {112, 100, 82, 255}, 0.7f * fade, seed + 97u + static_cast<uint32_t>(i)});
+                }
+                const int n = 6 + static_cast<int>(radius * 6.0f);
+                for (int i = 0; i < n; ++i) {  // the dome over the burst
+                    const float a = rnd(i, 1) * 6.2831853f;
+                    const float d = std::sqrt(rnd(i, 2)) * r * 0.6f;
+                    const Vector2 g{c.x + std::cos(a) * d + drift.x * k * 0.6f, c.y + std::sin(a) * d + drift.y * k * 0.6f};
+                    const float middle = 1.0f - d / std::max(0.01f, r);
+                    const float z = 3.0f + middle * 20.0f * (1.0f - 0.3f * k) + rnd(i, 3) * 6.0f;
+                    const float f = std::clamp(z / 28.0f, 0.0f, 1.0f);
+                    const float pr = (5.0f + 5.0f * rnd(i, 4)) * (0.8f + 0.5f * k) * (0.6f + 0.4f * middle) * (0.7f + 0.3f * radius);
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.5f + 0.5f * fade), mix({150, 138, 116, 255}, {206, 198, 180, 255}, f),
+                                     mix({70, 62, 50, 255}, {128, 120, 106, 255}, f), std::min(1.0f, 1.5f * fade), seed + static_cast<uint32_t>(i)});
+                }
+                break;
+            }
+        }
+    }
+    std::sort(puffs.begin(), puffs.end(), [](const Puff& a, const Puff& b) { return a.depth < b.depth; });
+    for (const Puff& p : puffs) puff(p.at, p.r, p.light, p.dark, p.alpha, p.seed);
+}
+
 void WorldRenderer::draw_particles(const engine::TileMap& map) const {
     for (const Particle& p : particles_) {
         const float t = std::clamp(p.age / p.life, 0.0f, 1.0f);
@@ -9059,9 +9217,11 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
         const Vector2 at{g.x, g.y - p.z};
         switch (p.kind) {
             case Particle::Kind::Smoke: {
-                const float alpha = static_cast<float>(p.color.a) / 255.0f * (1.0f - t) * std::min(1.0f, p.age * 8.0f);
-                DrawCircleV(at, p.size, ColorAlpha(p.color, alpha));
-                DrawCircleV({at.x - p.size * 0.3f, at.y - p.size * 0.3f}, p.size * 0.55f, ColorAlpha(shade(p.color, 1.15f), alpha * 0.6f));
+                // Fluffy, shaded from its lit top to its underside; paler, greyer as it thins out.
+                const float alpha = static_cast<float>(p.color.a) / 255.0f * (t < 0.55f ? 1.0f : 1.0f - (t - 0.55f) / 0.45f) *
+                                    std::min(1.0f, p.age * 8.0f);
+                const Color base = mix(Color{p.color.r, p.color.g, p.color.b, 255}, {186, 184, 180, 255}, t * 0.4f);
+                puff(at, p.size, shade(base, 1.28f), shade(base, 0.6f), alpha, p.seed);
                 break;
             }
             case Particle::Kind::Clod:

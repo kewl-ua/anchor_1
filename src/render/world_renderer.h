@@ -95,8 +95,10 @@ private:
         float grow;      // pixels a second
         Color color;
         float age = 0.0f;
+        uint32_t seed = 0;  // its own shape (a puff's bulges), given as it first moves
     };
     std::vector<Particle> particles_;
+    uint32_t particle_seed_ = 0;
     // Tracks left in the ground by tracked vehicles: two ruts from `a` to `b`,
     // `half` either side of the middle, fading with their age.
     struct TrackMark {
@@ -165,6 +167,8 @@ private:
     void draw_radio_calls(const engine::World& world, float alpha) const;
     void spawn_fire(Vector2 at, float height, int wear, float dt);
     void draw_particles(const engine::TileMap& map) const;
+    // The smoke on the field (the engine's: screens, a burning wreck's plume, a burst's dust), as clouds of puffs.
+    void draw_smoke(const engine::World& world) const;
     void draw_wreck(const engine::TileMap& map, const Remains& r) const;
     void draw_truck_wreck(const engine::TileMap& map, const Remains& r, TruckModel model, bool drowned) const;
     struct StructureSeen {
