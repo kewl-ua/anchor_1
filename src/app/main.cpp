@@ -871,6 +871,36 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if (options.scene == "infantry" && options.mode == Options::Mode::Offline) {
+        // Offline: every kind of foot soldier in a row down the field, in
+        // columns: hit two seconds in (falling, lying there); standing about;
+        // walking off; firing at the ground ahead (on a knee, lying, a crew
+        // at its weapon).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(14.0f, 0.0f), 12);
+        using engine::UnitTypeId;
+        const UnitTypeId kinds[] = {UnitTypeId::Rifleman, UnitTypeId::MachineGunner, UnitTypeId::Grenadier, UnitTypeId::Scout,
+                                    UnitTypeId::Assault,  UnitTypeId::Sapper,        UnitTypeId::Signaler,  UnitTypeId::Manpads,
+                                    UnitTypeId::Worker,   UnitTypeId::Mortar,        UnitTypeId::Ags};
+        for (int i = 0; i < 11; ++i) {
+            const float side = (static_cast<float>(i) - 5.0f) * 0.8f;
+            g_doomed.push_back(w.spawn_unit(me, kinds[i], ahead(8.0f, side)));
+            w.spawn_unit(me, kinds[i], ahead(10.0f, side));
+            const engine::EntityId walking = w.spawn_unit(me, kinds[i], ahead(12.5f, side));
+            game.submit({.type = engine::CommandType::Move, .units = {walking}, .target = ahead(30.0f, side)});
+            const engine::EntityId fighting = w.spawn_unit(me, kinds[i], ahead(15.5f, side));
+            game.submit({.type = engine::CommandType::AttackGround, .units = {fighting}, .target = ahead(21.0f, side)});
+        }
+        g_doom_tick = 40;
+        return render::to_vector2(ahead(13.0f, 0.0f));
+    }
+
     if (options.scene == "air_down" && options.mode == Options::Mode::Offline) {
         // Offline: our aircraft over the field ahead of the base. One is hit
         // a second and a half in (brought down: it falls on ahead, on fire,

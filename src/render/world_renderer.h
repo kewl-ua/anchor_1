@@ -13,6 +13,7 @@
 #include "engine/world.h"
 #include "render/camera.h"
 #include "render/iso.h"
+#include "render/soldiers.h"
 
 namespace render {
 
@@ -32,9 +33,6 @@ struct BuildGhost {
 
 // Draws the game world in isometric view. Reads the engine state, never
 // changes it. Owns purely visual state: order markers, explosions, wrecks.
-//
-// Units are placeholder shapes for now; sprites will replace draw_soldier()
-// and draw_vehicle() without touching anything else.
 enum class TruckModel : uint8_t;  // which real truck a truck is (see world_renderer.cpp)
 
 class WorldRenderer {
@@ -129,6 +127,9 @@ private:
     void draw_track_marks(const engine::World& world, Rectangle view) const;
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
     std::unordered_map<engine::EntityId, double> shot_at_;           // when (GetTime) each crew's weapon last fired: its recoil
+    std::unordered_map<engine::EntityId, double> thrown_at_;         // when each man last threw a hand grenade
+    // Foot soldiers as last seen: their hp, and when (GetTime) they were last hit (they flinch).
+    std::unordered_map<engine::EntityId, std::pair<int32_t, double>> hurt_;
     // Vehicles as last seen: what they had, how long since each fired (its
     // recoil) and was hit (a jolt, the way it was pushed).
     struct VehicleSeen {
@@ -298,6 +299,12 @@ private:
     void draw_unit(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_aircraft(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const;
+    // Foot soldiers in pixel art (see soldiers.h): each kit in each side's colours, baked when first drawn.
+    mutable std::map<std::pair<int, int>, SpriteSheet> soldier_sheets_;
+    const SpriteSheet& soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const;
+    // What a man is doing, as drawn: his pose and its frame; where his weapon's muzzle is then (on the ground, up).
+    std::pair<soldiers::Pose, int> soldier_pose(const engine::Unit& u) const;
+    void soldier_muzzle(const engine::Unit& u, Vector2 ground, Vector2 facing, Vector2& at, float& z) const;
     void draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground, Vector2 facing) const;
     void draw_projectile(const engine::Projectile& p, float alpha) const;
     void draw_shots(const engine::World& world, float alpha) const;

@@ -34,7 +34,7 @@ enum MuzzleFire : int {
 constexpr float kBlastLifetime = 3.6f;  // (the longest blast's sheet: a crash's mushroom)
 constexpr float kMushroomBlast = 4.5f;  // a Blast this big (tiles) is an aircraft's crash: the mushroom
 constexpr float kWreckLifetime = 25.0f;
-constexpr float kBodyLifetime = 8.0f;
+constexpr float kBodyLifetime = 20.0f;
 
 // A circle of radius 1 tile on the ground is drawn as an ellipse with these semi-axes.
 constexpr float kCircleRx = iso::kTileWidth * 0.5f * 1.41421356f;
@@ -263,6 +263,8 @@ Color cargo_color(engine::Resource r) {
 }
 
 }  // namespace
+
+soldiers::Kit kit_of(engine::UnitTypeId type);  // (with the soldiers' drawing, below)
 
 Vector2 unit_ground_pos(const engine::Unit& unit, float alpha) {
     return lerp(to_vector2(unit.prev_pos), to_vector2(unit.pos), alpha);
@@ -589,7 +591,8 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
         height = flight_lift(u);
     }
     const bool big = def.vehicle || def.weapon.indirect;
-    const Vector2 muzzle{g.x + f.x * reach, g.y + f.y * reach};
+    Vector2 muzzle{g.x + f.x * reach, g.y + f.y * reach};
+    if (!def.vehicle) soldier_muzzle(u, g, f, muzzle, height);  // his weapon as he's drawn
     // What went out of it: a tank's area shot a heavier charge.
     float splash = to_float(def.weapon.splash_radius);
     for (const engine::Projectile& p : world.projectiles()) {
@@ -1471,12 +1474,22 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         const auto seen = shots_seen_.find(u.id);
         if (seen != shots_seen_.end() && u.last_shot_tick > seen->second && !u.inside && shows(world, u)) {
             shot_at_[u.id] = GetTime();
+            if (u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::ThrowGrenade) thrown_at_[u.id] = GetTime();
             spawn_muzzle(world, u);
             fired(world, u);
         }
     }
     shots_seen_ = std::move(shots);
     std::erase_if(shot_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    std::erase_if(thrown_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    // Men hit since the last frame flinch.
+    for (const engine::Unit& u : world.units()) {
+        if (engine::unit_type(u.type).vehicle) continue;
+        auto [it, fresh] = hurt_.try_emplace(u.id, u.hp, -99.0);
+        if (!fresh && u.hp < it->second.first) it->second.second = GetTime();
+        it->second.first = u.hp;
+    }
+    std::erase_if(hurt_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     for (const engine::Unit& u : world.units()) {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
@@ -8644,7 +8657,13 @@ void WorldRenderer::draw_remains(const engine::TileMap& map) const {
         if (r.vehicle) {
             draw_scorch(p, 0, false, fade, r.seed);
         } else {
-            fill_ground_ellipse(p, 0.15f, ColorAlpha({70, 40, 35, 255}, 0.7f * fade));
+            // He falls: reeling, on his knees, down on his back; blood under him spreading.
+            const float spread = std::min(1.0f, r.age / 4.0f);
+            const Vector2 under{r.ground.x - r.facing.x * 0.12f, r.ground.y - r.facing.y * 0.12f};
+            if (r.age > 0.4f) fill_ground_ellipse(on_terrain(map, under), 0.05f + 0.1f * spread, ColorAlpha({74, 26, 22, 255}, 0.75f * fade));
+            const int f = r.age < 0.12f ? 0 : r.age < 0.3f ? 1 : r.age < 0.42f ? 2 : 3;
+            draw_sprite(soldier_sheet(kit_of(r.type), r.owner), p, r.facing, soldiers::first_frame(soldiers::Pose::Die) + f,
+                        ColorAlpha(WHITE, fade));
         }
     }
 }
@@ -8793,42 +8812,118 @@ void WorldRenderer::draw_unit(const engine::TileMap& map, const engine::Unit& u,
     }
 }
 
-// A soldier, drawn by hand like the rest: boots, trousers and a jacket in a
-// camouflage tinted with his side's colour, the side's tape round his arm and
-// thigh (as the sides marked themselves there), a load vest, a steel helmet
-// (a scout a floppy hat, a rear trooper a cap), his face or his back as he
-// turns, his weapon in his hands (an AK, a PKM, an RPG-7 on the shoulder, a
-// Dragunov, an Igla...). Walking, his legs swing; standing and shooting, a
-// rifleman goes down on one knee.
+// A foot soldier: which of our pixel-art kits he wears (see soldiers.h).
+soldiers::Kit kit_of(engine::UnitTypeId type) {
+    using engine::UnitTypeId;
+    using soldiers::Kit;
+    switch (type) {
+        case UnitTypeId::MachineGunner: return Kit::MachineGun;
+        case UnitTypeId::Grenadier: return Kit::Rpg;
+        case UnitTypeId::Scout: return Kit::Sniper;
+        case UnitTypeId::Assault: return Kit::Assault;
+        case UnitTypeId::Sapper: return Kit::Sapper;
+        case UnitTypeId::Signaler: return Kit::Radio;
+        case UnitTypeId::Manpads: return Kit::Igla;
+        case UnitTypeId::Worker: return Kit::Rear;
+        case UnitTypeId::Mortar: return Kit::Mortar;
+        case UnitTypeId::Ags: return Kit::Ags;
+        default: return Kit::Rifle;
+    }
+}
+
+const WorldRenderer::SpriteSheet& WorldRenderer::soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const {
+    const std::pair<int, int> key{static_cast<int>(kit), static_cast<int>(owner)};
+    if (const auto it = soldier_sheets_.find(key); it != soldier_sheets_.end()) return it->second;
+    Image img = soldiers::bake(kit, theme::player_color(owner));
+    if (const char* dump = dump_dir()) ExportImage(img, TextFormat("%s/soldier_%d_%d.png", dump, key.first, key.second));
+    SpriteSheet s;
+    s.atlas = LoadTextureFromImage(img);
+    SetTextureFilter(s.atlas, TEXTURE_FILTER_POINT);
+    s.w = soldiers::kCellW;
+    s.h = soldiers::kCellH;
+    s.dirs = soldiers::kDirs;
+    s.frames = soldiers::total_frames();
+    s.origin = {soldiers::kOriginX, soldiers::kOriginY};
+    UnloadImage(img);
+    return soldier_sheets_.emplace(key, s).first->second;
+}
+
+// What he's doing, as drawn: walking; at work (an axe, a spade); at the
+// weapon set up in front of him; throwing; flinching from a hit; in a fight
+// (a machine gunner, a scout lying down, an assault trooper standing, the
+// rest on a knee; the kick of each shot; an RPG, an Igla reloaded); sitting
+// down after a long while standing about; at ease.
+std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u) const {
+    using engine::AbilityId;
+    using engine::Order;
+    using engine::UnitTypeId;
+    using soldiers::Kit;
+    using soldiers::Pose;
+    const double now = GetTime();
+    auto since = [&](const std::unordered_map<engine::EntityId, double>& m) {
+        const auto it = m.find(u.id);
+        return it != m.end() ? static_cast<float>(now - it->second) : 99.0f;
+    };
+    const float shot = since(shot_at_);
+    const float thrown = since(thrown_at_);
+    const auto hit = hurt_.find(u.id);
+    const float hurt = hit != hurt_.end() ? static_cast<float>(now - hit->second.second) : 99.0f;
+    const float t = static_cast<float>(now) + static_cast<float>(u.id % 17) * 0.37f;
+    const Kit kit = kit_of(u.type);
+    if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
+    if (u.type == UnitTypeId::Worker && u.order == Order::Gather && u.work > 0) {
+        const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
+        return {Pose::Work, stroke < 0.5f ? 0 : 1};
+    }
+    const bool digging = u.order == Order::Ability &&
+                         (u.order_ability == AbilityId::DigTrench || u.order_ability == AbilityId::DigFoxhole ||
+                          u.order_ability == AbilityId::BuildParapet || u.order_ability == AbilityId::DigGunPit ||
+                          u.order_ability == AbilityId::LayWire || u.order_ability == AbilityId::PlaceHedgehogs ||
+                          u.order_ability == AbilityId::BuildPillbox || u.order_ability == AbilityId::LayApMine ||
+                          u.order_ability == AbilityId::LayAtMine || u.order_ability == AbilityId::ClearMines);
+    if ((u.type == UnitTypeId::Worker && u.order == Order::Build) || digging) return {Pose::Work, static_cast<int>(t * 2.2f) % 2};
+    if ((u.type == UnitTypeId::Mortar || u.type == UnitTypeId::Ags) &&
+        (u.deployed || u.engaged != 0 || u.order == Order::AttackGround || shot < 3.0f)) {
+        return {Pose::Crew, 0};
+    }
+    if (thrown < 0.12f) return {Pose::Throw, 1};
+    if (thrown < 0.45f) return {Pose::Throw, 2};
+    if (u.order == Order::Ability && u.order_ability == AbilityId::ThrowGrenade) return {Pose::Throw, 0};
+    if (hurt < 0.3f) return {Pose::Hurt, 0};
+    if (u.engaged != 0 || shot < 2.0f || u.order == Order::Observe || u.order == Order::AttackGround) {
+        if ((kit == Kit::Rpg || kit == Kit::Igla) && shot > 0.3f && u.cooldown > 0) return {Pose::Reload, static_cast<int>(t * 2.5f) % 2};
+        const Pose stance = kit == Kit::MachineGun || kit == Kit::Sniper ? Pose::Prone : kit == Kit::Assault ? Pose::Aim : Pose::Kneel;
+        return {stance, shot < 0.08f ? 1 : 0};
+    }
+    if (u.order == Order::Idle && u.still > 15 * engine::kTicksPerSecond && shot > 20.0f && u.carrying == 0) return {Pose::Sit, 0};
+    return {Pose::Stand, static_cast<int>(t * 0.8f) % 2};
+}
+
+// Where his weapon's muzzle is as he's drawn now: over the ground (tiles) and up (pixels).
+void WorldRenderer::soldier_muzzle(const engine::Unit& u, Vector2 ground, Vector2 facing, Vector2& at, float& z) const {
+    const auto [pose, frame] = soldier_pose(u);
+    const soldiers::Offset m = soldiers::muzzle(kit_of(u.type), pose, frame);
+    const Vector2 left{facing.y, -facing.x};  // (his own left, as he's drawn)
+    at = {ground.x + facing.x * m.ahead + left.x * m.left, ground.y + facing.y * m.ahead + left.y * m.left};
+    z = m.up;
+}
+
+// A soldier in our pixel art (see soldiers.h), his pose as he's doing;
+// the mortar's tube on its plate, the AGS on its tripod set up in front of
+// a crew; a rear trooper's load on his back.
 void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const {
     using engine::UnitTypeId;
-    const auto now = static_cast<float>(GetTime());
     Vector2 fs = iso_offset(facing);
     {
         const float l = std::hypot(fs.x, fs.y);
         fs = l > 0.0f ? Vector2{fs.x / l, fs.y / l} : Vector2{1.0f, 0.0f};
     }
     const float side = fs.x >= 0.0f ? 1.0f : -1.0f;  // which way he faces on screen
-    const bool away = fs.y < -0.3f;                  // his back to us
-    const Color team = theme::player_color(u.owner);
-    const Color uniform = mix({92, 100, 66, 255}, team, 0.33f);
-    const Color trousers = shade(uniform, 0.86f);
-    const Color rig = shade(mix(uniform, {70, 74, 52, 255}, 0.5f), 0.8f);
-    const Color skin{204, 162, 128, 255};
-    const Color boots{38, 34, 30, 255};
     const UnitTypeId type = u.type;
-    const bool walking = u.moving;
-    const bool shooter = type == UnitTypeId::Rifleman || type == UnitTypeId::MachineGunner || type == UnitTypeId::Grenadier ||
-                         type == UnitTypeId::Assault || type == UnitTypeId::Scout || type == UnitTypeId::Sapper ||
-                         type == UnitTypeId::Manpads;
-    const bool crew_set = (type == UnitTypeId::Mortar || type == UnitTypeId::Ags) && (u.deployed || (u.engaged && !walking));
-    const bool kneel = !walking && ((shooter && u.engaged != 0) || crew_set);
-    const float drop = kneel ? 3.0f : 0.0f;
-    const float phase = now * 9.0f + static_cast<float>(u.id % 13);
-    const float hip_y = feet.y - 8.0f + drop;
-    const float shoulder_y = feet.y - 14.0f + drop;
-    const float head_y = feet.y - 16.6f + drop;
+    const auto [pose, frame] = soldier_pose(u);
+    const bool crew_set = pose == soldiers::Pose::Crew;
     const float x = feet.x;
+    const float shoulder_y = feet.y - 13.0f;
 
     // Things in front of him on the ground: a mortar's tube on its plate, an AGS on its tripod.
     auto ahead_px = [&](float px) { return Vector2{x + fs.x * px, feet.y + fs.y * px}; };
@@ -8838,7 +8933,7 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
         const float since = fired != shot_at_.end() ? static_cast<float>(GetTime() - fired->second) : 99.0f;
         if (type == UnitTypeId::Mortar && crew_set) {
             const float jolt = since < 0.18f ? 1.0f - since / 0.18f : 0.0f;
-            const Vector2 plate = {ahead_px(6.0f).x, ahead_px(6.0f).y + jolt};
+            const Vector2 plate = {ahead_px(7.0f).x, ahead_px(7.0f).y + jolt};
             DrawEllipse(static_cast<int>(plate.x), static_cast<int>(plate.y), 3.5f, 1.6f, lit({54, 56, 50, 255}));
             const Vector2 muzzle{plate.x + fs.x * 3.0f, plate.y - 11.0f + jolt * 1.5f};
             DrawLineEx({plate.x + fs.x * 4.0f + 1.0f, plate.y}, {plate.x + fs.x * 1.5f, plate.y - 6.0f}, 1.0f, lit({46, 48, 44, 255}));
@@ -8847,7 +8942,7 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
         }
         if (type == UnitTypeId::Ags && crew_set) {
             const float shake = since < 0.4f && std::fmod(since, 0.08f) < 0.04f ? 1.2f : 0.0f;
-            const Vector2 base = {ahead_px(6.0f).x - fs.x * shake, ahead_px(6.0f).y - fs.y * shake};
+            const Vector2 base = {ahead_px(7.0f).x - fs.x * shake, ahead_px(7.0f).y - fs.y * shake};
             for (const float k : {-1.0f, 1.0f, 0.0f}) {
                 DrawLineEx({base.x, base.y - 4.0f}, {base.x + k * 3.5f - fs.x * (k == 0.0f ? 3.0f : 0.0f), base.y + (k == 0.0f ? 1.0f : 0.5f)},
                            1.0f, lit({50, 52, 48, 255}));
@@ -8858,169 +8953,30 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
             disc({body.x - fs.x * 0.5f + side * 0.5f, body.y + 2.0f}, 2.2f, {58, 66, 48, 255});  // the drum
         }
     };
-    if (!away) crew_weapon();
-
-    // Legs.
-    Vector2 foot_front{x + side * 1.3f, feet.y};
-    Vector2 foot_back{x - side * 1.1f, feet.y};
-    Vector2 knee_front{x + side * 1.2f, feet.y - 4.0f + drop * 0.5f};
-    Vector2 knee_back{x - side * 0.9f, feet.y - 4.0f + drop * 0.5f};
-    if (walking) {
-        const float swing = std::sin(phase) * 2.6f;
-        foot_front = {x + side * swing, feet.y - std::max(0.0f, std::cos(phase)) * 1.2f};
-        foot_back = {x - side * swing, feet.y - std::max(0.0f, -std::cos(phase)) * 1.2f};
-        knee_front = {x + side * swing * 0.6f + side * 0.6f, feet.y - 4.2f};
-        knee_back = {x - side * swing * 0.6f + side * 0.6f, feet.y - 4.2f};
-    } else if (kneel) {
-        knee_front = {x + side * 3.0f, feet.y - 3.2f};
-        foot_front = {x + side * 3.2f, feet.y};
-        knee_back = {x - side * 0.5f, feet.y - 0.3f};
-        foot_back = {x - side * 4.0f, feet.y - 0.3f};
-    }
-    const Vector2 hip{x, hip_y};
-    for (const auto& [knee, foot, k] : {std::tuple{knee_back, foot_back, 0.72f}, std::tuple{knee_front, foot_front, 1.0f}}) {
-        DrawLineEx(hip, knee, 2.4f, lit(shade(trousers, k)));
-        DrawLineEx(knee, foot, 2.1f, lit(shade(trousers, k * 0.92f)));
-        DrawRectangleRec({foot.x - 1.3f + side * 0.4f, foot.y - 1.3f, 2.8f, 1.6f}, lit(boots));
-    }
-    // The side's tape round the front thigh.
-    DrawLineEx({hip.x + (knee_front.x - hip.x) * 0.45f - 1.2f, hip.y + (knee_front.y - hip.y) * 0.45f},
-               {hip.x + (knee_front.x - hip.x) * 0.45f + 1.2f, hip.y + (knee_front.y - hip.y) * 0.45f}, 1.2f, lit(team));
-
-    // What he holds: a weapon from the hands along where he faces.
-    const Vector2 hands{x + side * 1.8f + fs.x * 1.0f, feet.y - 10.6f + drop};
-    auto gun = [&](float front, float back, float width, Color metal, Color stock) {
-        const Vector2 tip{hands.x + fs.x * front, hands.y + fs.y * front * 0.6f};
-        const Vector2 butt{hands.x - fs.x * back, hands.y - fs.y * back * 0.6f - 0.5f};
-        DrawLineEx(butt, hands, width + 0.4f, lit(stock));
-        DrawLineEx(hands, tip, width, lit(metal));
-        return tip;
-    };
-    auto held = [&] {
-        switch (type) {
-            case UnitTypeId::MachineGunner: {  // a PKM, its box under it
-                gun(9.0f, 4.0f, 2.2f, {34, 34, 34, 255}, {96, 70, 46, 255});
-                DrawRectangleRec({hands.x + fs.x * 1.5f - 1.4f, hands.y + 0.5f, 2.8f, 2.4f}, lit({70, 80, 56, 255}));
-                break;
+    // A bundle on his back, as big as he's got: logs, their ends; stones in a sack.
+    auto load = [&] {
+        if (u.carrying <= 0) return;
+        const float size = 0.5f + 0.5f * std::min(1.0f, static_cast<float>(u.carrying) / engine::kCarryCapacity);
+        const Vector2 at{std::round(x - fs.x * 3.5f), std::round(shoulder_y + 1.0f)};
+        if (u.carrying_type == engine::Resource::Materials) {
+            const int logs = size > 0.8f ? 3 : 2;
+            for (int i = 0; i < logs; ++i) {
+                const float y = at.y - static_cast<float>(i) * 1.6f;
+                const float half = 3.5f * size;
+                DrawRectangleRec({at.x - half, y - 1.0f, half * 2.0f, 2.0f}, lit(i % 2 == 0 ? Color{112, 80, 48, 255} : Color{128, 94, 58, 255}));
+                DrawRectangleRec({at.x + side * half - 0.5f, y - 1.0f, 1.0f, 2.0f}, lit({176, 140, 96, 255}));  // the cut end
             }
-            case UnitTypeId::Grenadier: {  // an RPG-7 on the shoulder, or slung across the back while walking
-                if (walking && !u.engaged) {
-                    DrawLineEx({x - side * 3.0f, shoulder_y - 3.0f}, {x + side * 3.5f, hip_y + 1.0f}, 2.2f, lit({92, 84, 58, 255}));
-                    disc({x - side * 3.4f, shoulder_y - 3.6f}, 1.8f, {84, 98, 56, 255});
-                } else {
-                    const Vector2 sh{x + side * 0.6f, shoulder_y + 0.6f};
-                    const Vector2 tip{sh.x + fs.x * 6.0f, sh.y + fs.y * 3.6f};
-                    DrawLineEx({sh.x - fs.x * 6.0f, sh.y - fs.y * 3.6f}, tip, 2.3f, lit({92, 84, 58, 255}));
-                    disc(tip, 2.0f, {84, 98, 56, 255});
-                    fill_triangle({tip.x + fs.x * 1.5f, tip.y - 1.8f}, {tip.x + fs.x * 1.5f, tip.y + 1.8f}, {tip.x + fs.x * 4.5f, tip.y + fs.y * 1.0f},
-                                  {84, 98, 56, 255});
-                    DrawLineEx(sh, {hands.x, hands.y}, 1.4f, lit(uniform));
-                }
-                break;
-            }
-            case UnitTypeId::Scout: gun(10.5f, 3.5f, 1.2f, {30, 30, 30, 255}, {110, 78, 50, 255}); break;  // a Dragunov
-            case UnitTypeId::Manpads: {  // an Igla on the shoulder
-                const Vector2 sh{x + side * 0.6f, shoulder_y + 0.4f};
-                DrawLineEx({sh.x - fs.x * 7.0f, sh.y - fs.y * 4.2f}, {sh.x + fs.x * 7.0f, sh.y + fs.y * 4.2f}, 2.4f, lit({88, 98, 70, 255}));
-                disc({sh.x + fs.x * 7.0f, sh.y + fs.y * 4.2f}, 1.4f, {60, 66, 50, 255});
-                DrawRectangleRec({sh.x + fs.x * 1.0f - 1.0f, sh.y + 1.0f, 2.0f, 2.2f}, lit({50, 54, 46, 255}));  // the grip and battery
-                break;
-            }
-            case UnitTypeId::Worker: {
-                if (u.order == engine::Order::Gather && u.work > 0) {
-                    // At work: an axe (or a pick) swinging up and down, a stroke a second.
-                    const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
-                    const float lift = 7.0f * std::cos(stroke * 6.2831853f);
-                    const Vector2 head{hands.x + fs.x * 6.0f, hands.y + fs.y * 3.0f - lift};
-                    DrawLineEx(hands, head, 1.5f, lit({110, 84, 54, 255}));
-                    DrawRectangleRec({head.x - 2.0f, head.y - 2.0f, 4.0f, 3.0f}, lit({150, 150, 150, 255}));
-                } else if (u.carrying == 0) {  // a spade over the shoulder
-                    DrawLineEx({x - side * 3.5f, shoulder_y - 4.0f}, {x + side * 3.0f, hip_y}, 1.2f, lit({120, 90, 58, 255}));
-                    DrawRectangleRec({x - side * 4.2f - 1.2f, shoulder_y - 6.0f, 2.4f, 3.0f}, lit({120, 124, 118, 255}));
-                }
-                break;
-            }
-            case UnitTypeId::Mortar:
-            case UnitTypeId::Ags:
-                if (!crew_set) {  // carried on the back: the tube, the gun
-                    DrawLineEx({x - side * 3.0f, shoulder_y - 4.0f}, {x + side * 2.0f, hip_y + 0.5f}, type == UnitTypeId::Mortar ? 2.6f : 3.2f,
-                               lit({64, 70, 56, 255}));
-                }
-                break;
-            case UnitTypeId::Sapper:
-            case UnitTypeId::Signaler: gun(5.5f, 2.5f, 1.4f, {34, 34, 34, 255}, {104, 76, 50, 255}); break;  // a short carbine
-            default: {  // an AK: wooden furniture, the curved magazine
-                gun(7.5f, 3.5f, 1.5f, {34, 34, 34, 255}, {126, 80, 44, 255});
-                DrawLineEx({hands.x + fs.x * 2.2f, hands.y + 0.4f}, {hands.x + fs.x * 1.6f, hands.y + 2.6f}, 1.2f, lit({50, 44, 36, 255}));
-                break;
-            }
-        }
-        // The arms holding it.
-        DrawLineEx({x + side * 1.4f, shoulder_y + 1.0f}, hands, 1.7f, lit(shade(uniform, 1.05f)));
-    };
-    if (away) held();
-
-    // His back: whatever he carries on it.
-    auto backpack = [&](float k) {
-        if (type == UnitTypeId::Signaler) {  // the radio, its whip aerial
-            const Vector2 set{x - side * 2.2f, shoulder_y + 1.0f};
-            DrawRectangleRec({set.x - 2.3f, set.y - 1.0f, 4.6f, 5.5f}, lit(shade({70, 78, 58, 255}, k)));
-            DrawLineEx({set.x, set.y - 1.0f}, {set.x - side * 2.5f, set.y - 20.0f}, 0.9f, lit({30, 30, 30, 255}));
-        } else if (type == UnitTypeId::Sapper || type == UnitTypeId::Assault) {
-            DrawRectangleRec({x - side * 2.4f - 2.0f, shoulder_y + 0.5f, 4.0f, 5.0f}, lit(shade(rig, k)));
-        } else if (type == UnitTypeId::Grenadier && !walking) {  // spare rockets
-            for (const float d : {-0.8f, 0.8f}) {
-                DrawLineEx({x - side * 2.6f + d, shoulder_y + 5.0f}, {x - side * 2.6f + d, shoulder_y - 1.5f}, 1.3f, lit({92, 84, 58, 255}));
-                disc({x - side * 2.6f + d, shoulder_y - 2.2f}, 1.3f, {84, 98, 56, 255});
-            }
+        } else {
+            disc({at.x, at.y - 1.5f}, 2.6f * size + 0.6f, {112, 104, 80, 255});
         }
     };
-    if (!away) backpack(0.85f);
-
-    // The body: a jacket lit on the left, the vest over it with its pouches, the tape on the arm.
-    const float w = type == UnitTypeId::Assault ? 3.0f : 2.6f;
-    fill_quad({x - w, shoulder_y}, {x + w, shoulder_y}, {x + w * 0.85f, hip_y}, {x - w * 0.85f, hip_y}, uniform);
-    fill_quad({x, shoulder_y}, {x + w, shoulder_y}, {x + w * 0.85f, hip_y}, {x, hip_y}, shade(uniform, 0.82f));
-    if (type != UnitTypeId::Worker) {
-        const float vw = w * (type == UnitTypeId::Assault ? 0.95f : 0.8f);
-        fill_quad({x - vw, shoulder_y + 1.2f}, {x + vw, shoulder_y + 1.2f}, {x + vw, hip_y - 1.0f}, {x - vw, hip_y - 1.0f}, rig);
-        if (!away) {
-            for (const float d : {-1.2f, 0.2f, 1.6f}) DrawRectangleRec({x + d - 0.5f, hip_y - 3.4f, 1.2f, 1.8f}, lit(shade(rig, 0.75f)));
-        }
-    }
-    DrawRectangleRec({x - side * w - 1.0f, shoulder_y + 1.6f, 2.0f, 1.4f}, lit(team));  // the tape on the arm
-    DrawLineEx({x - w * 0.6f, hip_y - 0.3f}, {x + w * 0.6f, hip_y - 0.3f}, 0.8f, lit({48, 40, 32, 255}));  // the belt
-    if (away) backpack(1.0f);
-    if (u.carrying > 0) {
-        // A bundle of timber or stone on the back, as big as it's got.
-        const float size = 0.4f + 0.6f * std::min(1.0f, static_cast<float>(u.carrying) / engine::kCarryCapacity);
-        DrawRectangleRec({x - side * 3.0f - 3.5f * size, shoulder_y - 3.0f * size, 7.0f * size, 6.0f * size}, lit({120, 88, 52, 255}));
-    }
-
-    // The head: a steel helmet, a scout's floppy hat, a rear trooper's cap; the face unless he's turned away.
-    const Vector2 head{x + side * 0.3f, head_y};
-    disc(head, 2.1f, skin);
-    if (!away) {
-        DrawPixelV({head.x + side * 1.1f, head.y + 0.2f}, lit({50, 40, 34, 255}));  // an eye
-        DrawLineV({head.x + side * 0.2f, head.y + 1.6f}, {head.x + side * 1.8f, head.y + 1.6f}, lit(shade(skin, 0.8f)));
-    }
-    if (type == UnitTypeId::Scout) {
-        const Color hat{124, 118, 80, 255};
-        DrawEllipse(static_cast<int>(head.x), static_cast<int>(head.y - 1.0f), 3.6f, 1.2f, lit(shade(hat, 0.85f)));
-        disc({head.x, head.y - 1.8f}, 2.0f, hat);
-    } else if (type == UnitTypeId::Worker) {
-        const Color cap = shade(uniform, 0.9f);
-        disc({head.x - side * 0.2f, head.y - 1.2f}, 2.0f, cap);
-        DrawLineEx({head.x, head.y - 0.6f}, {head.x + side * 3.0f, head.y - 0.4f}, 1.0f, lit(shade(cap, 0.7f)));
-    } else {
-        const Color helmet = type == UnitTypeId::Assault ? Color{62, 70, 52, 255} : Color{80, 92, 62, 255};
-        disc({head.x, head.y - 1.1f}, 2.7f, helmet);
-        disc({head.x - 0.8f, head.y - 2.0f}, 1.0f, shade(helmet, 1.3f));
-        DrawLineEx({head.x - 2.9f, head.y + 0.2f}, {head.x + 2.9f, head.y + 0.2f}, 0.9f, lit(shade(helmet, 0.7f)));
-        if (!away) disc({head.x + side * 1.0f, head.y + 1.0f}, 1.2f, skin);
-    }
-    if (!away) held();
-    if (away) crew_weapon();
+    const bool toward_us = fs.y > 0.0f;  // what's ahead of him is nearer us than he is
+    if (!toward_us) crew_weapon();
+    if (toward_us) load();
+    const SpriteSheet& sheet = soldier_sheet(kit_of(type), u.owner);
+    draw_sprite(sheet, feet, facing, soldiers::first_frame(pose) + frame);
+    if (!toward_us) load();
+    if (toward_us) crew_weapon();
 }
 
 // --- Vehicles, drawn by hand ---------------------------------------------------
@@ -13470,7 +13426,13 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
         const Vector2 facing = unit_facing(u);
         Vector2 m{def.vehicle ? 0.5f : 0.25f, def.vehicle ? 8.0f : 9.0f};
         if (drawn_as_armor(def) || has_gun_look(def.model)) m = muzzle_of(u);
-        const Vector2 muzzle = on_terrain(map, {ground.x + facing.x * m.x, ground.y + facing.y * m.x}, m.y);
+        Vector2 muzzle = on_terrain(map, {ground.x + facing.x * m.x, ground.y + facing.y * m.x}, m.y);
+        if (!def.vehicle) {  // his weapon as he's drawn
+            Vector2 at{};
+            float z = 0.0f;
+            soldier_muzzle(u, ground, facing, at, z);
+            muzzle = on_terrain(map, at, z);
+        }
         const bool sweep = u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MgSweep;
         if (engine::weapon_of(u).projectile_speed.raw == 0 || sweep) {  // instant hit: draw the tracer
             const engine::Unit* target = world.find_unit(u.engaged);
