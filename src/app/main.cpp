@@ -80,10 +80,12 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     const engine::World& world = game.world();
     const engine::PlayerId me = game.local_player();
 
-    if (options.scene == "economy" || options.scene == "timber") {
+    if (options.scene == "economy" || options.scene == "timber" || options.scene == "quarry") {
         // Rear troops cut the nearest woodline; the headquarters hires two
         // more. `timber` (offline): a supply truck parks by the wood and
-        // takes their loads in; the camera stays at the wood.
+        // takes their loads in; the camera stays at the wood. `quarry`
+        // (offline): the same at the nearest rock.
+        const engine::Terrain resource = options.scene == "quarry" ? engine::Terrain::Rock : engine::Terrain::Forest;
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const engine::TilePos b = engine::tile_of(base);
         std::optional<engine::TilePos> wood;
@@ -91,7 +93,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         for (int32_t dy = -40; dy <= 40; ++dy) {
             for (int32_t dx = -40; dx <= 40; ++dx) {
                 const engine::TilePos t{b.x + dx, b.y + dy};
-                if (!world.map().contains(t) || world.map().terrain(t) != engine::Terrain::Forest) continue;
+                if (!world.map().contains(t) || world.map().terrain(t) != resource) continue;
                 if (!wood || dx * dx + dy * dy < best) {
                     wood = t;
                     best = dx * dx + dy * dy;
@@ -114,7 +116,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         const Vector2 b2 = render::to_vector2(base);
         const Vector2 w2 = wood ? render::to_vector2(engine::tile_center(*wood)) : b2;
-        if (options.scene == "timber" && options.mode == Options::Mode::Offline && wood) {
+        if (options.scene != "economy" && options.mode == Options::Mode::Offline && wood) {
             const engine::EntityId truck = game.world_for_setup().spawn_unit(me, engine::UnitTypeId::Truck, base);
             game.submit({.type = engine::CommandType::Collect, .units = {truck}, .target = engine::tile_center(*wood)});
             return w2;

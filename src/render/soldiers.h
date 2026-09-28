@@ -24,6 +24,10 @@ enum class Pose : uint8_t {
     Sit,     // resting on the ground, his weapon across his knees
     Climb,   // up a ladder, a tower
     Crew,    // on a knee at the weapon in front of him (a mortar, an AGS)
+    Quarry,     // a pickaxe up and down into the rock
+    CarryLog,   // walking with a log on his shoulder
+    CarrySack,  // walking with a sack of stone on his back
+    Heave,      // throwing his load up into a truck's bed, down by a door: lifting it, away
     Count,
 };
 

@@ -15,7 +15,7 @@ namespace {
 // before the ground is squashed to half its height).
 constexpr float kPxPerTile = iso::kTileWidth * 0.5f * 1.41421356f;
 
-constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1};
+constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1, 2, 8, 8, 2};
 
 // A point on him: ahead, to his left, up (pixels).
 struct V3 {
@@ -60,7 +60,10 @@ struct Body {
     bool tool = false;
     V3 tool_a, tool_b;
     bool axe = false;
+    bool pick = false;  // the tool's a pickaxe
     bool dirt = false;
+    bool log = false;   // a log on his right shoulder, along the way he faces
+    bool sack = false;  // a sack of stone on his back
     bool grenade = false;  // one in his right hand
     bool bipod = false;    // the machine gun on its legs
 };
@@ -194,6 +197,73 @@ Body pose(Kit kit, Pose p, int i) {
             } else {
                 low_ready(b, kit);
             }
+            break;
+        }
+        case Pose::CarryLog:
+        case Pose::CarrySack: {
+            // The walk under a load: shorter steps, leaning into it a little.
+            const float t = static_cast<float>(i) / 8.0f * 6.2831853f;
+            const float sw = std::sin(t);
+            const float cw = std::cos(t);
+            const float bob = 0.4f * sw * sw;
+            b.pelvis = {0.15f, 0.0f, 9.5f - bob};
+            hips(b);
+            b.foot[0] = {2.0f * sw, -1.3f, 0.3f + std::max(0.0f, cw) * 1.1f};
+            b.foot[1] = {-2.0f * sw, 1.3f, 0.3f + std::max(0.0f, -cw) * 1.1f};
+            for (int k = 0; k < 2; ++k) {
+                const float lift = b.foot[k].z - 0.3f;
+                b.knee[k] = mix(b.hip[k], b.foot[k], 0.5f) + V3{0.9f + lift * 0.7f, 0.0f, lift * 0.2f};
+            }
+            b.slung = !unarmed(kit);
+            if (p == Pose::CarryLog) {  // the log on the right shoulder, the right hand on it in front, the left swinging
+                upper(b, {0.7f, 0.15f, 14.2f - bob}, {1.0f, 0.5f, 17.2f - bob});
+                b.log = true;
+                b.hand[0] = b.shoulder[0] + V3{1.8f, 0.3f, 1.2f};
+                b.hand[1] = {b.pelvis.f + 0.4f - 1.4f * sw, 2.6f, b.pelvis.z - 0.2f};
+            } else {  // the sack over the right shoulder, held by its neck, bent under it
+                upper(b, {0.9f, 0.0f, 13.9f - bob}, {1.4f, -0.2f, 16.8f - bob});
+                b.sack = true;
+                b.hand[0] = b.shoulder[0] + V3{0.3f, 0.2f, 1.6f};
+                b.hand[1] = {b.pelvis.f + 0.4f - 1.4f * sw, 2.6f, b.pelvis.z - 0.2f};
+            }
+            break;
+        }
+        case Pose::Heave: {  // up with it, out and away (the load itself flies apart, drawn by the game)
+            stance_legs(b);
+            if (i == 0) {
+                upper(b, {0.2f, 0.0f, 13.6f}, {0.5f, 0.0f, 16.6f});
+                b.hand[0] = {2.2f, -1.4f, 13.4f};
+                b.hand[1] = {2.2f, 1.4f, 13.4f};
+            } else {
+                upper(b, {1.2f, 0.0f, 14.2f}, {1.8f, 0.0f, 17.2f});
+                b.hand[0] = {4.4f, -1.3f, 17.8f};
+                b.hand[1] = {4.4f, 1.3f, 17.8f};
+            }
+            b.none = true;
+            break;
+        }
+        case Pose::Quarry: {  // a pickaxe: up over his head, down into the rock ahead
+            b.pelvis = {0.0f, 0.0f, 9.2f};
+            hips(b);
+            b.foot[0] = {-1.3f, -1.5f, 0.3f};
+            b.foot[1] = {1.7f, 1.5f, 0.3f};
+            b.knee[0] = {-0.3f, -1.45f, 4.8f};
+            b.knee[1] = {1.9f, 1.45f, 4.7f};
+            b.tool = true;
+            b.pick = true;
+            b.slung = !unarmed(kit);
+            if (i == 0) {
+                upper(b, {-0.3f, 0.0f, 14.4f}, {0.1f, 0.0f, 17.5f});
+                b.hand[0] = {-0.6f, -0.6f, 19.2f};
+                b.hand[1] = {-0.2f, 0.4f, 18.0f};
+                b.tool_b = {-3.6f, 0.0f, 20.4f};
+            } else {
+                upper(b, {2.0f, 0.0f, 12.2f}, {2.9f, 0.0f, 14.8f});
+                b.hand[0] = {3.8f, -0.4f, 9.2f};
+                b.hand[1] = {3.0f, 0.4f, 10.4f};
+                b.tool_b = {7.6f, 0.0f, 2.6f};
+            }
+            b.tool_a = mix(b.hand[0], b.hand[1], 0.5f);
             break;
         }
         case Pose::Walk: {
@@ -876,13 +946,42 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
                              fig.begin();
                              fig.rod(b.tool_a, b.tool_b, {128, 96, 60, 255});
                              const V3 d = unit(b.tool_b - b.tool_a);
-                             if (b.axe) {  // an axe's head
+                             if (b.pick) {  // a pickaxe's head across the handle's end, pointed both ways
+                                 const V3 n = unit(V3{-d.z, 0.0f, d.f});
+                                 fig.capsule(b.tool_b + n * 2.4f - d * 0.4f, b.tool_b, 0.4f, 0.8f, {{140, 140, 136, 255}});
+                                 fig.capsule(b.tool_b, b.tool_b - n * 2.4f - d * 0.4f, 0.8f, 0.4f, {{140, 140, 136, 255}});
+                             } else if (b.axe) {  // an axe's head
                                  fig.capsule(b.tool_b - V3{0.0f, 0.0f, 0.2f}, b.tool_b + V3{0.0f, 0.0f, -1.6f} + d * 0.4f, 1.0f, 0.8f,
                                              {{150, 150, 146, 255}});
                              } else {  // a spade's blade
                                  fig.capsule(b.tool_b, b.tool_b + d * 1.8f, 1.1f, 1.2f, {{126, 130, 124, 255}});
                                  if (b.dirt) fig.ball(b.tool_b + d * 1.2f + V3{0.0f, 0.0f, 0.9f}, 1.2f, {{104, 80, 56, 255}});
                              }
+                             fig.end();
+                         }});
+    }
+    if (b.log) {  // along the way he faces, on his right shoulder: its bark, its cut ends pale
+        const V3 on = b.shoulder[0] + V3{0.0f, 0.1f, 1.5f};
+        const V3 log_front = on + V3{6.5f, 0.0f, -0.6f};
+        const V3 log_rear = on + V3{-6.0f, 0.0f, 0.4f};
+        parts.push_back({fig.depth(on) + 0.2f, [&, log_front, log_rear] {
+                             fig.begin();
+                             fig.capsule(log_rear, log_front, 1.35f, 1.25f, {{112, 84, 58, 255}, {92, 68, 46, 255}, {134, 104, 72, 255}, true, 21u});
+                             fig.end();
+                             fig.begin(1.0f, false);
+                             fig.ball(log_front, 1.0f, {{196, 164, 116, 255}});
+                             fig.ball(log_rear, 1.05f, {{196, 164, 116, 255}});
+                             fig.end();
+                         }});
+    }
+    if (b.sack) {  // on his back, over the right shoulder: burlap, lumpy with the stone, tied at its neck
+        const V3 up = unit(b.chest - b.pelvis);
+        const V3 back_dir{-up.z, 0.0f, up.f};
+        const V3 c = mix(b.pelvis, b.chest, 0.75f) + back_dir * 2.8f + V3{0.0f, -0.4f, 0.8f};
+        parts.push_back({fig.depth(c) - 0.05f, [&, c] {
+                             fig.begin();
+                             fig.capsule(c + V3{0.0f, 0.0f, -1.6f}, c + V3{0.0f, 0.0f, 1.4f}, 2.6f, 2.2f, {{158, 138, 98, 255}, {130, 112, 78, 255}, {176, 156, 114, 255}, true, 7u});
+                             fig.ball(c + V3{0.6f, -0.3f, 3.2f}, 1.0f, {{140, 120, 84, 255}});
                              fig.end();
                          }});
     }

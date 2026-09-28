@@ -410,6 +410,8 @@ bool gun_toward_viewer(Vector2 dir, int dirs) {
 }
 // A tile of height in a Frame's pixels: the view is from 30 degrees up.
 constexpr float kZPerTile = 39.2f;
+// A felled tree falls over in this long (seconds).
+constexpr float kTreeFallSeconds = 1.1f;
 // Tracks in the ground fade over this long (seconds).
 constexpr float kTrackSeconds = 300.0f;
 // A scout's platform up a tree: how high (pixels).
@@ -439,7 +441,10 @@ int truck_variant(TruckModel model, int wear, int sink, int load);
 // What a truck carries, as it shows: food in sacks; building materials
 // (boards, bricks, cement); logs from the wood; stone from the quarry;
 // ammunition in its boxes; shells; fuel in drums; a tanker's fuel (not seen).
-enum class Cargo : uint8_t { None, Sacks, Boards, Logs, Stone, Crates, Shells, Drums, Fuel, Count };
+// (LogsSome, LogsMost, StoneSome, StoneMost: a truck's bed a third, two thirds full as the rear troops load it.)
+enum class Cargo : uint8_t { None, Sacks, Boards, Logs, Stone, Crates, Shells, Drums, Fuel, LogsSome, LogsMost, StoneSome, StoneMost, Count };
+bool is_logs(Cargo c) { return c == Cargo::Logs || c == Cargo::LogsSome || c == Cargo::LogsMost; }
+bool is_stone(Cargo c) { return c == Cargo::Stone || c == Cargo::StoneSome || c == Cargo::StoneMost; }
 Cargo cargo_of(const engine::World& world, const engine::Unit& u);
 // A spot a vehicle on fire burns at, the same all the while: along it and
 // across it (tiles), up (pixels), how big a flame (0..2).
@@ -1557,6 +1562,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     shots_seen_ = std::move(shots);
     std::erase_if(shot_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     std::erase_if(thrown_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    update_work(world, dt);
     // Men hit since the last frame flinch.
     for (const engine::Unit& u : world.units()) {
         if (engine::unit_type(u.type).vehicle) continue;
@@ -1821,7 +1827,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 break;
             case Particle::Kind::Flame:
             case Particle::Kind::Flash:
-            case Particle::Kind::Muzzle: break;
+            case Particle::Kind::Muzzle:
+            case Particle::Kind::Toss: break;
         }
     }
     std::erase_if(particles_, [](const Particle& p) { return p.age >= p.life; });
@@ -8071,6 +8078,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const engine::Structure* post = nullptr;  // a scout's observation post
         const BusStop* stop = nullptr;
         bool yard = false;  // a village yard's things on house_x, house_y
+        const FallingTree* falling = nullptr;
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
         const TrainCar* car = nullptr;
@@ -8086,6 +8094,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
         drawables.push_back({.depth = g.x + g.y, .unit = &u});
+    }
+    for (const FallingTree& f : falling_trees_) {
+        if (in_view(world, f.ground)) drawables.push_back({.depth = f.ground.x + f.ground.y, .falling = &f});
     }
     for (const BusStop& b : bus_stops_) {
         if (!reveal_ && fog(world, static_cast<int>(b.ground.x), static_cast<int>(b.ground.y)) == kUnexplored) continue;
@@ -8319,6 +8330,20 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             if (!draw_baked(want)) draw_by_hand(map, want);
         } else if (d.rock) {
             draw_rock(map, d.house_x, d.house_y, map.resource({d.house_x, d.house_y}));
+        } else if (d.falling) {
+            // Felled: over it goes, faster and faster, about its foot; then lying there a moment, fading.
+            const FallingTree& f = *d.falling;
+            const auto it = tree_sheets_.find(f.sheet);
+            if (it != tree_sheets_.end()) {
+                const SpriteSheet& sh = it->second;
+                const float t = std::min(1.0f, f.age / kTreeFallSeconds);
+                const float angle = f.side * 86.0f * t * t;
+                const float fade = f.age < kTreeFallSeconds ? 1.0f : std::max(0.0f, 1.0f - (f.age - kTreeFallSeconds) / 1.2f);
+                const Vector2 b = on_terrain(map, f.ground);
+                DrawTexturePro(sh.atlas, {static_cast<float>(f.variant * sh.w), 0.0f, static_cast<float>(sh.w), static_cast<float>(sh.h)},
+                               {std::round(b.x), std::round(b.y), static_cast<float>(sh.w), static_cast<float>(sh.h)}, sh.origin, angle,
+                               ColorAlpha(lit(WHITE), fade));
+            }
         } else if (d.stop) {
             // Baked into pixel art as the buildings are.
             const int tx = static_cast<int>(d.stop->ground.x);
@@ -8378,9 +8403,15 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                             3.4f * sz, lit({16, 24, 12, 70}));
                 const SpriteSheet& sh = it->second;
                 const int less = burning.empty() ? -1 : burning_at(t.ground);
+                // An axe biting into it: the whole tree shivers, its crown the most.
+                float shiver = 0.0f;
+                if (const auto hit = chopped_at_.find(static_cast<int>(t.ground.y) * map.width() + static_cast<int>(t.ground.x)); hit != chopped_at_.end()) {
+                    const float since = static_cast<float>(GetTime() - hit->second);
+                    if (since < 0.35f) shiver = std::sin(since * 70.0f) * 1.6f * (1.0f - since / 0.35f);
+                }
                 DrawTexturePro(sh.atlas, {static_cast<float>(v * sh.w), 0.0f, static_cast<float>(sh.w), static_cast<float>(sh.h)},
-                               {std::round(b.x - sh.origin.x), std::round(b.y - sh.origin.y), static_cast<float>(sh.w), static_cast<float>(sh.h)},
-                               {0.0f, 0.0f}, 0.0f, lit(less >= 0 ? Color{128, 104, 88, 255} : WHITE));  // (burning: charred)
+                               {std::round(b.x), std::round(b.y), static_cast<float>(sh.w), static_cast<float>(sh.h)}, sh.origin, shiver,
+                               lit(less >= 0 ? Color{128, 104, 88, 255} : WHITE));  // (burning: charred)
                 if (less >= 0) tree_flames(b, tree_variant(t.kind, v, 0), t.shred, less, t.seed);
             }
             g_leaf = 1.0f;
@@ -9462,11 +9493,21 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u
     if (u.order == Order::Ability && u.order_ability == AbilityId::MountAntenna && u.work > 0) {
         return {Pose::Climb, u.work < engine::kAntennaWork * 5 / 7 ? static_cast<int>(t * 3.0f) % 2 : 0};  // up the mast, then at work
     }
-    if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
-    if (u.type == UnitTypeId::Worker && u.order == Order::Gather && u.work > 0) {
-        const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
-        return {Pose::Work, stroke < 0.5f ? 0 : 1};
+    if (u.type == UnitTypeId::Worker) {
+        // A rear trooper: throwing his load down; at the wood with his axe, at
+        // the rock with his pick; carrying a log on his shoulder, stone in a sack.
+        const float heave = since(heave_at_);
+        if (heave < 0.5f) return {Pose::Heave, heave < 0.16f ? 0 : 1};
+        const bool rock = drawn_world_ && drawn_world_->map().contains(u.gather_tile) &&
+                          drawn_world_->map().terrain(u.gather_tile) == engine::Terrain::Rock;
+        if (u.order == Order::Gather && u.work > 0 && !u.moving) {
+            const engine::Tick needed = rock ? engine::kQuarryTicks : engine::kChopTicks;
+            const float stroke = static_cast<float>(u.work % needed) / static_cast<float>(needed);
+            return {rock ? Pose::Quarry : Pose::Work, stroke < 0.5f ? 0 : 1};
+        }
+        if (u.carrying > 0) return {rock ? Pose::CarrySack : Pose::CarryLog, u.moving ? static_cast<int>(t * 8.0f) % 8 : 0};
     }
+    if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
     const bool digging = u.order == Order::Ability &&
                          (u.order_ability == AbilityId::DigTrench || u.order_ability == AbilityId::DigFoxhole ||
                           u.order_ability == AbilityId::BuildParapet || u.order_ability == AbilityId::DigGunPit ||
@@ -9721,7 +9762,6 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
     const auto [pose, frame] = soldier_pose(u);
     const bool crew_set = pose == soldiers::Pose::Crew;
     const float x = feet.x;
-    const float shoulder_y = feet.y - 13.0f;
 
     // Things in front of him on the ground: a mortar's tube on its plate, an AGS on its tripod.
     auto ahead_px = [&](float px) { return Vector2{x + fs.x * px, feet.y + fs.y * px}; };
@@ -9751,29 +9791,10 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
             disc({body.x - fs.x * 0.5f + side * 0.5f, body.y + 2.0f}, 2.2f, {58, 66, 48, 255});  // the drum
         }
     };
-    // A bundle on his back, as big as he's got: logs, their ends; stones in a sack.
-    auto load = [&] {
-        if (u.carrying <= 0) return;
-        const float size = 0.5f + 0.5f * std::min(1.0f, static_cast<float>(u.carrying) / engine::kCarryCapacity);
-        const Vector2 at{std::round(x - fs.x * 3.5f), std::round(shoulder_y + 1.0f)};
-        if (u.carrying_type == engine::Resource::Materials) {
-            const int logs = size > 0.8f ? 3 : 2;
-            for (int i = 0; i < logs; ++i) {
-                const float y = at.y - static_cast<float>(i) * 1.6f;
-                const float half = 3.5f * size;
-                DrawRectangleRec({at.x - half, y - 1.0f, half * 2.0f, 2.0f}, lit(i % 2 == 0 ? Color{112, 80, 48, 255} : Color{128, 94, 58, 255}));
-                DrawRectangleRec({at.x + side * half - 0.5f, y - 1.0f, 1.0f, 2.0f}, lit({176, 140, 96, 255}));  // the cut end
-            }
-        } else {
-            disc({at.x, at.y - 1.5f}, 2.6f * size + 0.6f, {112, 104, 80, 255});
-        }
-    };
     const bool toward_us = fs.y > 0.0f;  // what's ahead of him is nearer us than he is
     if (!toward_us) crew_weapon();
-    if (toward_us) load();
     const SpriteSheet& sheet = soldier_sheet(kit_of(type), u.owner);
-    draw_sprite(sheet, feet, facing, soldiers::first_frame(pose) + frame);
-    if (!toward_us) load();
+    draw_sprite(sheet, feet, facing, soldiers::first_frame(pose) + frame);  // (a rear trooper's load: in his pose)
     if (toward_us) crew_weapon();
 }
 
@@ -12357,7 +12378,7 @@ std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId 
 
 // A truck's sprite sheets by its wear, how far it's sunk, its load (a Cargo).
 int truck_variant(TruckModel model, int wear, int sink, int load) {
-    return ((static_cast<int>(model) * 6 + wear) * 5 + sink) * 10 + load;
+    return ((static_cast<int>(model) * 6 + wear) * 5 + sink) * 16 + load;
 }
 
 // Where a truck's parts are: its axles, its cab (along, its back and its
@@ -12467,7 +12488,7 @@ std::vector<FlameSpot> vehicle_flames(engine::UnitTypeId type, engine::PlayerId 
             }
         } else {
             add(t.bed_mid + t.bed_half * 0.45f, -0.04f, t.bed_z - 1.0f, 1);
-            add(t.bed_mid - t.bed_half * 0.5f, 0.05f, t.bed_z - 1.0f, cargo == Cargo::None || cargo == Cargo::Stone ? 0 : 1);
+            add(t.bed_mid - t.bed_half * 0.5f, 0.05f, t.bed_z - 1.0f, cargo == Cargo::None || is_stone(cargo) ? 0 : 1);
         }
         return spots;
     }
@@ -12640,11 +12661,14 @@ void draw_cargo(const Frame& fr, Cargo cargo, float a0, float a1, float c, float
             }
             break;
         }
-        case Cargo::Logs: {  // five logs, three and two, longer than the bed; stakes up its sides
+        case Cargo::LogsSome:
+        case Cargo::LogsMost:
+        case Cargo::Logs: {  // five logs, three and two, longer than the bed; stakes up its sides (two, three as it's loaded)
             const float r = wid / 6.0f;
             const float rz = 2.4f;
-            for (int layer = 0; layer < (burnt ? 1 : 2); ++layer) {
-                const int n = layer == 0 ? 3 : 2;
+            const int logs = cargo == Cargo::LogsSome ? 2 : cargo == Cargo::LogsMost ? 3 : 5;
+            for (int layer = 0; layer < (burnt || logs <= 3 ? 1 : 2); ++layer) {
+                const int n = layer == 0 ? std::min(3, logs) : 2;
                 for (int j = 0; j < n; ++j) {
                     const float mc = -c + r + (layer == 0 ? 2.0f * r * static_cast<float>(j) : r + 2.0f * r * static_cast<float>(j)) + (layer == 0 ? 0.0f : 0.0f);
                     const float lift = static_cast<float>(layer) * rz * 1.7f;
@@ -12661,8 +12685,11 @@ void draw_cargo(const Frame& fr, Cargo cargo, float a0, float a1, float c, float
             }
             break;
         }
-        case Cargo::Stone: {  // a heap of broken stone, higher in the middle
-            for (int i = 0; i < 12; ++i) {
+        case Cargo::StoneSome:
+        case Cargo::StoneMost:
+        case Cargo::Stone: {  // a heap of broken stone, higher in the middle (lower as it's loaded)
+            const int stones = cargo == Cargo::StoneSome ? 5 : cargo == Cargo::StoneMost ? 9 : 12;
+            for (int i = 0; i < stones; ++i) {
                 const float ma = a0 + len * (0.1f + 0.8f * rnd(60 + i));
                 const float mc = -c * 0.85f + wid * 0.85f * rnd(70 + i);
                 const float s = 0.035f + 0.03f * rnd(80 + i);
@@ -13193,15 +13220,19 @@ Cargo cargo_of(const engine::World& world, const engine::Unit& u) {
                 case engine::Resource::Fuel: return Cargo::Drums;
                 case engine::Resource::Materials: {
                     if (u.order != engine::Order::Collect) return Cargo::Boards;  // off the train: building materials
-                    const engine::TileMap& map = world.map();  // taking in the rear troops' work: at a quarry stone, else logs
+                    // Taking in the rear troops' work: at a quarry stone, else logs; the bed filling as they bring it.
+                    const engine::TileMap& map = world.map();
+                    const int fill = u.carrying * 3 < engine::kTruckCapacity ? 0 : u.carrying * 3 < engine::kTruckCapacity * 2 ? 1 : 2;
                     for (int dy = -1; dy <= 1; ++dy) {
                         for (int dx = -1; dx <= 1; ++dx) {
                             const int x = u.order_goal.x + dx;
                             const int y = u.order_goal.y + dy;
-                            if (map.contains_tile(x, y) && map.terrain(x, y) == engine::Terrain::Rock) return Cargo::Stone;
+                            if (map.contains_tile(x, y) && map.terrain(x, y) == engine::Terrain::Rock) {
+                                return fill == 0 ? Cargo::StoneSome : fill == 1 ? Cargo::StoneMost : Cargo::Stone;
+                            }
                         }
                     }
-                    return Cargo::Logs;
+                    return fill == 0 ? Cargo::LogsSome : fill == 1 ? Cargo::LogsMost : Cargo::Logs;
                 }
                 default: return Cargo::None;
             }
@@ -13210,7 +13241,7 @@ Cargo cargo_of(const engine::World& world, const engine::Unit& u) {
 }
 int truck_load(Cargo c) { return c == Cargo::Fuel ? 0 : static_cast<int>(c); }  // (a tanker's tank looks the same full)
 int wreck_load(Cargo c) {  // the rounds and the fuel went up with it; the rest lies there burnt
-    return c == Cargo::Sacks || c == Cargo::Boards || c == Cargo::Logs || c == Cargo::Stone || c == Cargo::Drums ? static_cast<int>(c) : 0;
+    return c == Cargo::Sacks || c == Cargo::Boards || is_logs(c) || is_stone(c) || c == Cargo::Drums ? static_cast<int>(c) : 0;
 }
 bool truck_turns_top(TruckModel m) { return truck_look_of(m).top != Top::None; }
 Vector2 truck_top_ring_of(TruckModel m) { return truck_top_ring(truck_look_of(m)); }
@@ -14053,6 +14084,176 @@ float WorldRenderer::gun_elevation(const engine::Unit& u) const {
     return 0.0f;
 }
 
+// The rear troops at their work, as it looks. Each blow of an axe: chips of
+// wood flying, the tree shivering; of a pick: chips of stone, a puff of its
+// dust, now and then a spark. A tree whose turn it was comes down: over it
+// goes from its stump, away from the axe. A load handed in: thrown up into
+// the truck's bed (the bed filling), or down by the door of the depot.
+void WorldRenderer::update_work(const engine::World& world, float dt) {
+    const engine::TileMap& map = world.map();
+    const double now = GetTime();
+    auto unit = [](Vector2 v) {
+        const float l = std::hypot(v.x, v.y);
+        return l > 0.0f ? Vector2{v.x / l, v.y / l} : Vector2{1.0f, 0.0f};
+    };
+    for (const engine::Unit& u : world.units()) {
+        if (u.type != engine::UnitTypeId::Worker) continue;
+        const bool rock = map.contains(u.gather_tile) && map.terrain(u.gather_tile) == engine::Terrain::Rock;
+        const Vector2 f = unit(to_vector2(u.facing));
+        const Vector2 g = to_vector2(u.pos);
+        // The blow.
+        int frame = -1;
+        if (u.order == engine::Order::Gather && u.work > 0 && !u.moving) {
+            const engine::Tick needed = rock ? engine::kQuarryTicks : engine::kChopTicks;
+            frame = static_cast<float>(u.work % needed) / static_cast<float>(needed) < 0.5f ? 0 : 1;
+        }
+        auto [stroke, fresh] = stroke_.try_emplace(u.id, frame);
+        if (!fresh && stroke->second == 0 && frame == 1 && !u.inside && shows(world, u)) {
+            const Vector2 hit{g.x + f.x * 0.3f, g.y + f.y * 0.3f};
+            for (int i = 0; i < (rock ? 5 : 6); ++i) {
+                Particle p{};
+                p.kind = Particle::Kind::Clod;
+                const float a = (fx_random() - 0.5f) * 2.4f;
+                const float out = 0.4f + 0.7f * fx_random();
+                p.ground = hit;
+                p.vel = {(-f.x * std::cos(a) + f.y * std::sin(a)) * out, (-f.y * std::cos(a) - f.x * std::sin(a)) * out};  // back towards him, fanned out
+                p.z = rock ? 1.5f : 4.0f + 3.0f * fx_random();
+                p.vz = 22.0f + 30.0f * fx_random();
+                p.life = 0.55f + 0.35f * fx_random();
+                p.size = 0.9f + 0.7f * fx_random();
+                p.color = rock ? (i % 2 == 0 ? Color{150, 146, 138, 255} : Color{112, 108, 100, 255})
+                               : (i % 3 == 0 ? Color{220, 190, 136, 255} : Color{164, 124, 80, 255});
+                particles_.push_back(p);
+            }
+            if (rock) {  // its dust, a spark off the steel now and then
+                Particle d{};
+                d.kind = Particle::Kind::Smoke;
+                d.ground = hit;
+                d.z = 2.0f;
+                d.vz = 5.0f;
+                d.vel = {0.05f, -0.03f};
+                d.life = 1.0f;
+                d.size = 1.8f;
+                d.grow = 4.0f;
+                d.color = {186, 176, 156, 150};
+                particles_.push_back(d);
+                if (fx_random() < 0.35f) spawn_sparks(hit, 2.0f, 2, {255, 226, 150, 255}, 0.6f);
+            } else {
+                chopped_at_[u.gather_tile.y * map.width() + u.gather_tile.x] = now;
+                if (tree_standing_.find(u.gather_tile.y * map.width() + u.gather_tile.x) == tree_standing_.end()) {
+                    tree_standing_[u.gather_tile.y * map.width() + u.gather_tile.x] = 255;  // (to be counted below)
+                }
+            }
+        }
+        stroke->second = frame;
+        // The load handed in.
+        auto [carried, first] = carried_.try_emplace(u.id, u.carrying);
+        if (!first && u.carrying < carried->second && !u.inside && shows(world, u)) {
+            const engine::Unit* truck = nullptr;
+            float best = 3.0f;
+            for (const engine::Unit& t : world.units()) {
+                if (t.owner != u.owner || t.order != engine::Order::Collect || engine::unit_type(t.type).supplies != engine::Resource::Count) continue;
+                const float d = std::hypot(to_float(t.pos.x - u.pos.x), to_float(t.pos.y - u.pos.y));
+                if (d < best) {
+                    best = d;
+                    truck = &t;
+                }
+            }
+            Vector2 to{g.x + f.x * 0.35f, g.y + f.y * 0.35f};
+            float z1 = 1.0f;
+            if (truck) {  // into its bed, behind the cab
+                const Vector2 tf = unit(to_vector2(truck->facing));
+                to = {to_float(truck->pos.x) - tf.x * 0.28f, to_float(truck->pos.y) - tf.y * 0.28f};
+                z1 = 12.0f;
+            }
+            Particle p{};
+            p.kind = Particle::Kind::Toss;
+            p.ground = {g.x + f.x * 0.1f, g.y + f.y * 0.1f};
+            p.life = 0.45f;
+            p.vel = {(to.x - p.ground.x) / p.life, (to.y - p.ground.y) / p.life};
+            p.size = rock ? 1.0f : 0.0f;
+            p.dir = {15.0f, z1};
+            p.color = WHITE;
+            particles_.push_back(p);
+            heave_at_[u.id] = now;
+        }
+        carried->second = u.carrying;
+    }
+    std::erase_if(stroke_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    std::erase_if(carried_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    std::erase_if(heave_at_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+    std::erase_if(chopped_at_, [&](const auto& e) { return now - e.second > 2.0; });
+
+    // Trees coming down on the tiles being cut: as many fewer as stand now.
+    for (auto it = tree_standing_.begin(); it != tree_standing_.end();) {
+        const int tx = it->first % map.width();
+        const int ty = it->first / map.width();
+        const bool wood = map.terrain(tx, ty) == engine::Terrain::Forest;
+        auto forest = [&](int x, int y) { return map.contains_tile(x, y) && map.terrain(x, y) == engine::Terrain::Forest; };
+        const bool along_x = forest(tx - 1, ty) || forest(tx + 1, ty);
+        const bool along_y = forest(tx, ty - 1) || forest(tx, ty + 1);
+        const int line = along_x && !along_y ? 1 : along_y && !along_x ? 2 : !along_x && !along_y ? 3 : 0;
+        const float left = wood ? std::clamp(static_cast<float>(map.resource({tx, ty})) / engine::kForestMaterials, 0.0f, 1.0f) : 0.0f;
+        size_t count = 0;
+        const std::array<Tree, 3> trees = trees_on_tile(tx, ty, line, 1.0f, count);
+        const auto standing = static_cast<uint8_t>(std::ceil(static_cast<float>(count) * left - 0.001f));
+        if (it->second != 255 && standing < it->second) {
+            for (size_t i = standing; i < std::min<size_t>(it->second, count); ++i) {
+                const Tree& t = trees[i];
+                const int v = t.kind == TreeKind::Oak && t.size >= 1.3f ? kTreeVariants - 1 - static_cast<int>(t.seed % 2)
+                                                                        : static_cast<int>((t.seed >> 3) % kTreeVariants);
+                // Away from whoever cut it.
+                float side = (t.seed >> 5) % 2 == 0 ? 1.0f : -1.0f;
+                for (const engine::Unit& u : world.units()) {
+                    if (u.type != engine::UnitTypeId::Worker || u.gather_tile != engine::TilePos{tx, ty}) continue;
+                    const Vector2 d = iso_offset({t.ground.x - to_float(u.pos.x), t.ground.y - to_float(u.pos.y)});
+                    side = d.x >= 0.0f ? 1.0f : -1.0f;
+                    break;
+                }
+                falling_trees_.push_back({t.ground, static_cast<int>(t.kind) * kTreeStages + tree_stage(map.shred(tx, ty)), v, side});
+            }
+        }
+        it->second = standing;
+        it = wood ? std::next(it) : tree_standing_.erase(it);
+    }
+    // The felled ones: down with a crash (dust, leaves), lying a moment.
+    for (FallingTree& f : falling_trees_) {
+        const float before = f.age;
+        f.age += dt;
+        if (before < kTreeFallSeconds && f.age >= kTreeFallSeconds) {
+            // Where its crown hit: off to the side on the screen, along the ground.
+            const Vector2 across{0.45f * f.side, -0.45f * f.side};
+            for (int i = 0; i < 4; ++i) {
+                Particle d{};
+                d.kind = Particle::Kind::Smoke;
+                const float k = 0.3f + 0.25f * static_cast<float>(i);
+                d.ground = {f.ground.x + across.x * k, f.ground.y + across.y * k};
+                d.z = 2.0f;
+                d.vz = 6.0f;
+                d.vel = {0.08f, -0.04f};
+                d.life = 1.4f + 0.5f * fx_random();
+                d.size = 2.5f + fx_random();
+                d.grow = 5.0f;
+                d.color = {176, 164, 132, 160};
+                particles_.push_back(d);
+            }
+            for (int i = 0; i < 6; ++i) {  // leaves, twigs knocked off
+                Particle l{};
+                l.kind = Particle::Kind::Clod;
+                l.ground = {f.ground.x + across.x * (0.6f + 0.4f * fx_random()), f.ground.y + across.y * (0.6f + 0.4f * fx_random())};
+                l.vel = {(fx_random() - 0.5f) * 0.8f, (fx_random() - 0.5f) * 0.8f};
+                l.z = 3.0f;
+                l.vz = 20.0f + 20.0f * fx_random();
+                l.life = 0.9f + 0.5f * fx_random();
+                l.size = 1.0f + 0.5f * fx_random();
+                l.color = i % 3 == 0 ? Color{110, 84, 56, 255} : Color{82, 124, 58, 255};
+                particles_.push_back(l);
+            }
+        }
+    }
+    std::erase_if(falling_trees_, [](const FallingTree& f) { return f.age > kTreeFallSeconds + 1.2f; });
+}
+
 Vector2 WorldRenderer::muzzle_of(const engine::Unit& u) const {
     const engine::UnitTypeDef& def = engine::unit_type(u.type);
     const float t = gun_elevation(u) * 0.0174533f;
@@ -14492,6 +14693,23 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
                 draw_fx(s, static_cast<int>(t * static_cast<float>(s.frames)), at);
                 break;
             }
+            case Particle::Kind::Toss: {  // a log turning over as it flies, a sack; up and over, down into the bed
+                const float z = p.dir.x + (p.dir.y - p.dir.x) * t + 10.0f * 4.0f * t * (1.0f - t);
+                const Vector2 c{g.x, g.y - z};
+                if (p.size < 0.5f) {
+                    const float a = t * 2.8f + static_cast<float>(p.seed % 7u) * 0.3f;
+                    const Vector2 d{std::cos(a) * 5.0f, std::sin(a) * 2.2f};
+                    DrawLineEx({c.x - d.x, c.y - d.y}, {c.x + d.x, c.y + d.y}, 4.4f, lit({34, 26, 20, 255}));  // (its outline)
+                    DrawLineEx({c.x - d.x, c.y - d.y}, {c.x + d.x, c.y + d.y}, 2.6f, lit({112, 84, 58, 255}));
+                    DrawLineV({c.x - d.x, c.y - d.y - 1.0f}, {c.x + d.x, c.y + d.y - 1.0f}, lit({140, 108, 74, 255}));
+                    for (const float k : {-1.0f, 1.0f}) DrawRectangleRec({std::round(c.x + d.x * k - 1.0f), std::round(c.y + d.y * k - 1.0f), 2.0f, 2.0f}, lit({200, 168, 118, 255}));
+                } else {
+                    DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), 4.4f, 3.6f, lit({40, 34, 24, 255}));
+                    DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), 3.4f, 2.7f, lit({158, 138, 98, 255}));
+                    DrawEllipse(static_cast<int>(c.x - 1.0f), static_cast<int>(c.y - 1.0f), 1.6f, 1.2f, lit({182, 162, 118, 255}));
+                }
+                break;
+            }
             case Particle::Kind::Casing: {
                 DrawRectangleRec({std::round(at.x - 1.0f), std::round(at.y - 0.5f), 2.0f, 1.0f}, ColorAlpha(p.color, t > 0.8f ? (1.0f - t) / 0.2f : 1.0f));
                 break;
@@ -14799,7 +15017,7 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
                 }
             }
         }
-        if (cargo == Cargo::Logs) {  // a couple rolled off, charred
+        if (is_logs(cargo)) {  // a couple rolled off, charred
             for (int i = 0; i < 2; ++i) {
                 const float side = (i == 0 ? 1.0f : -1.0f) * (look.width * k + 0.12f + 0.08f * hash_unit(hc >> (4 + i)));
                 block(fr, -look.length * k * 0.4f, look.length * k * 0.1f, side - 0.035f, side + 0.035f, 0.0f, 2.2f, {50, 40, 32, 255}, 0.0f, 0.0f, 0.015f);

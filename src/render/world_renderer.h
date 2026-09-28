@@ -95,7 +95,8 @@ private:
     struct Particle {
         // Blow: smoke blown out of a gun's muzzle, off the ground by its blast: drawn drawn out along its flight.
         // Muzzle: the fire out of a muzzle (a back-blast's) along `dir` on the screen, its shape `size` (see MuzzleFire).
-        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing, Blow, Muzzle };
+        // Toss: a rear trooper's load thrown into a truck's bed, down by a door: a log (`size` 0) or a sack of stone (1), from `dir.x` up to `dir.y` up.
+        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing, Blow, Muzzle, Toss };
         Kind kind;
         Vector2 ground;  // tiles
         float z;         // pixels above the ground
@@ -132,6 +133,24 @@ private:
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
     std::unordered_map<engine::EntityId, double> shot_at_;           // when (GetTime) each crew's weapon last fired: its recoil
     std::unordered_map<engine::EntityId, double> thrown_at_;         // when each man last threw a hand grenade
+    // Rear troops at work: when each last threw his load down (into a truck,
+    // at a door), what each carried, each one's last stroke (0 up, 1 down).
+    std::unordered_map<engine::EntityId, double> heave_at_;
+    std::unordered_map<engine::EntityId, int32_t> carried_;
+    std::unordered_map<engine::EntityId, int> stroke_;
+    // A forest tile: when an axe's blow last shook its trees; its trees standing, as last drawn.
+    std::unordered_map<int, double> chopped_at_;
+    mutable std::unordered_map<int, uint8_t> tree_standing_;
+    // Trees felled: falling over from where they stood (away from the axe), lying a moment.
+    struct FallingTree {
+        Vector2 ground;
+        int sheet;  // its sprite sheet and variant
+        int variant;
+        float side;  // which way it falls on the screen
+        float age = 0.0f;
+    };
+    mutable std::vector<FallingTree> falling_trees_;
+    void update_work(const engine::World& world, float dt);
     // Foot soldiers as last seen: their hp, and when (GetTime) they were last hit (they flinch).
     std::unordered_map<engine::EntityId, std::pair<int32_t, double>> hurt_;
     // Vehicles as last seen: what they had, how long since each fired (its
