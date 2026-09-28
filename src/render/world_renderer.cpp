@@ -3712,7 +3712,9 @@ void wear_walls(const Face& f, float k, float v0, float v1, int stage, Color und
 void fallen_roof(const engine::TileMap& map, Rectangle r, float wall, float rise, bool along_x, bool gable, Color walls, Color cover, bool steel,
                  uint32_t seed);  // below, with the roofs
 
-// A small house on one tile, as they stand in the villages of the Donbas:
+// A house on its plot, as they stand in the villages of the Donbas (on a
+// village's 2 x 2 plot, a good deal bigger than a tank; its walls, its roof,
+// its windows, its chimney all to that size):
 // whitewashed (the old clay ones), red, yellow or grey silicate brick, or
 // plastered in a pale colour; windows in painted frames (white, blue,
 // green or brown), blue shutters on the whitewashed ones; a dark painted
@@ -3721,26 +3723,24 @@ void fallen_roof(const engine::TileMap& map, Rectangle r, float wall, float rise
 // chimney, a TV aerial or a satellite dish; a glazed porch on some. Hit:
 // windows broken, soot over them, plaster fallen off showing the brick
 // under it, cracks; holes in the roof, the rafters showing; burnt black.
-void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
-    const uint32_t h = tile_hash(tx, ty);
+void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float damage) {
     auto rnd = [h](int i) { return hash_unit(tile_hash(static_cast<int>(h >> 5) + i * 13, i * 31 + 7)); };
-    const auto x = static_cast<float>(tx);
-    const auto y = static_cast<float>(ty);
-    // Square, or long one way or the other.
+    // The plot's size (1 a tile); the house's size by it (1 on one tile).
+    const float s = std::sqrt(plot.width * plot.height);
+    const float k = 0.25f + 0.75f * s;
+    // Square, or long one way or the other; a little off the middle of a big plot.
     const int shape = static_cast<int>(h % 3);
-    float x0 = x + 0.14f;
-    float x1 = x + 0.86f;
-    float y0 = y + 0.14f;
-    float y1 = y + 0.86f;
-    if (shape == 1) {
-        y0 = y + 0.24f;
-        y1 = y + 0.8f;
-    } else if (shape == 2) {
-        x0 = x + 0.24f;
-        x1 = x + 0.8f;
-    }
-    const float wall_h = 11.0f + 3.0f * rnd(1);
-    const float roof_h = 8.0f + 2.5f * rnd(2);
+    const float ix = (shape == 2 ? 0.23f : shape == 1 ? 0.1f : 0.14f) * s;
+    const float iy = (shape == 1 ? 0.23f : shape == 2 ? 0.1f : 0.14f) * s;
+    const float ox = s > 1.0f ? (rnd(23) - 0.5f) * ix * 0.8f : 0.0f;
+    const float oy = s > 1.0f ? (rnd(24) - 0.5f) * iy * 0.8f : 0.0f;
+    const float x0 = plot.x + ix + ox;
+    const float x1 = plot.x + plot.width - ix + ox;
+    const float y0 = plot.y + iy + oy;
+    const float y1 = plot.y + plot.height - iy + oy;
+    const float wall_h = (11.0f + 3.0f * rnd(1)) * k;
+    const float roof_h = (8.0f + 2.5f * rnd(2)) * k;
+    const float plinth_h = 2.5f * k;
     const Vector2 ground[4] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
     Vector2 base[4];
     Vector2 top[4];
@@ -3767,14 +3767,14 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
     // Shrapnel's pits, the plaster off where it's been hit (the brick, the clay under it), burnt black at the worst.
     const bool plastered = kind == Wall::Whitewash || kind == Wall::Pastel;
     const Color under = plastered ? Color{150, 96, 70, 255} : shade(wall, 0.8f);
-    wear_walls(lit_face, 1.0f, 2.5f, wall_h, stage, under, plastered, h);
-    wear_walls(shade_face, 0.72f, 2.5f, wall_h, stage, under, plastered, h ^ 0x77u);
+    wear_walls(lit_face, 1.0f, plinth_h, wall_h, stage, under, plastered, h);
+    wear_walls(shade_face, 0.72f, plinth_h, wall_h, stage, under, plastered, h ^ 0x77u);
     // A dark painted plinth.
     static constexpr Color kPlinths[3] = {{96, 86, 78, 255}, {70, 74, 80, 255}, {110, 66, 52, 255}};
     const Color plinth = shade(kPlinths[static_cast<int>(rnd(14) * 3.0f) % 3], soot);
-    face_fill(lit_face, 0.0f, 1.0f, 0.0f, 2.5f, plinth);
-    face_fill(shade_face, 0.0f, 1.0f, 0.0f, 2.5f, shade(plinth, 0.75f));
-    face_line(lit_face, 0.0f, 2.5f, 1.0f, 2.5f, shade(plinth, 1.3f));
+    face_fill(lit_face, 0.0f, 1.0f, 0.0f, plinth_h, plinth);
+    face_fill(shade_face, 0.0f, 1.0f, 0.0f, plinth_h, shade(plinth, 0.75f));
+    face_line(lit_face, 0.0f, plinth_h, 1.0f, plinth_h, shade(plinth, 1.3f));
 
     // Windows in painted frames; blue shutters on the whitewashed ones; a door with its step.
     static constexpr Color kFrames[4] = {{236, 234, 226, 255}, {70, 110, 172, 255}, {74, 132, 92, 255}, {120, 84, 56, 255}};
@@ -3787,45 +3787,55 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
         look.shutters = false;
     }
     const float sill = wall_h * 0.34f;
-    const float wh = std::min(5.5f, wall_h * 0.42f);
+    const float wh = std::min(5.5f * k, wall_h * 0.42f);
     auto broken = [&](int i) { return stage >= 3 || (damage > 0.25f && rnd(40 + i) < damage * 1.2f); };
-    window_on(lit_face, 0.3f, sill, 3.6f, wh, look, broken(0), 1.0f);
-    window_on(lit_face, 0.72f, sill, 3.6f, wh, look, broken(1), 1.0f);
-    window_on(shade_face, 0.32f, sill, 3.6f, wh, look, broken(2), 0.72f);
-    door_on(shade_face, 0.74f, 3.4f, wall_h * 0.68f, {112, 78, 52, 255}, 0.8f * soot);
+    // Along the lit wall a window every half a tile or so (two on a small
+    // house); on the shaded one the door at its end, windows before it.
+    struct Pane {
+        const Face* face;
+        float at;
+    };
+    std::vector<Pane> panes;
+    const int lit_n = std::max(2, static_cast<int>(std::lround((y1 - y0) / 0.5f)));
+    for (int i = 0; i < lit_n; ++i) panes.push_back({&lit_face, (static_cast<float>(i) + 0.5f) / static_cast<float>(lit_n) * 0.84f + 0.08f});
+    const int shade_n = std::max(1, static_cast<int>(std::lround((x1 - x0) / 0.5f)) - 1);
+    for (int i = 0; i < shade_n; ++i) panes.push_back({&shade_face, (static_cast<float>(i) + 0.5f) / static_cast<float>(shade_n) * 0.56f + 0.06f});
+    for (size_t i = 0; i < panes.size(); ++i) {
+        window_on(*panes[i].face, panes[i].at, sill, 3.6f * k, wh, look, broken(static_cast<int>(i)), panes[i].face == &lit_face ? 1.0f : 0.72f);
+    }
+    door_on(shade_face, 0.78f, 3.4f * k, wall_h * 0.68f, {112, 78, 52, 255}, 0.8f * soot);
     if (damage > 0.3f) {  // soot over the broken windows
-        for (int i = 0; i < 3; ++i) {
-            if (!broken(i)) continue;
-            const Face& f = i < 2 ? lit_face : shade_face;
-            soot_on(f, i == 0 ? 0.3f : i == 1 ? 0.72f : 0.32f, sill + wh, 5.0f, wall_h - sill - wh + 2.0f);
+        for (size_t i = 0; i < panes.size(); ++i) {
+            if (!broken(static_cast<int>(i))) continue;
+            soot_on(*panes[i].face, panes[i].at, sill + wh, 5.0f * k, wall_h - sill - wh + 2.0f);
         }
         crack_on(rnd(18) < 0.5f ? lit_face : shade_face, 0.5f + 0.3f * rnd(19), wall_h - 1.0f, wall_h * 0.6f, h);
     }
-    if (stage == 2 && broken(0)) fire_spot(lit_face.at(0.3f, sill + wh * 0.3f), true);  // burning inside
+    if (stage == 2 && broken(0)) fire_spot(lit_face.at(panes.front().at, sill + wh * 0.3f), true);  // burning inside
     // The yellow gas pipe along the lit wall under the eaves, down at the corner.
     if (rnd(6) < 0.7f) {
         const Color gas = shade({214, 180, 40, 255}, stage >= 3 ? 0.4f : 1.0f);
-        DrawLineEx({base[1].x, base[1].y - wall_h + 2.5f}, {base[2].x, base[2].y - wall_h + 2.5f}, 1.4f, lit(gas));
-        DrawLineEx({base[2].x - 1.0f, base[2].y - wall_h + 2.5f}, {base[2].x - 1.0f, base[2].y - 3.0f}, 1.4f, lit(gas));
+        DrawLineEx({base[1].x, base[1].y - wall_h + 2.5f * k}, {base[2].x, base[2].y - wall_h + 2.5f * k}, 1.4f * std::sqrt(k), lit(gas));
+        DrawLineEx({base[2].x - 1.0f, base[2].y - wall_h + 2.5f * k}, {base[2].x - 1.0f, base[2].y - 3.0f * k}, 1.4f * std::sqrt(k), lit(gas));
     }
     // A glazed porch against the shaded wall on some: a lean-to of small panes.
     if (rnd(20) < 0.35f && shape != 2 && stage < 3) {  // (burnt down with the house)
         const float p0 = 0.08f;
         const float p1 = 0.5f;
-        const float depth = 0.16f;
+        const float depth = 0.16f * s;
         const Vector2 g0 = on_terrain(map, {x0 + (x1 - x0) * p0, y1 + depth});
         const Vector2 g1 = on_terrain(map, {x0 + (x1 - x0) * p1, y1 + depth});
         const Face porch{g1, g0};
         const float ph = wall_h * 0.7f;
         const Color frame = shade(look.frame, 0.85f * soot);
-        face_fill(porch, 0.0f, 1.0f, 0.0f, 3.0f, shade(wall, 0.8f));
-        face_fill(porch, 0.0f, 1.0f, 3.0f, ph, shade({70, 88, 104, 255}, 0.85f));
-        for (float u = 0.0f; u <= 1.001f; u += 0.2f) face_line(porch, u, 3.0f, u, ph, frame);
+        face_fill(porch, 0.0f, 1.0f, 0.0f, 3.0f * k, shade(wall, 0.8f));
+        face_fill(porch, 0.0f, 1.0f, 3.0f * k, ph, shade({70, 88, 104, 255}, 0.85f));
+        for (float u = 0.0f; u <= 1.001f; u += 0.2f / std::max(1.0f, s)) face_line(porch, u, 3.0f * k, u, ph, frame);
         face_line(porch, 0.0f, ph * 0.65f, 1.0f, ph * 0.65f, frame);
         face_line(porch, 0.0f, ph, 1.0f, ph, frame);
         const Vector2 w0 = lerp(base[2], base[3], 1.0f - p1);
         const Vector2 w1 = lerp(base[2], base[3], 1.0f - p0);
-        fill_quad({g1.x, g1.y - ph}, {g0.x, g0.y - ph}, {w1.x, w1.y - ph - 3.0f}, {w0.x, w0.y - ph - 3.0f}, shade({120, 124, 126, 255}, soot));
+        fill_quad({g1.x, g1.y - ph}, {g0.x, g0.y - ph}, {w1.x, w1.y - ph - 3.0f * k}, {w0.x, w0.y - ph - 3.0f * k}, shade({120, 124, 126, 255}, soot));
     }
 
     // The roof, over the eaves: hipped, or gabled along the long side.
@@ -3833,7 +3843,7 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
     static constexpr Color kRoofs[5] = {{128, 130, 130, 255}, {86, 120, 90, 255}, {144, 72, 56, 255}, {164, 86, 58, 255}, {126, 86, 60, 255}};
     const int cover = std::min(4, static_cast<int>(rnd(7) * 5.0f));
     const Color roof = shade(kRoofs[cover], (0.94f + 0.1f * rnd(8)) * soot);
-    constexpr float kEave = 0.05f;
+    const float kEave = 0.05f * s;
     Vector2 eave[4];
     const Vector2 out[4] = {{x0 - kEave, y0 - kEave}, {x1 + kEave, y0 - kEave}, {x1 + kEave, y1 + kEave}, {x0 - kEave, y1 + kEave}};
     for (int i = 0; i < 4; ++i) eave[i] = on_terrain(map, out[i], wall_h - 1.0f);
@@ -3875,37 +3885,44 @@ void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
     // Holes where it's been hit: the dark inside, the rafters across.
     if (damage > 0.3f && stage < 3) {
         const int holes = 1 + static_cast<int>(damage * 3.0f);
-        for (int k = 0; k < holes; ++k) {
-            const Vector2 g{x0 + (x1 - x0) * (0.25f + 0.5f * rnd(60 + k)), y0 + (y1 - y0) * (0.25f + 0.5f * rnd(70 + k))};
+        for (int hole = 0; hole < holes; ++hole) {
+            const Vector2 g{x0 + (x1 - x0) * (0.25f + 0.5f * rnd(60 + hole)), y0 + (y1 - y0) * (0.25f + 0.5f * rnd(70 + hole))};
             const Vector2 c = on_terrain(map, g, wall_h + roof_h * 0.55f);
-            const float r = 2.5f + 2.5f * damage;
+            const float r = (2.5f + 2.5f * damage) * k;
             DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), r + 1.0f, r * 0.6f + 0.8f, lit(shade(roof, 0.55f)));
             DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), r, r * 0.6f, lit({22, 18, 16, 255}));
-            for (const float d : {-1.5f, 1.2f}) DrawLineV({c.x - r, c.y + d - 0.5f}, {c.x + r, c.y + d + 0.8f}, lit({92, 70, 50, 255}));
-            if (k == 0 && stage == 2 && !broken(0)) fire_spot(c, true);
+            for (const float d : {-1.5f, 1.2f}) DrawLineV({c.x - r, c.y + d * k - 0.5f}, {c.x + r, c.y + d * k + 0.8f}, lit({92, 70, 50, 255}));
+            if (hole == 0 && stage == 2 && !broken(0)) fire_spot(c, true);
         }
     }
     // A brick chimney, capped (standing out of the burnt shell, all of it showing); a TV aerial or a satellite dish on some.
     {
-        const float tall = stage >= 3 ? roof_h * 0.7f + 8.0f : 6.0f;
+        const float tall = stage >= 3 ? roof_h * 0.7f + 8.0f * k : 6.0f * k;
+        const float cw = 1.8f * k;
         const Vector2 c = on_terrain(map, {xm + (x1 - xm) * 0.4f, ym - (ym - y0) * 0.2f}, stage >= 3 ? wall_h - 2.0f : wall_h + roof_h * 0.7f);
         const Color brick = shade({150, 78, 60, 255}, soot);
-        fill_quad({c.x - 1.8f, c.y}, {c.x + 1.8f, c.y}, {c.x + 1.8f, c.y - tall}, {c.x - 1.8f, c.y - tall}, brick);
-        fill_quad({c.x - 1.8f, c.y}, {c.x, c.y}, {c.x, c.y - tall}, {c.x - 1.8f, c.y - tall}, shade(brick, 1.2f));
-        for (float k = 2.0f; k < tall; k += 2.0f) DrawLineV({c.x - 1.8f, c.y - k}, {c.x + 1.8f, c.y - k}, lit(shade(brick, 0.75f)));
-        fill_quad({c.x - 2.4f, c.y - tall}, {c.x + 2.4f, c.y - tall}, {c.x + 2.4f, c.y - tall - 1.2f}, {c.x - 2.4f, c.y - tall - 1.2f}, shade(brick, 0.7f));
+        fill_quad({c.x - cw, c.y}, {c.x + cw, c.y}, {c.x + cw, c.y - tall}, {c.x - cw, c.y - tall}, brick);
+        fill_quad({c.x - cw, c.y}, {c.x, c.y}, {c.x, c.y - tall}, {c.x - cw, c.y - tall}, shade(brick, 1.2f));
+        for (float row = 2.0f; row < tall; row += 2.0f) DrawLineV({c.x - cw, c.y - row}, {c.x + cw, c.y - row}, lit(shade(brick, 0.75f)));
+        fill_quad({c.x - cw - 0.6f * k, c.y - tall}, {c.x + cw + 0.6f * k, c.y - tall}, {c.x + cw + 0.6f * k, c.y - tall - 1.2f * k},
+                  {c.x - cw - 0.6f * k, c.y - tall - 1.2f * k}, shade(brick, 0.7f));
     }
-    if (stage >= 3) rubble_heap(on_terrain(map, {x1 + 0.1f, y0 + (y1 - y0) * 0.6f}), 12.0f, 3.5f, {190, 182, 168, 255}, {150, 86, 62, 255}, h + 9u, 2);
+    if (stage >= 3) rubble_heap(on_terrain(map, {x1 + 0.1f * s, y0 + (y1 - y0) * 0.6f}), 12.0f * k, 3.5f * k, {190, 182, 168, 255}, {150, 86, 62, 255}, h + 9u, 2);
     if (rnd(11) < 0.45f && damage < 0.6f) {
         const Vector2 b = on_terrain(map, {xm - (xm - x0) * 0.4f, ym}, wall_h + roof_h * 0.8f);
-        fine_line(b, {b.x, b.y - 11.0f}, {70, 70, 70, 255});
-        for (const float k : {8.0f, 10.5f}) fine_line({b.x - 3.5f, b.y - k + 1.0f}, {b.x + 3.5f, b.y - k - 1.0f}, {70, 70, 70, 255});
+        fine_line(b, {b.x, b.y - 11.0f * k}, {70, 70, 70, 255});
+        for (const float up : {8.0f, 10.5f}) fine_line({b.x - 3.5f * k, b.y - up * k + 1.0f}, {b.x + 3.5f * k, b.y - up * k - 1.0f}, {70, 70, 70, 255});
     } else if (rnd(21) < 0.35f && damage < 0.6f) {  // a satellite dish on the lit wall
-        const Vector2 d = lit_face.at(0.85f, wall_h - 2.5f);
-        DrawEllipse(static_cast<int>(d.x + 1.0f), static_cast<int>(d.y), 2.2f, 2.6f, lit({226, 226, 220, 255}));
-        DrawEllipse(static_cast<int>(d.x + 1.4f), static_cast<int>(d.y + 0.4f), 1.4f, 1.8f, lit({180, 180, 176, 255}));
-        DrawLineV({d.x + 1.0f, d.y}, {d.x + 3.5f, d.y + 1.0f}, lit({90, 90, 90, 255}));
+        const Vector2 d = lit_face.at(0.97f, wall_h - 2.5f * k);
+        DrawEllipse(static_cast<int>(d.x + 1.0f * k), static_cast<int>(d.y), 2.2f * k, 2.6f * k, lit({226, 226, 220, 255}));
+        DrawEllipse(static_cast<int>(d.x + 1.4f * k), static_cast<int>(d.y + 0.4f * k), 1.4f * k, 1.8f * k, lit({180, 180, 176, 255}));
+        DrawLineV({d.x + 1.0f * k, d.y}, {d.x + 3.5f * k, d.y + 1.0f * k}, lit({90, 90, 90, 255}));
     }
+}
+
+// A house on one tile (where its building isn't known, as remembered).
+void draw_house(const engine::TileMap& map, int tx, int ty, float damage) {
+    draw_house(map, {static_cast<float>(tx), static_cast<float>(ty), 1.0f, 1.0f}, tile_hash(tx, ty), damage);
 }
 
 // A building's box on the ground: its corners at the foot and at the top
@@ -5056,7 +5073,7 @@ Vector3 grain_normal(Grain g) { return {g.fine, g.mottle, 1.0f - g.speck}; }
 // How high a structure is drawn above its tiles, pixels: what a click on it may hit.
 float drawn_height(const engine::Structure& s) {
     switch (s.type) {
-        case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 23.0f;
+        case engine::StructureType::House: return s.tiles.size() >= engine::kSpaciousTiles ? 28.0f : 44.0f;
         case engine::StructureType::Apartment: return 74.0f;
         case engine::StructureType::CellTower: return 92.0f;
         case engine::StructureType::GasStation: return 30.0f;
@@ -6143,7 +6160,7 @@ void draw_headquarters(const engine::TileMap& map, const engine::Structure& s, f
 void draw_barracks_block(const engine::TileMap& map, const engine::Structure& s, float damage, Color team) {
     const Rectangle r = footprint(s, 0.2f);
     const uint32_t h = s.id * 2654435761u;
-    constexpr float kWall = 16.0f;
+    constexpr float kWall = 30.0f;  // two storeys, like a village school
     const float soot = 1.0f - 0.4f * damage;
     const Rectangle block{r.x, r.y + r.height * 0.15f, r.width, r.height * 0.6f};
     const Box b = box_on(map, block, kWall);
@@ -6153,23 +6170,27 @@ void draw_barracks_block(const engine::TileMap& map, const engine::Structure& s,
         face_fill(*f, 0.0f, 1.0f, 0.0f, 2.5f, shade({100, 94, 86, 255}, k * soot));
         wear_walls(*f, k, 2.5f, kWall, stage_of(damage), {150, 146, 138, 255}, false, h + static_cast<uint32_t>(k * 10.0f));
         const int n = std::max(2, static_cast<int>(f->pixels() / 10.0f));
-        for (int i = 0; i < n; ++i) {
-            const float u = (static_cast<float>(i) + 0.5f) / static_cast<float>(n);
-            window_on(*f, u, 5.0f, 4.0f, 6.0f, {charred({232, 232, 228, 255}, damage)}, damage > 0.25f && rand01(h, i + static_cast<int>(k * 50)) < damage, k);
+        for (int floor = 0; floor < 2; ++floor) {
+            for (int i = 0; i < n; ++i) {
+                const float u = (static_cast<float>(i) + 0.5f) / static_cast<float>(n);
+                const int pane = i + floor * 20;
+                window_on(*f, u, 5.0f + 13.0f * static_cast<float>(floor), 4.0f, 7.0f, {charred({232, 232, 228, 255}, damage)},
+                          damage > 0.25f && rand01(h, pane + static_cast<int>(k * 50)) < damage, k);
+            }
         }
     }
-    door_on(b.shade_face, 0.28f, 4.0f, 8.0f, {70, 90, 70, 255}, 0.74f * soot);
-    door_on(b.shade_face, 0.72f, 4.0f, 8.0f, {70, 90, 70, 255}, 0.74f * soot);
+    door_on(b.shade_face, 0.28f, 5.0f, 10.0f, {70, 90, 70, 255}, 0.74f * soot);
+    door_on(b.shade_face, 0.72f, 5.0f, 10.0f, {70, 90, 70, 255}, 0.74f * soot);
     face_fill(b.shade_face, 0.0f, 1.0f, kWall - 2.0f, kWall - 1.0f, shade(team, 0.8f));  // the side's stripe under the eaves
     if (stage_of(damage) >= 3) {
-        fallen_roof(map, block, kWall, 9.0f, block.width >= block.height, true, wall, {118, 120, 122, 255}, false, h);
+        fallen_roof(map, block, kWall, 12.0f, block.width >= block.height, true, wall, {118, 120, 122, 255}, false, h);
     } else {
-        gable_roof(map, block, kWall, 9.0f, block.width >= block.height, Roof::Slate, shade({118, 120, 122, 255}, soot), wall, h);
+        gable_roof(map, block, kWall, 12.0f, block.width >= block.height, Roof::Slate, shade({118, 120, 122, 255}, soot), wall, h);
         roof_holes(map, block, kWall + 4.0f, damage, {118, 120, 122, 255}, h);
     }
     sandbags(map, {r.x + r.width + 0.1f, r.y + r.height * 0.9f}, {r.x + r.width + 0.1f, r.y + r.height * 0.6f}, 2, h);
     sandbags(map, {r.x - 0.05f, r.y + r.height + 0.1f}, {r.x + r.width * 0.25f, r.y + r.height + 0.1f}, 2, h + 1);
-    flag_on(on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height + 0.05f}), 26.0f, team);
+    flag_on(on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height + 0.05f}), 34.0f, team);
 }
 
 // A steel hangar: corrugated walls, a rounded roof, big gates in its end
@@ -6355,7 +6376,8 @@ void draw_fuel_depot(const engine::TileMap& map, const engine::Structure& s, flo
 // field hospital's.
 void tent(const engine::TileMap& map, Rectangle r, Color canvas, uint32_t seed, bool cross, float damage) {
     const float soot = 1.0f - 0.4f * damage;
-    constexpr float kWall = 5.0f;
+    constexpr float kWall = 8.0f;
+    constexpr float kRise = 14.0f;
     const Box b = box_on(map, r, kWall);
     if (stage_of(damage) >= 3) {  // burnt away: ash, the frame standing black, scraps of the canvas
         const Box ground = box_on(map, r, 0.0f);
@@ -6363,8 +6385,8 @@ void tent(const engine::TileMap& map, Rectangle r, Color canvas, uint32_t seed, 
         face_fill(b.lit_face, 0.0f, 1.0f, 0.0f, 1.5f, {60, 56, 50, 255});
         face_fill(b.shade_face, 0.0f, 1.0f, 0.0f, 1.5f, {50, 46, 42, 255});
         const bool along = r.width >= r.height;
-        const Vector2 r0 = along ? on_terrain(map, {r.x, r.y + r.height * 0.5f}, kWall + 10.0f) : on_terrain(map, {r.x + r.width * 0.5f, r.y}, kWall + 10.0f);
-        const Vector2 r1 = along ? on_terrain(map, {r.x + r.width, r.y + r.height * 0.5f}, kWall + 10.0f) : on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height}, kWall + 10.0f);
+        const Vector2 r0 = along ? on_terrain(map, {r.x, r.y + r.height * 0.5f}, kWall + kRise) : on_terrain(map, {r.x + r.width * 0.5f, r.y}, kWall + kRise);
+        const Vector2 r1 = along ? on_terrain(map, {r.x + r.width, r.y + r.height * 0.5f}, kWall + kRise) : on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height}, kWall + kRise);
         for (int k = 0; k <= 3; ++k) {  // its poles, the ridge between them
             const float t = static_cast<float>(k) / 3.0f;
             const Vector2 top = lerp(r0, r1, t);
@@ -6383,8 +6405,8 @@ void tent(const engine::TileMap& map, Rectangle r, Color canvas, uint32_t seed, 
     }
     const bool along_x = r.width >= r.height;
     face_fill(along_x ? b.lit_face : b.shade_face, 0.4f, 0.6f, 0.0f, kWall - 0.5f, shade(canvas, 0.4f));  // the flap open
-    gable_roof(map, r, kWall, 10.0f, along_x, Roof::Tin, shade(canvas, 0.98f * soot), shade(canvas, soot), seed, 0.08f);
-    roof_holes(map, r, kWall + 5.0f, damage, canvas, seed);  // torn, burning
+    gable_roof(map, r, kWall, kRise, along_x, Roof::Tin, shade(canvas, 0.98f * soot), shade(canvas, soot), seed, 0.08f);
+    roof_holes(map, r, kWall + kRise * 0.5f, damage, canvas, seed);  // torn, burning
     for (const Vector2& g : {Vector2{r.x - 0.2f, r.y + r.height * 0.5f}, Vector2{r.x + r.width * 0.5f, r.y + r.height + 0.2f},
                              Vector2{r.x + r.width + 0.2f, r.y + r.height * 0.5f}}) {  // guy ropes
         const Vector2 peg = on_terrain(map, g);
@@ -6392,12 +6414,12 @@ void tent(const engine::TileMap& map, Rectangle r, Color canvas, uint32_t seed, 
         fine_line(top, peg, {150, 140, 110, 255});
     }
     if (cross) {
-        const Vector2 c = on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height * 0.5f}, kWall + 6.0f);
-        DrawRectangleRec({std::round(c.x - 5.0f), std::round(c.y - 1.5f), 10.0f, 3.0f}, lit({220, 40, 40, 255}));
-        DrawRectangleRec({std::round(c.x - 1.5f), std::round(c.y - 4.0f), 3.0f, 8.0f}, lit({220, 40, 40, 255}));
+        const Vector2 c = on_terrain(map, {r.x + r.width * 0.5f, r.y + r.height * 0.5f}, kWall + kRise * 0.6f);
+        DrawRectangleRec({std::round(c.x - 6.0f), std::round(c.y - 2.0f), 12.0f, 4.0f}, lit({220, 40, 40, 255}));
+        DrawRectangleRec({std::round(c.x - 2.0f), std::round(c.y - 5.0f), 4.0f, 10.0f}, lit({220, 40, 40, 255}));
     }
-    const Vector2 pipe = on_terrain(map, {r.x + r.width * 0.75f, r.y + r.height * 0.45f}, kWall + 7.0f);
-    fine_line(pipe, {pipe.x, pipe.y - 7.0f}, {60, 60, 58, 255});
+    const Vector2 pipe = on_terrain(map, {r.x + r.width * 0.75f, r.y + r.height * 0.45f}, kWall + kRise * 0.7f);
+    fine_line(pipe, {pipe.x, pipe.y - 9.0f}, {60, 60, 58, 255});
 }
 
 // A shed of corrugated iron under a low gable, its door; for the
@@ -6412,11 +6434,11 @@ Box iron_shed(const engine::TileMap& map, Rectangle r, float wall, Color iron, f
     if (stage >= 1) pockmarks(b.lit_face, 0.0f, 1.0f, 0.0f, wall, stage * 10, seed);
     if (stage >= 2) sheets_off(b.lit_face, 2.0f, wall, stage == 2 ? 0.2f : 0.45f, seed + 1u);
     if (stage >= 3) {
-        fallen_roof(map, r, wall, 6.0f, r.width >= r.height, true, iron, {120, 118, 112, 255}, true, seed);
+        fallen_roof(map, r, wall, 9.0f, r.width >= r.height, true, iron, {120, 118, 112, 255}, true, seed);
         return b;
     }
-    gable_roof(map, r, wall, 6.0f, r.width >= r.height, Roof::Rusty, shade({120, 118, 112, 255}, soot), shade(iron, soot), seed);
-    roof_holes(map, r, wall + 3.0f, damage, {120, 118, 112, 255}, seed);
+    gable_roof(map, r, wall, 9.0f, r.width >= r.height, Roof::Rusty, shade({120, 118, 112, 255}, soot), shade(iron, soot), seed);
+    roof_holes(map, r, wall + 4.0f, damage, {120, 118, 112, 255}, seed);
     return b;
 }
 
@@ -6436,7 +6458,7 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
         case engine::StructureType::InfantryBarracks: return draw_barracks_block(map, s, damage, team);
         case engine::StructureType::ArmorBarracks: return draw_hangar(map, s, damage, team, 24.0f, true);
         case engine::StructureType::Warehouse: {
-            draw_hangar(map, s, damage, team, 14.0f, false);
+            draw_hangar(map, s, damage, team, 20.0f, false);
             crates(map, {r.x + r.width + 0.02f, r.y + r.height * 0.1f}, 6, {150, 116, 74, 255}, h);
             return;
         }
@@ -6451,30 +6473,30 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
             tent(map, {r.x, r.y + r.height * 0.2f, r.width, r.height * 0.65f}, {196, 200, 186, 255}, h, true, damage);
             return flag_on(on_terrain(map, {r.x + r.width + 0.1f, r.y + r.height * 0.9f}), 18.0f, team);
         case engine::StructureType::Workshop: {
-            draw_hangar(map, s, damage, team, 18.0f, true);
+            draw_hangar(map, s, damage, team, 22.0f, true);
             tyres(map, {r.x + r.width + 0.15f, r.y + r.height * 0.3f}, 4);
             drums(map, {r.x + r.width + 0.05f, r.y + r.height * 0.6f}, 4, {50, 60, 70, 255});
             // A gantry for lifting out engines, beside it.
             const Vector2 a = on_terrain(map, {r.x + r.width * 0.2f, r.y + r.height + 0.25f});
             const Vector2 b = on_terrain(map, {r.x + r.width * 0.6f, r.y + r.height + 0.25f});
-            for (const Vector2& p : {a, b}) DrawRectangleRec({std::round(p.x - 1.0f), std::round(p.y - 20.0f), 2.0f, 20.0f}, lit({196, 160, 40, 255}));
-            DrawLineEx({a.x, a.y - 20.0f}, {b.x, b.y - 20.0f}, 2.0f, lit({196, 160, 40, 255}));
-            fine_line(lerp({a.x, a.y - 20.0f}, {b.x, b.y - 20.0f}, 0.5f), lerp(a, b, 0.5f), {40, 40, 38, 255});
+            for (const Vector2& p : {a, b}) DrawRectangleRec({std::round(p.x - 1.0f), std::round(p.y - 28.0f), 2.0f, 28.0f}, lit({196, 160, 40, 255}));
+            DrawLineEx({a.x, a.y - 28.0f}, {b.x, b.y - 28.0f}, 2.0f, lit({196, 160, 40, 255}));
+            fine_line(lerp({a.x, a.y - 28.0f}, {b.x, b.y - 28.0f}, 0.5f), lerp(a, b, 0.5f), {40, 40, 38, 255});
             return;
         }
         case engine::StructureType::ReconBarracks: {
-            iron_shed(map, {r.x + 0.1f, r.y + 0.2f, r.width * 0.8f, r.height * 0.6f}, 11.0f, {110, 118, 92, 255}, damage, h);
-            net_over(map, {r.x, r.y + 0.1f, r.width, r.height * 0.8f}, 18.0f, h);
+            iron_shed(map, {r.x + 0.1f, r.y + 0.2f, r.width * 0.8f, r.height * 0.6f}, 18.0f, {110, 118, 92, 255}, damage, h);
+            net_over(map, {r.x, r.y + 0.1f, r.width, r.height * 0.8f}, 28.0f, h);
             return flag_on(on_terrain(map, {r.x + r.width, r.y + r.height * 0.9f}), 18.0f, team);
         }
         case engine::StructureType::ArtilleryBarracks: {
-            iron_shed(map, {r.x, r.y + 0.1f, r.width, r.height * 0.55f}, 15.0f, {118, 126, 104, 255}, damage, h);
+            iron_shed(map, {r.x, r.y + 0.1f, r.width, r.height * 0.55f}, 20.0f, {118, 126, 104, 255}, damage, h);
             crates(map, {r.x + r.width * 0.1f, r.y + r.height * 0.72f}, 12, {84, 96, 62, 255}, h);  // the shells'
             net_over(map, {r.x + r.width * 0.05f, r.y + r.height * 0.68f, r.width * 0.55f, r.height * 0.3f}, 9.0f, h + 1);
             return flag_on(on_terrain(map, {r.x + r.width, r.y + r.height}), 20.0f, team);
         }
         case engine::StructureType::EngineerBarracks: {
-            iron_shed(map, {r.x, r.y + 0.1f, r.width * 0.7f, r.height * 0.6f}, 12.0f, {130, 124, 100, 255}, damage, h);
+            iron_shed(map, {r.x, r.y + 0.1f, r.width * 0.7f, r.height * 0.6f}, 18.0f, {130, 124, 100, 255}, damage, h);
             for (int k = 0; k < 3; ++k) {  // a pile of logs
                 const Vector2 p = on_terrain(map, {r.x + r.width * 0.15f + 0.1f * k, r.y + r.height * 0.85f}, 1.5f + 2.5f * static_cast<float>(k % 2));
                 DrawLineEx({p.x - 8.0f, p.y}, {p.x + 8.0f, p.y - 4.0f}, 3.0f, lit({130, 96, 62, 255}));
@@ -6486,26 +6508,26 @@ void draw_building(const engine::TileMap& map, const engine::Structure& s) {
             return flag_on(on_terrain(map, {r.x + r.width, r.y + r.height}), 18.0f, team);
         }
         case engine::StructureType::SignalsBarracks: {
-            const Box b = iron_shed(map, {r.x, r.y + 0.1f, r.width * 0.7f, r.height * 0.55f}, 11.0f, {120, 128, 110, 255}, damage, h);
+            const Box b = iron_shed(map, {r.x, r.y + 0.1f, r.width * 0.7f, r.height * 0.55f}, 18.0f, {120, 128, 110, 255}, damage, h);
             lattice_mast(on_terrain(map, {r.x + r.width * 0.85f, r.y + r.height * 0.85f}), 60.0f, 3.0f);  // in front of it
             DrawEllipse(static_cast<int>(b.top[1].x - 6.0f), static_cast<int>(b.top[1].y - 8.0f), 3.5f, 4.0f, lit({220, 220, 214, 255}));  // a dish
             fine_line({b.top[1].x - 6.0f, b.top[1].y - 8.0f}, {b.top[1].x - 6.0f, b.top[1].y - 2.0f}, {80, 80, 78, 255});
             return flag_on(on_terrain(map, {r.x + r.width, r.y + r.height}), 18.0f, team);
         }
         case engine::StructureType::AirDefenseBarracks: {
-            const Box b = iron_shed(map, {r.x, r.y + 0.2f, r.width * 0.75f, r.height * 0.6f}, 12.0f, {116, 124, 108, 255}, damage, h);
+            const Box b = iron_shed(map, {r.x, r.y + 0.2f, r.width * 0.75f, r.height * 0.6f}, 18.0f, {116, 124, 108, 255}, damage, h);
             const Vector2 p = on_terrain(map, {r.x + r.width * 0.85f, r.y + r.height * 0.3f});
-            fine_line(p, {p.x, p.y - 20.0f}, {80, 80, 78, 255});
-            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - 24.0f), 7.0f, 4.5f, lit({200, 204, 196, 255}));  // its radar
-            DrawEllipse(static_cast<int>(p.x + 1.0f), static_cast<int>(p.y - 23.0f), 5.0f, 3.0f, lit({150, 154, 146, 255}));
+            fine_line(p, {p.x, p.y - 30.0f}, {80, 80, 78, 255});
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y - 34.0f), 7.0f, 4.5f, lit({200, 204, 196, 255}));  // its radar
+            DrawEllipse(static_cast<int>(p.x + 1.0f), static_cast<int>(p.y - 33.0f), 5.0f, 3.0f, lit({150, 154, 146, 255}));
             crates(map, {r.x + r.width * 0.1f, r.y + r.height * 0.82f}, 4, {84, 96, 62, 255}, h);
             (void)b;
             return flag_on(on_terrain(map, {r.x + r.width, r.y + r.height}), 18.0f, team);
         }
         default: {  // anything else: a brick block with a flat roof
-            const Box b = box_on(map, r, 14.0f);
-            wall_texture(b.lit_face, 0.0f, 1.0f, 0.0f, 14.0f, Wall::Silicate, {196, 194, 184, 255}, h);
-            wall_texture(b.shade_face, 0.0f, 1.0f, 0.0f, 14.0f, Wall::Silicate, {146, 144, 136, 255}, h + 1);
+            const Box b = box_on(map, r, 20.0f);
+            wall_texture(b.lit_face, 0.0f, 1.0f, 0.0f, 20.0f, Wall::Silicate, {196, 194, 184, 255}, h);
+            wall_texture(b.shade_face, 0.0f, 1.0f, 0.0f, 20.0f, Wall::Silicate, {146, 144, 136, 255}, h + 1);
             fill_quad(b.top[0], b.top[1], b.top[2], b.top[3], {110, 108, 104, 255});
             return flag_on(b.top[0], 18.0f, team);
         }
@@ -7297,7 +7319,7 @@ Rectangle building_bounds(const engine::TileMap& map, int kind, const engine::St
             case engine::StructureType::Elevator: up = 140.0f; pad = 0.4f; break;
             case engine::StructureType::House:
                 up = s.look == engine::HouseLook::Cowshed ? 70.0f : s.look == engine::HouseLook::Coop ? 26.0f
-                   : s.look == engine::HouseLook::Factory ? 92.0f : 50.0f;
+                   : s.look == engine::HouseLook::Factory ? 92.0f : s.tiles.size() < engine::kSpaciousTiles ? 84.0f : 50.0f;
                 pad = s.look == engine::HouseLook::Cowshed ? 2.0f : s.look == engine::HouseLook::Coop ? 1.4f : 0.3f;
                 break;
             case engine::StructureType::Headquarters: up = 96.0f; pad = 0.6f; break;  // its mast
@@ -7336,6 +7358,10 @@ void WorldRenderer::draw_by_hand(const engine::TileMap& map, const BuildingBake&
     if (b.s.look == engine::HouseLook::Cowshed) return draw_cowshed(map, b.s, b.damage);
     if (b.s.look == engine::HouseLook::Coop) return draw_coop(map, b.s, b.damage);
     if (b.s.look == engine::HouseLook::Factory) return draw_factory(map, b.s, b.damage);
+    if (b.s.type == engine::StructureType::House && b.s.tiles.size() < engine::kSpaciousTiles) {  // a house on its plot
+        const engine::TilePos t = b.s.tiles.front();
+        return draw_house(map, footprint(b.s, 0.0f), tile_hash(t.x, t.y), b.damage);
+    }
     draw_barn(map, b.s, b.damage);
 }
 
@@ -7652,8 +7678,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                     const int32_t max_hp = engine::structure_type(s->type).max_hp;
                     damage = 1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp);
                 }
-                if (s && (s->tiles.size() >= engine::kSpaciousTiles || s->look != engine::HouseLook::House)) {
-                    // A barn is one building, drawn once whichever of its tiles is in view.
+                if (s) {
+                    // A house, a barn is one building, drawn once whichever of its tiles is in view.
                     if (std::find(barns.begin(), barns.end(), s) != barns.end()) break;
                     barns.push_back(s);
                     const Vector2 c = to_vector2(s->center);

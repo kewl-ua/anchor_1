@@ -740,7 +740,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             put(StructureType::Apartment, 8.0f + 6.0f * static_cast<float>(i), -9.0f, 4, 2, Terrain::Apartment, damage[i], bombs[i]);
         }
         for (int i = 0; i < 4; ++i) {  // houses the same
-            put(StructureType::House, 9.0f + 2.5f * static_cast<float>(i), -4.0f, 1, 1, Terrain::House, 0.33f * static_cast<float>(i) - (i == 3 ? 0.14f : 0.0f), {});
+            put(StructureType::House, 9.0f + 3.5f * static_cast<float>(i), -4.5f, 2, 2, Terrain::House, 0.33f * static_cast<float>(i) - (i == 3 ? 0.14f : 0.0f), {});
         }
         // Burnt out, in a row of their own (ruins_burnt: the camera on it).
         put(StructureType::House, 20.0f, 10.0f, 5, 2, Terrain::House, 0.85f, {}, engine::HouseLook::Factory);
@@ -1163,8 +1163,8 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             own(StructureType::ArtilleryBarracks, 8.0f, 15.0f);
             return render::to_vector2(ahead(15.0f, 3.0f));
         }
-        row(StructureType::House, engine::kNoOwner, 8.0f, 2.5f, -6.0f, 1, 1, Terrain::House);
-        row(StructureType::House, engine::kNoOwner, 19.0f, 2.0f, -6.0f, 1, 1, Terrain::House, engine::HouseLook::Coop);
+        row(StructureType::House, engine::kNoOwner, 8.0f, 3.5f, -6.5f, 2, 2, Terrain::House);  // (a village's house on its plot)
+        row(StructureType::House, engine::kNoOwner, 23.0f, 2.0f, -6.0f, 1, 1, Terrain::House, engine::HouseLook::Coop);
         row(StructureType::House, engine::kNoOwner, 8.0f, 6.0f, -2.0f, 4, 2, Terrain::House);
         row(StructureType::House, engine::kNoOwner, 8.0f, 6.0f, 3.0f, 4, 2, Terrain::House, engine::HouseLook::Cowshed);
         return render::to_vector2(ahead(18.5f, -1.0f));
