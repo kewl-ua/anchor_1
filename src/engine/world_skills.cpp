@@ -405,8 +405,9 @@ void World::update_ability(Unit& u) {
             if (!deploy_step(u)) return;
             if (u.work++ % kSalvoInterval != 0) return;
             FixedVec2 aim = u.order_point;
-            aim.x += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
-            aim.y += Fixed::from_raw(rng_.next_range(-kSalvoSpread.raw, kSalvoSpread.raw));
+            const Fixed spread = scatter_at(kSalvoSpread, to_point.length(), weapon.range);
+            aim.x += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
+            aim.y += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
             WeaponDef rocket = weapon;
             rocket.accuracy = 100;
             u.rounds = std::max(0, u.rounds - 1);

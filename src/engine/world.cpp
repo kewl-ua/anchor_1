@@ -666,6 +666,7 @@ void World::update_unit(Unit& u) {
 
         case Order::Move:
             if (navigate(u, u.order_point, u.order_path, u.order_goal, true) != Step::Moved) finish_order();
+            if (def_of(u).tank && is_armed(def_of(u))) fire_on_the_move(u);
             break;
 
         case Order::Attack:
@@ -802,6 +803,34 @@ void World::engage(Unit& u, const Unit& target) {
     if (u.cooldown == 0 && !try_fire(u, target.pos, &target, weapon_of(u))) {
         navigate(u, target.pos, u.chase_path, tile_of(target.pos), false);
     }
+}
+
+// A tank on the move keeps its gun on an enemy in reach, its turret
+// turning whichever way the hull goes; once its gunner has held the target
+// a moment (the lock) it fires without stopping.
+void World::fire_on_the_move(Unit& u) {
+    const WeaponDef& weapon = weapon_of(u);
+    auto in_reach = [&](const Unit& t) {
+        return !t.airborne && sees(u.owner, t) &&
+               (t.pos - u.pos).length_sq_raw() <= square_raw(weapon.range + def_of(u).radius + def_of(t).radius);
+    };
+    const Unit* target = find_unit(u.lock);
+    if (!target || !in_reach(*target)) {
+        target = find_enemy_in_sight(u);
+        if (target && !in_reach(*target)) target = nullptr;
+        u.lock = target ? target->id : 0;
+        u.lock_ticks = 0;
+    }
+    if (!target) {
+        u.engaged = 0;
+        return;
+    }
+    ++u.lock_ticks;
+    u.engaged = target->id;
+    const FixedVec2 to_target = target->pos - u.pos;
+    if (to_target.x.raw != 0 || to_target.y.raw != 0) u.facing = to_target;  // the turret on it
+    const auto lock = static_cast<int32_t>(has_upgrade(u.owner, UpgradeId::FireControl) ? kFireControlLockTicks : kLockTicks);
+    if (u.lock_ticks >= lock && u.cooldown == 0) try_fire(u, target->pos, target, weapon);
 }
 
 void World::engage_ground(Unit& u) {
@@ -1099,17 +1128,24 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
     const Structure* works = structure_at(map_.clamp_tile(tile_of(shooter.pos)));
     int32_t accuracy = weapon.accuracy;
     if (hungry(shooter.owner)) accuracy = accuracy * kHungryAccuracyPercent / 100;
-    // Far out, past the gun's effective range, the aim falls off and a miss
-    // goes wider, as far off as the distance is.
+    if (def_of(shooter).tank && shooter.moving) {  // on the move
+        accuracy = accuracy * (has_upgrade(shooter.owner, UpgradeId::FireControl) ? kFireControlOnTheMovePercent : kOnTheMovePercent) / 100;
+    }
+    // A gun's aim by the range, as in life: all but sure point-blank, its
+    // accuracy at its effective range, falling off past it. A miss goes
+    // wider the farther the target (the dispersion is an angle): as wide as
+    // the miss spread at the effective range, in proportion nearer and farther.
     Fixed spread = weapon.miss_spread;
     if (const Fixed near = weapon.effective_range; near.raw > 0 && weapon.range > near) {
-        const Fixed distance = (aim - shooter.pos).length();
-        const Fixed over = min(distance - near, weapon.range - near);
-        if (over.raw > 0) {
+        const Fixed distance = min((aim - shooter.pos).length(), weapon.range);
+        spread = max(weapon.miss_spread / 4, weapon.miss_spread * (distance / near));
+        if (distance <= near) {
+            const int32_t sure = accuracy + (100 - accuracy) * kPointBlankPercent / 100;
+            accuracy = sure - ((distance * (sure - accuracy)) / near).to_int();
+        } else {
             const int32_t far = has_upgrade(shooter.owner, UpgradeId::FireControl) ? kFireControlFarPercent
                                                                                      : kFarAccuracyPercent;
-            accuracy = accuracy * (100 - ((over * (100 - far)) / (weapon.range - near)).to_int()) / 100;
-            spread = spread * (distance / near);
+            accuracy = accuracy * (100 - (((distance - near) * (100 - far)) / (weapon.range - near)).to_int()) / 100;
         }
     }
     Shot shot{shooter.pos, map_.elevation_at(shooter.pos)};
@@ -1226,12 +1262,15 @@ void World::move_projectiles() {
 
 // Explosions don't care whose units they hit (except the gun that fired). A
 // garrison is safe behind its walls until the house falls.
-void World::splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon) {
+void World::splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon, const Unit* direct_hit) {
     const Shot blast{at, p.shooter_elevation, true, p.lobbed};
     for (const Unit& u : units_) {
         if (u.id == p.shooter || u.inside || u.airborne) continue;
-        if ((u.pos - at).length_sq_raw() <= square_raw(weapon.splash_radius + def_of(u).radius)) {
-            hurt(u, weapon, blast);
+        const uint64_t d = (u.pos - at).length_sq_raw();
+        if (d <= square_raw(weapon.splash_radius + def_of(u).radius)) {
+            Shot shot = blast;
+            shot.on_it = &u == direct_hit || d <= square_raw(def_of(u).radius);  // the shell struck it
+            hurt(u, weapon, shot);
         }
     }
     // Every house or bridge the blast reaches takes it once.
@@ -1339,7 +1378,7 @@ void World::explode(const Projectile& p, FixedVec2 at, const Unit* direct_hit) {
         }
     }
 
-    if (weapon.splash_radius.raw > 0) return splash(p, at, weapon);
+    if (weapon.splash_radius.raw > 0) return splash(p, at, weapon, direct_hit);
 
     if (!direct_hit) {
         // A rocket into a wall hits the house; into a pillbox, through the slit, the gunner too.
@@ -1489,12 +1528,13 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
     if (!victim.airborne && shot.elevation > victim_elevation) amount = amount * kHighGroundPercent / 100;
     if (!victim.airborne && shot.elevation < victim_elevation) amount = amount * kLowGroundPercent / 100;
 
-    pending_damage_.push_back({victim.id, std::max(1, amount)});
+    pending_damage_.push_back({victim.id, std::max(1, amount), !shot.blast || shot.on_it});
 }
 
 void World::apply_damage_and_remove_dead() {
     for (const PendingDamage& d : pending_damage_) {
         if (Unit* victim = find_unit_mut(d.victim)) {
+            if (victim->hp > 0 && victim->hp - d.amount <= 0) victim->killed_directly = d.direct;  // the blow that did it
             victim->hp -= d.amount;
         } else if (Structure* s = find_structure_mut(d.victim)) {
             s->hp -= d.amount;
@@ -1541,9 +1581,23 @@ void World::apply_damage_and_remove_dead() {
                                                 .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
     }
-    // A tank (an IFV, a gun, an aircraft) knocked out: its crew may get out (the men come back to the pool).
+    // A tank killed by a direct hit with its racks more than a quarter full
+    // goes up: the rounds cook off round it, the turret's thrown off.
+    auto blows_up = [&](const Unit& u) {
+        return def_of(u).tank && u.killed_directly && u.rounds * 100 > def_of(u).rounds_capacity * kBlowUpRoundsPercent;
+    };
     for (const Unit& u : units_) {
-        if (u.hp > 0 || def_of(u).family == Family::None || u.owner >= kMaxPlayers) continue;
+        if (u.hp > 0 || !blows_up(u)) continue;
+        static constexpr WeaponDef kRoundsGoingUp{.name = "A tank's rounds going up", .damage = 45,
+                                                  .damage_type = DamageType::Explosive, .range = Fixed{}, .reload = 0,
+                                                  .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
+                                                  .accuracy = 100, .miss_spread = Fixed{}};
+        burst_into_flames(u.pos, u.owner, kRoundsGoingUp, u.id);
+    }
+    // A tank (an IFV, a gun, an aircraft) knocked out: its crew may get out
+    // (the men come back to the pool), unless its rounds went up.
+    for (const Unit& u : units_) {
+        if (u.hp > 0 || def_of(u).family == Family::None || u.owner >= kMaxPlayers || blows_up(u)) continue;
         // Sunk in a bog, slowly: the crew gets out. Knocked out: as its armour lets them.
         if (u.mired >= kBogLimit || static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
             stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];
@@ -1654,6 +1708,8 @@ uint64_t World::checksum() const {
         mix(static_cast<uint8_t>(u.shell));
         mix(u.deployed ? 1 : 0);
         mix(static_cast<uint32_t>(u.mired));
+        mix(u.lock);
+        mix(static_cast<uint32_t>(u.lock_ticks));
         mix(u.deploy_work);
         mix_vec(u.ranging_point);
         mix(u.ranging_shots);

@@ -666,8 +666,8 @@ const Structure* World::nearest_headquarters(PlayerId owner, FixedVec2 from) con
     return best;
 }
 
-void World::burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire) {
-    recent_impacts_.push_back({tick_, at, UnitTypeId::FuelTanker, fire.splash_radius});
+void World::burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire, EntityId blown) {
+    recent_impacts_.push_back({tick_, at, UnitTypeId::FuelTanker, fire.splash_radius, false, blown});
     for (const Unit& u : units_) {
         if (u.inside || u.airborne || u.hp <= 0) continue;
         if ((u.pos - at).length_sq_raw() <= square_raw(fire.splash_radius + unit_type(u.type).radius)) {

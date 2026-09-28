@@ -53,6 +53,7 @@ Command make_move(PlayerId player, std::vector<EntityId> units, int32_t x, int32
 }
 
 Command fire_at(PlayerId player, std::vector<EntityId> units, int32_t x, int32_t y);
+Fixed abs_fixed(Fixed f);
 
 int32_t hp_of(const Simulation& sim, EntityId id) {
     const Unit* u = sim.world().find_unit(id);
@@ -307,7 +308,7 @@ void test_projectiles_can_be_dodged() {
             Simulation sim(seed, TileMap(40, 40));
             sim.world_for_setup().spawn_unit(0, UnitTypeId::Grenadier, at(10, 10));
             const EntityId target = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(14, 10));
-            if (target_moves) sim.schedule(0, make_move(1, {target}, 14, 38));  // move orders ignore enemies
+            if (target_moves) sim.schedule(0, make_move(1, {target}, 14, 38));  // a move order doesn't stop for enemies
             for (int i = 0; i < 25; ++i) sim.step();  // the first rocket lands after ~14 ticks
             if (hp_of(sim, target) < unit_type(UnitTypeId::Tank).max_hp) ++hits;
         }
@@ -322,7 +323,7 @@ void test_armor_lets_through_at_least_one() {
     Simulation sim(5, TileMap(40, 40));
     sim.world_for_setup().spawn_unit(0, UnitTypeId::Rifleman, at(10, 10));
     const EntityId tank = sim.world_for_setup().spawn_unit(1, UnitTypeId::Tank, at(14, 10));
-    issue(sim, make_move(1, {tank}, 14, 38));  // drive past without shooting back
+    issue(sim, make_move(1, {tank}, 14, 38));  // drive past (firing on the move)
 
     bool drops_are_one = true;
     int32_t prev = hp_of(sim, tank);
@@ -334,6 +335,121 @@ void test_armor_lets_through_at_least_one() {
     }
     CHECK(drops_are_one);
     CHECK(prev < unit_type(UnitTypeId::Tank).max_hp);
+}
+
+// A tank on the move holds its gun on an enemy in reach: once its gunner has
+// held it a second (the lock) it fires without stopping, turning or not, its
+// turret on the target, its hull the way it drives. Fire control locks sooner.
+void test_tanks_fire_on_the_move() {
+    auto drive_past = [](bool fire_control) {
+        Simulation sim(3, TileMap(60, 20));
+        World& w = sim.world_for_setup();
+        if (fire_control) w.upgrade_for_setup(0, UpgradeId::FireControl);
+        const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(5, 5));
+        const EntityId enemy = w.spawn_unit(1, UnitTypeId::Tank, at(13, 12));
+        w.unit_for_setup(enemy)->rounds = 0;  // a target, not a duel
+        sim.schedule(0, make_move(0, {tank}, 55, 5));
+        int locked = -1;
+        for (int i = 0; i < 200; ++i) {
+            sim.step();
+            const Unit* u = sim.world().find_unit(tank);
+            if (u->lock == enemy && locked < 0) locked = i;
+            if (u->last_shot_tick == kNeverFired) continue;
+            CHECK(locked >= 0);
+            CHECK(u->order == Order::Move && u->moving);  // still driving
+            const FixedVec2 to_enemy = sim.world().find_unit(enemy)->pos - u->pos;
+            const int64_t fx = u->facing.x.raw >> 8, fy = u->facing.y.raw >> 8;
+            const int64_t ex = to_enemy.x.raw >> 8, ey = to_enemy.y.raw >> 8;
+            CHECK(fx * ex + fy * ey > 0 && std::abs(fx * ey - fy * ex) * 50 < fx * ex + fy * ey);  // the turret on it
+            CHECK(u->hull.x.raw > 0 && std::abs(u->hull.y.raw) * 4 < u->hull.x.raw);  // the hull down the road
+            return i - locked;
+        }
+        return -1;
+    };
+    const int held = drive_past(false);
+    CHECK(held >= static_cast<int>(kLockTicks) - 1 && held <= static_cast<int>(kLockTicks) + 1);
+    const int held_fcs = drive_past(true);
+    CHECK(held_fcs >= static_cast<int>(kFireControlLockTicks) - 1 && held_fcs <= static_cast<int>(kFireControlLockTicks) + 1);
+}
+
+// A tank killed by a direct hit with more than a quarter of its rounds
+// aboard blows up: the turret thrown off, nobody gets out. With its racks
+// near empty, or killed by a burst beside it, it doesn't.
+void test_tanks_blow_up() {
+    enum class Kill { Rocket, Burst };
+    auto kill = [](int32_t rounds, Kill how, bool& crew_lost) {
+        bool blown = false;
+        crew_lost = true;
+        for (uint64_t seed = 1; seed <= 20; ++seed) {  // the crew's luck: over a score
+            Simulation sim(seed, TileMap(40, 20));
+            World& w = sim.world_for_setup();
+            const EntityId victim = w.spawn_unit(1, UnitTypeId::Tank, at(18, 10));
+            w.unit_for_setup(victim)->rounds = rounds;
+            w.unit_for_setup(victim)->hp = 1;
+            w.unit_for_setup(victim)->cooldown = 1000;  // not shooting back
+            if (how == Kill::Rocket) {
+                w.spawn_unit(0, UnitTypeId::Grenadier, at(14, 10));
+            } else {
+                const EntityId truck = w.spawn_unit(1, UnitTypeId::AmmoTruck, {at(18, 10).x + Fixed::from_ratio(6, 5), at(18, 10).y});
+                w.unit_for_setup(truck)->carrying = 20;
+                w.unit_for_setup(truck)->hp = 0;  // hit: its load goes off beside the tank
+            }
+            const int32_t men = sim.world().stock(1)[static_cast<size_t>(Resource::Personnel)];
+            for (int i = 0; i < 800 && sim.world().find_unit(victim); ++i) {
+                sim.step();
+                for (const Impact& im : sim.world().recent_impacts()) blown = blown || im.blown == victim;
+            }
+            CHECK(!sim.world().find_unit(victim));
+            if (sim.world().stock(1)[static_cast<size_t>(Resource::Personnel)] != men) crew_lost = false;
+        }
+        return blown;
+    };
+    const int32_t full = unit_type(UnitTypeId::Tank).rounds_capacity;
+    bool crew_lost = false;
+    CHECK(kill(full, Kill::Rocket, crew_lost));
+    CHECK(crew_lost);
+    CHECK(kill(full / 4 + 1, Kill::Rocket, crew_lost));
+    CHECK(!kill(full / 4, Kill::Rocket, crew_lost));  // a quarter: it only burns
+    CHECK(!crew_lost);
+    CHECK(!kill(full, Kill::Burst, crew_lost));
+    CHECK(!crew_lost);
+}
+
+// A tank gun's aim by the range: all but sure point-blank, its accuracy at
+// its effective range, less and less past it; and a miss goes wider the
+// farther the target (a gun's dispersion is an angle).
+void test_aim_by_the_range() {
+    auto fire_at_range = [](int32_t distance, int& on_aim, Fixed& widest) {
+        on_aim = 0;
+        widest = Fixed{};
+        for (uint64_t seed = 1; seed <= 60; ++seed) {
+            Simulation sim(seed, TileMap(60, 20));
+            const EntityId tank = sim.world_for_setup().spawn_unit(0, UnitTypeId::Tank, at(4, 10));
+            sim.schedule(0, fire_at(0, {tank}, 4 + distance, 10));
+            for (int i = 0; i < 20; ++i) {
+                sim.step();
+                const auto& shells = sim.world().projectiles();
+                const auto it = std::find_if(shells.begin(), shells.end(), [&](const Projectile& p) { return p.shooter == tank; });
+                if (it == shells.end()) continue;
+                const Fixed off = max(abs_fixed(it->target.x - at(4 + distance, 10).x), abs_fixed(it->target.y - at(4 + distance, 10).y));
+                if (off < Fixed::from_ratio(1, 50)) ++on_aim;
+                widest = max(widest, off);
+                break;
+            }
+        }
+    };
+    int close = 0, mid = 0, far = 0;
+    Fixed close_miss, mid_miss, far_miss;
+    fire_at_range(3, close, close_miss);
+    fire_at_range(15, mid, mid_miss);
+    fire_at_range(45, far, far_miss);
+    CHECK(close >= 47);                // ~89%
+    CHECK(mid >= 40 && mid <= 56);     // ~80%
+    CHECK(far <= 30);                  // ~35%
+    const Fixed spread = unit_type(UnitTypeId::Tank).weapon.miss_spread;
+    CHECK(close_miss <= spread / 4);
+    CHECK(mid_miss <= spread);
+    CHECK(far_miss > spread * 2 && far_miss <= spread * 3);
 }
 
 Command attack_order(PlayerId player, std::vector<EntityId> units, EntityId target) {
@@ -3028,6 +3144,25 @@ void test_ranging_follows_the_target() {
     }
     CHECK(widest_first > Fixed::from_int(2) && widest_first <= kRangingSpread[0]);
     CHECK(widest_third <= kRangingSpread[2]);
+
+    // Nearer, the scatter's tighter; farther, wider (at 10 tiles, half the
+    // mortar's range, it's as above).
+    auto widest_at = [](int32_t x) {
+        Fixed widest{};
+        for (uint64_t seed = 1; seed <= 30; ++seed) {
+            Simulation s(seed, TileMap(40, 20));
+            const EntityId m = s.world_for_setup().spawn_unit(0, UnitTypeId::Mortar, at(5, 10));
+            s.schedule(0, fire_at(0, {m}, x, 10));
+            const std::vector<FixedVec2> l = shell_landings(s, 120);
+            if (l.empty()) continue;
+            widest = max(widest, max(abs_fixed(l[0].x - Fixed::from_int(x)), abs_fixed(l[0].y - Fixed::from_int(10))));
+        }
+        return widest;
+    };
+    const Fixed near = widest_at(10);
+    const Fixed far = widest_at(23);
+    CHECK(near <= kRangingSpread[0] / 2 + Fixed::from_ratio(1, 100));
+    CHECK(far > kRangingSpread[0] && far <= kRangingSpread[0] * 2);
 }
 
 // A howitzer sets up before it fires and packs up before it moves.
@@ -3210,7 +3345,8 @@ void test_mlrs_salvo() {
     for (const FixedVec2& r : rockets) {
         widest = max(widest, max(abs_fixed(r.x - Fixed::from_int(25)), abs_fixed(r.y - Fixed::from_int(15))));
     }
-    CHECK(widest <= kSalvoSpread && widest > Fixed::from_int(1));
+    // At 20 tiles, not quite a third of its range: tighter than at half of it.
+    CHECK(widest <= kSalvoSpread * 3 / 5 && widest > Fixed::from_int(1));
     const Unit* u = sim.world().find_unit(mlrs);
     CHECK(u->rounds == 0 && u->order == Order::Idle);
 
@@ -3307,6 +3443,7 @@ void test_smoke_screen() {
     World& w = sim.world_for_setup();
     w.upgrade_for_setup(0, UpgradeId::SmokeGrenades);
     const EntityId tank = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+    w.unit_for_setup(tank)->rounds = 0;  // it only hides here, it doesn't shoot the enemy's eyes out
     const EntityId enemy = w.spawn_unit(1, UnitTypeId::Truck, at(15, 10));
     w.spawn_unit(0, UnitTypeId::Truck, at(10, 6));  // another pair of eyes, beside the screen
     for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
@@ -5748,6 +5885,9 @@ int main() {
     test_high_ground();
     test_projectiles_can_be_dodged();
     test_armor_lets_through_at_least_one();
+    test_tanks_fire_on_the_move();
+    test_tanks_blow_up();
+    test_aim_by_the_range();
     test_attack_order_kills_target();
     test_cannot_attack_own_units();
     test_armies_fight();

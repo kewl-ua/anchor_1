@@ -77,7 +77,8 @@ private:
         Vector2 hull{1.0f, 0.0f};    // a tank's, when it was knocked out
         Vector2 facing{1.0f, 0.0f};
         uint32_t seed = 0;
-        bool sunk = false;  // a tank that went under in a bog
+        bool sunk = false;   // a tank that went under in a bog
+        bool blown = false;  // a tank whose rounds went up: its turret thrown off
     };
     // Smoke, flames, clods of earth, spray, sparks, a muzzle's flash, spent
     // cases: flying about for a moment. Only for the eye: nothing in the game
@@ -115,9 +116,17 @@ private:
         int32_t hp = 0;
         engine::Fixed fuel{};
         int32_t rounds = 0;
+        int32_t carrying = 0;
         float recoil = 1.0f;
         float jolt = 1.0f;
         Vector2 jolt_dir{};
+        // Its gun's laying, a step of its sprite's frames at a time (see
+        // kTankLadder, kHowitzerPitch); < 0 not yet laid.
+        float elev = -1.0f;
+        std::array<engine::Tick, engine::kMaxAbilities> ready{};  // when each of its skills is ready again: one used shows
+        bool deployed = false;
+        float radio = 99.0f;  // since it called for supply over the radio
+        float camo = 0.0f;    // its camouflage net, 0 off .. 1 on
     };
     std::unordered_map<engine::EntityId, VehicleSeen> vehicles_seen_;
     // Shells, rockets and missiles in flight as last seen: where each went off shows what it hit.
@@ -132,9 +141,10 @@ private:
     struct Service {
         enum class Kind : uint8_t { Hose, Crates, Weld };
         Kind kind;
-        engine::EntityId from;  // the tanker, the truck (0: the workshop)
+        engine::EntityId from;  // the tanker, the truck (0: the workshop, a depot at `at`)
         engine::EntityId to;
         float age;
+        Vector2 at{};
     };
     std::vector<Service> services_;
     void draw_services(const engine::World& world, float alpha) const;
@@ -146,6 +156,12 @@ private:
     float fx_random();  // 0..1
     void spawn_burst(const engine::World& world, Vector2 at, float splash);
     void spawn_muzzle(const engine::World& world, const engine::Unit& u);
+    // A gun's elevation as drawn (degrees), and where its muzzle is: along
+    // its facing from its middle (tiles) and how high (pixels).
+    float gun_elevation(const engine::Unit& u) const;
+    Vector2 muzzle_of(const engine::Unit& u) const;
+    void launch_smoke(const engine::Unit& u);
+    void draw_radio_calls(const engine::World& world, float alpha) const;
     void spawn_fire(Vector2 at, float height, int wear, float dt);
     void draw_particles(const engine::TileMap& map) const;
     void draw_wreck(const engine::TileMap& map, const Remains& r) const;

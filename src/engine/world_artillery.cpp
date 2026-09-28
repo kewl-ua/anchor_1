@@ -81,7 +81,7 @@ void World::fire_indirect(Unit& u, FixedVec2 aim, const WeaponDef& weapon, int32
     const auto i = static_cast<size_t>(step - 1);
 
     const bool on_target = static_cast<int32_t>(rng_.next_below(100)) < ranging_chance(u.owner, step);
-    const Fixed spread = on_target ? kOnTargetSpread : kRangingSpread[i];
+    const Fixed spread = scatter_at(on_target ? kOnTargetSpread : kRangingSpread[i], (aim - u.pos).length(), weapon.range);
     FixedVec2 landing = aim;
     landing.x += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));
     landing.y += Fixed::from_raw(rng_.next_range(-spread.raw, spread.raw));

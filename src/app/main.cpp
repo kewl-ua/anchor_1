@@ -700,6 +700,80 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(30.0f, 0.2f));
     }
 
+    if (options.scene.starts_with("gunnery") && options.mode == Options::Mode::Offline) {
+        // Offline, to see guns laid and skills at work: a tank firing on the
+        // move at an enemy it drives past; an enemy T-72 with its racks full
+        // knocked out by a direct hit (its rounds go up, the turret's thrown
+        // off); a tank firing indirect, its gun up; one throwing up a smoke
+        // screen; SPGs and towed guns laid near and far; a D-30 being
+        // camouflaged, another digging its pit; an IFV's guided missile; an
+        // IFV calling for supply over the radio.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(22.0f, 0.0f), 16);
+        using engine::UnitTypeId;
+        using engine::AbilityId;
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        w.upgrade_for_setup(me, engine::UpgradeId::SmokeGrenades);
+        w.upgrade_for_setup(me, engine::UpgradeId::Atgm);
+        auto spawn = [&](engine::PlayerId owner, UnitTypeId type, float d, float side) {
+            const engine::EntityId id = w.spawn_unit(owner, type, ahead(d, side));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->facing = render::to_fixed_vec2({0.0f, -fwd});
+            u->hull = u->facing;
+            if (owner == enemy) u->rounds = 0;  // holds its fire
+            return id;
+        };
+        auto skill = [&](engine::EntityId id, AbilityId ability, engine::FixedVec2 at) {
+            game.submit({.type = engine::CommandType::Ability, .units = {id}, .target = at, .ability = static_cast<uint8_t>(ability)});
+        };
+        // Fire on the move: driving across the front past an enemy tank.
+        const engine::EntityId mover = spawn(me, UnitTypeId::Tank, 16.0f, -8.0f);
+        const engine::EntityId mark = spawn(enemy, UnitTypeId::Tank, 24.0f, -5.0f);
+        w.unit_for_setup(mark)->hp = 100000;
+        game.submit({.type = engine::CommandType::Move, .units = {mover}, .target = ahead(20.0f, 4.0f)});
+        // A T-72 knocked out with its racks full: its rounds go up.
+        const engine::EntityId killer = spawn(me, UnitTypeId::Leopard2A6, 17.0f, -2.0f);
+        const engine::EntityId doomed = spawn(enemy, UnitTypeId::Tank, 23.0f, -2.0f);
+        w.unit_for_setup(doomed)->rounds = engine::unit_type(UnitTypeId::Tank).rounds_capacity;
+        w.unit_for_setup(doomed)->hp = 1;
+        w.unit_for_setup(doomed)->cooldown = 100000;
+        game.submit({.type = engine::CommandType::Attack, .units = {killer}, .target_unit = doomed});
+        // Indirect fire, the gun up; a smoke screen.
+        skill(spawn(me, UnitTypeId::T90M, 13.0f, 0.5f), AbilityId::IndirectFire, ahead(60.0f, 2.0f));
+        skill(spawn(me, UnitTypeId::T64BV, 15.0f, 2.5f), AbilityId::Smoke, {});
+        // SPGs and towed guns set up, laid near and far.
+        auto laid = [&](UnitTypeId type, float d, float side, float share) {  // at this share of its reach
+            const engine::EntityId id = spawn(me, type, d, side);
+            w.unit_for_setup(id)->deployed = true;
+            const float reach = static_cast<float>(engine::unit_type(type).weapon.range.to_int()) * share / 1.4142f;  // (ahead() goes diagonally)
+            game.submit({.type = engine::CommandType::AttackGround, .units = {id}, .target = ahead(d + reach, side)});
+            return id;
+        };
+        laid(UnitTypeId::Spg, 12.0f, 5.0f, 0.25f);
+        laid(UnitTypeId::MstaS, 13.5f, 6.5f, 0.95f);
+        laid(UnitTypeId::Howitzer, 11.0f, 8.0f, 0.4f);
+        laid(UnitTypeId::M777, 12.5f, 9.5f, 0.95f);
+        // A D-30 camouflaged, another digging its pit.
+        const engine::EntityId hidden = spawn(me, UnitTypeId::Howitzer, 16.5f, 8.0f);
+        w.unit_for_setup(hidden)->deployed = true;
+        skill(hidden, AbilityId::Camouflage, {});
+        const engine::EntityId digger = spawn(me, UnitTypeId::Howitzer, 18.0f, 9.5f);
+        skill(digger, AbilityId::DigGunPit, w.find_unit(digger)->pos);
+        // An IFV's guided missile at an enemy BMP; another calling for supply.
+        const engine::EntityId bmp = spawn(enemy, UnitTypeId::Ifv, 27.0f, 4.0f);
+        w.unit_for_setup(bmp)->hp = 100000;
+        skill(spawn(me, UnitTypeId::Bradley, 19.0f, 5.0f), AbilityId::Atgm, w.find_unit(bmp)->pos);
+        skill(spawn(me, UnitTypeId::Ifv, 18.5f, 2.5f), AbilityId::CallSupply, {});
+        spawn(me, UnitTypeId::AmmoTruck, 9.0f, 3.0f);
+        return render::to_vector2(options.scene == "gunnery_guns" ? ahead(15.0f, 7.0f) : ahead(20.0f, -2.5f));  // (gunnery_guns: on the guns)
+    }
+
     if (options.scene.starts_with("action") && options.mode == Options::Mode::Offline) {
         // Offline, to see vehicles at work: a T-72B3 firing AP at a tank with
         // reactive armor, a BMP-2's 30 mm on a BTR, an RPG at a BMP (the enemy
@@ -765,7 +839,10 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         }
         const engine::TilePos go = engine::tile_of(ahead(32.0f, 8.5f));
         game.submit({.type = engine::CommandType::Move, .units = column, .target = engine::tile_center(go)});
-        return render::to_vector2(options.scene == "action_column" ? ahead(20.0f, 8.5f) : ahead(21.0f, 4.5f));  // (action_column: on the column)
+        // (action_column: the camera on the column; action_gun: on the T-72 firing)
+        return render::to_vector2(options.scene == "action_column" ? ahead(20.0f, 8.5f)
+                                  : options.scene == "action_gun"  ? ahead(19.5f, -4.0f)
+                                                                   : ahead(21.0f, 4.5f));
     }
 
     if (options.scene == "units" && options.mode == Options::Mode::Offline) {

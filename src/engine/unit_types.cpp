@@ -44,7 +44,7 @@ constexpr UnitTypeDef kT72B3 = {
         // Ten times a rifleman's reach; far out it's less sure (see effective_range),
         // and it takes someone seeing that far.
         .weapon = {.name = "125mm HE shell", .damage = 75, .damage_type = DamageType::Explosive,
-                   .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
+                   .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(30),
                    .splash_radius = tiles(1, 2), .accuracy = 80, .miss_spread = tiles(1),
                    .effective_range = tiles(15)},
         .cost = {3, 0, 150, 100, 100},
@@ -53,7 +53,7 @@ constexpr UnitTypeDef kT72B3 = {
         .rounds_capacity = 40,
         // Armor-piercing: a fast, hard-hitting round without a burst.
         .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
-                       .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
+                       .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(45),
                        .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1),
                        .effective_range = tiles(15), .kinetic = true},
         .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
@@ -1022,7 +1022,7 @@ constexpr AbilityDef kAbilities[] = {
     {.name = "Area shot: one HE-FRAG shell with a wide burst", .label = "Area shot", .target = AbilityTarget::Point,
      .range = tiles(50), .cooldown = seconds(20),
      .weapon = {.name = "125mm HE-FRAG shell", .damage = 75, .damage_type = DamageType::Explosive,
-                .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
+                .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(30),
                 .splash_radius = tiles(5, 4), .accuracy = 85, .miss_spread = tiles(1),
                 .effective_range = tiles(15)}},
     {.name = "Switch rounds (reloads the gun): a tank's HE / AP, a BMP-1's HE / HEAT, the 30 mm / the 100 mm", .label = "HE / AP",

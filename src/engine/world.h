@@ -22,7 +22,7 @@ namespace engine {
 
 enum class Order : uint8_t {
     Idle,          // stand, but fight enemies that come into sight
-    Move,          // walk to order_point, ignoring enemies
+    Move,          // walk to order_point, ignoring enemies (a tank fires on the move)
     Attack,        // hunt order_target
     AttackMove,    // walk to order_point, fighting enemies on the way
     AttackGround,  // keep firing at order_point
@@ -114,6 +114,19 @@ inline constexpr int32_t kBogSeconds = 45;
 inline constexpr int32_t kBogLimit = kBogSeconds * kTicksPerSecond * 100;
 inline constexpr int32_t kBogSlowPercent = 50;
 inline constexpr int32_t kFireControlFarPercent = 65;  // a tank's aim at its full range
+// Point-blank a tank's gun is all but sure: this much of what it lacks of
+// certain made up, less and less out to its effective range.
+inline constexpr int32_t kPointBlankPercent = 60;
+// A tank fires on the move, turning or not (its gun stabilized), once its
+// gunner has held a target in reach this long (the lock); a little less
+// sure than standing. The fire control system locks on and aims sooner.
+inline constexpr Tick kLockTicks = kTicksPerSecond;
+inline constexpr Tick kFireControlLockTicks = kTicksPerSecond / 2;
+inline constexpr int32_t kOnTheMovePercent = 80;             // of its accuracy
+inline constexpr int32_t kFireControlOnTheMovePercent = 90;
+// A tank killed by a direct hit with more than this share of its rounds
+// aboard blows up: the turret thrown off, nobody gets out.
+inline constexpr int32_t kBlowUpRoundsPercent = 25;
 inline constexpr Fixed kAtgmTargetReach = Fixed::from_ratio(3, 2);  // an aim point this close to a vehicle means it
 inline constexpr int32_t kDrilledCrewsPercent = 50;    // of the time to set up or pack up a gun
 inline constexpr int32_t kLongRangePercent = 125;      // of a howitzer's, an SPG's, a mortar's reach
@@ -171,6 +184,14 @@ inline constexpr std::array<int32_t, 3> kRangingChance = {17, 50, 95};
 inline constexpr std::array<int32_t, 3> kTabledRangingChance = {30, 70, 95};  // with firing tables
 inline constexpr std::array<Fixed, 3> kRangingSpread = {Fixed::from_int(4), Fixed::from_int(2), Fixed::from_int(1)};
 inline constexpr Fixed kOnTargetSpread = Fixed::from_ratio(3, 10);
+// A shell's (a rocket's) scatter grows with the range, as it does in life:
+// the spreads here are at half the weapon's range; nearer they're tighter,
+// farther wider, in proportion (not under a quarter; twice at full range,
+// more with long-range charges).
+inline constexpr Fixed scatter_at(Fixed spread, Fixed distance, Fixed range) {
+    if (range.raw <= 0) return spread;
+    return spread * clamp(distance / (range / 2), Fixed::from_ratio(1, 4), Fixed::from_int(3));
+}
 inline constexpr Fixed kSameTarget = Fixed::from_ratio(3, 2);
 // A gun's flash gives it away this long to whoever looks its way; an
 // observation post facing it sees the flash from twice its reach. Firing
@@ -426,6 +447,11 @@ struct Unit {
     // A tank in a bog sinks, slowly: how far it's gone (see kBogLimit). Out on
     // firm ground it's free again; at the limit it's lost.
     int32_t mired = 0;
+    // A tank on the move: the enemy its gunner holds, and for how long (see kLockTicks).
+    EntityId lock = 0;
+    int32_t lock_ticks = 0;
+    // What killed it was a direct hit (a round, a rocket), not a burst's fragments or fire.
+    bool killed_directly = false;
 
     // A supply truck's assignment: the freight it hauls (Count: whatever
     // piles up most at the station) and the depot it takes it to (0: the
@@ -478,6 +504,7 @@ struct Impact {
     UnitTypeId shooter_type = UnitTypeId::Rifleman;
     Fixed splash{};  // radius of the burst, tiles
     bool air = false;  // up in the sky: a missile bursting at an aircraft
+    EntityId blown = 0;  // a tank whose rounds went up: its turret thrown off
 };
 
 // The round a unit's gun is loaded with: the main one, or the alternative.
@@ -631,6 +658,7 @@ private:
     struct PendingDamage {
         EntityId victim;  // a unit or a structure
         int32_t amount;
+        bool direct = false;  // a round or a rocket on it, not fragments
     };
 
     enum class Step : uint8_t {
@@ -717,6 +745,7 @@ private:
     void update_unit(Unit& u);
     const Unit* find_enemy_in_sight(Unit& u);
     void engage(Unit& u, const Unit& target);
+    void fire_on_the_move(Unit& u);
     void engage_ground(Unit& u);
 
     // Fog of war (world_vision.cpp).
@@ -766,7 +795,7 @@ private:
     Tick reload_ticks(const Unit& u, const WeaponDef& weapon) const;
     void apply_load_shell(const Command& cmd);
     // A burst at a point: everyone and every building in reach takes it.
-    void splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon);
+    void splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon, const Unit* direct_hit = nullptr);
     void burst_shell(const Projectile& p, FixedVec2 at);
     void update_fires();
     void update_repairs();
@@ -791,7 +820,7 @@ private:
     // Loads up at the nearest depot for the cargo; false once full or when it can't.
     bool load_up(Unit& u);
     // A fireball: fuel or ammunition going up.
-    void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire);
+    void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire, EntityId blown = 0);
 
     // Engineering (world_engineering.cpp).
     void lay_mine(Unit& u, bool anti_tank);
@@ -855,6 +884,7 @@ private:
         bool blast = false;           // fragments from a burst, not a bullet
         bool plunging = false;        // lobbed or a fireball: walls don't help
         int32_t damage_percent = 100;
+        bool on_it = false;           // a burst right on it: struck, not only caught in it
     };
     // Percent of hits the victim's field works take for him.
     int32_t cover_percent(const Unit& victim, const Shot& shot) const;
