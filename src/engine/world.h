@@ -532,6 +532,7 @@ struct Impact {
     Fixed splash{};  // radius of the burst, tiles
     bool air = false;  // up in the sky: a missile bursting at an aircraft
     EntityId blown = 0;  // a tank whose rounds went up: its turret thrown off
+    Shell shell = Shell::He;  // what shell it was (how its smoke looks)
 };
 
 // The round a unit's gun is loaded with: the main one, or the alternative.

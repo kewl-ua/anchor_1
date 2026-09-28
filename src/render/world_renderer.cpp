@@ -443,14 +443,40 @@ float WorldRenderer::fx_random() {
     return static_cast<float>(fx_rng_ & 0xFFFFFF) / static_cast<float>(0x1000000);
 }
 
+// What went off, for how its smoke looks: a gun's shell (earth and black
+// smoke up in a column), a mortar bomb's (a sharp grey puff), an automatic
+// grenade launcher's (little ones), a rocket's (dirty, spread low), a bomb's
+// (a huge black column over a brown dome), a cluster's bomblets (little
+// white puffs), an incendiary's (white smoke, burning bits), white
+// phosphorus (white and dense, its streamers arcing out), a mine's or a
+// charge's (earth thrown up).
+enum class Burst : uint8_t { Shell, Mortar, Grenade, Rocket, Bomb, Cluster, Incendiary, Phosphorus, Dirt };
+Burst burst_of(const engine::Impact& im) {
+    switch (im.shell) {
+        case engine::Shell::Cluster: return Burst::Cluster;
+        case engine::Shell::Incendiary: return Burst::Incendiary;
+        case engine::Shell::Phosphorus: return Burst::Phosphorus;
+        default: break;
+    }
+    const engine::UnitTypeDef& def = engine::unit_type(im.shooter_type);
+    if (def.weapon.aerial_bomb) return Burst::Bomb;
+    if (def.aircraft || im.shooter_type == engine::UnitTypeId::Mlrs) return Burst::Rocket;
+    if (im.shooter_type == engine::UnitTypeId::Mortar) return Burst::Mortar;
+    if (im.shooter_type == engine::UnitTypeId::Ags) return Burst::Grenade;
+    if (im.shooter_type == engine::UnitTypeId::Sapper || def.weapon.splash_radius.raw == 0) return Burst::Dirt;  // a charge, a mine under a vehicle
+    return Burst::Shell;
+}
+
 // A shell or a rocket going off: clods of earth flung up in arcs (spray off
-// the water), dust and smoke rolling up, darker and more of it the bigger it was.
-void WorldRenderer::spawn_burst(const engine::World& world, Vector2 at, float splash) {
+// the water), dust and smoke rolling up, as what went off makes it (see Burst).
+void WorldRenderer::spawn_burst(const engine::World& world, Vector2 at, float splash, uint8_t kind_of) {
+    const auto kind = static_cast<Burst>(kind_of);
     const engine::TileMap& map = world.map();
     const engine::TilePos t = map.clamp_tile({static_cast<int32_t>(std::floor(at.x)), static_cast<int32_t>(std::floor(at.y))});
     const bool water = map.terrain(t) == engine::Terrain::Water;
     const float big = std::clamp(splash, 0.2f, 2.0f);
-    const int bits = 10 + static_cast<int>(big * 20.0f);
+    const bool small = kind == Burst::Cluster || kind == Burst::Grenade || kind == Burst::Phosphorus;
+    const int bits = (small ? 3 : 10) + static_cast<int>(big * (small ? 8.0f : 20.0f));
     for (int i = 0; i < bits; ++i) {
         const float a = fx_random() * 6.2831853f;
         const float speed = (0.4f + 1.2f * fx_random()) * (0.5f + big * 0.6f);
@@ -467,21 +493,64 @@ void WorldRenderer::spawn_burst(const engine::World& world, Vector2 at, float sp
         p.color = water ? Color{222, 232, 236, 255} : kEarth[i % 3];
         particles_.push_back(p);
     }
-    const int puffs = 4 + static_cast<int>(big * 6.0f);
-    for (int i = 0; i < puffs; ++i) {
+    // Its smoke: some of it up in a column, the rest rolling out low round it.
+    struct Look {
+        int puffs;
+        float column;  // the share of it up in the column
+        Color up;      // the column's
+        Color low;     // what rolls out
+        float rise;    // how fast the column goes up, pixels a second
+        float spread;  // how fast it rolls out, tiles a second
+        float life;
+        float size;
+    };
+    Look look{4 + static_cast<int>(big * 6.0f), 0.34f, {54, 48, 42, 215}, {120, 106, 88, 195}, 55.0f, 0.3f, 1.8f, 1.0f};
+    switch (kind) {
+        case Burst::Shell: break;
+        case Burst::Mortar: look = {3 + static_cast<int>(big * 3.0f), 0.4f, {142, 138, 130, 200}, {160, 150, 132, 180}, 38.0f, 0.25f, 1.4f, 0.8f}; break;
+        case Burst::Grenade: look = {2, 0.5f, {130, 126, 118, 190}, {150, 142, 126, 170}, 26.0f, 0.2f, 1.0f, 0.6f}; break;
+        case Burst::Rocket: look = {5 + static_cast<int>(big * 5.0f), 0.2f, {60, 56, 52, 215}, {92, 86, 78, 205}, 40.0f, 0.55f, 2.0f, 1.0f}; break;
+        case Burst::Bomb: look = {18, 0.45f, {30, 28, 26, 235}, {132, 114, 88, 210}, 80.0f, 0.7f, 4.0f, 1.6f}; break;
+        case Burst::Cluster: look = {2, 0.3f, {196, 194, 186, 190}, {200, 196, 186, 170}, 20.0f, 0.2f, 0.9f, 0.55f}; break;
+        case Burst::Incendiary: look = {5, 0.5f, {206, 202, 192, 210}, {176, 170, 158, 190}, 34.0f, 0.3f, 2.2f, 1.0f}; break;
+        case Burst::Phosphorus: look = {8, 0.35f, {242, 242, 236, 235}, {232, 232, 226, 220}, 30.0f, 0.4f, 2.6f, 1.1f}; break;
+        case Burst::Dirt: look = {5, 0.5f, {104, 88, 66, 210}, {126, 108, 84, 190}, 50.0f, 0.3f, 1.6f, 1.0f}; break;
+    }
+    for (int i = 0; i < look.puffs; ++i) {
+        const bool column = static_cast<float>(i) < static_cast<float>(look.puffs) * look.column;
+        const float a = fx_random() * 6.2831853f;
         Particle p{};
         p.kind = Particle::Kind::Smoke;
-        p.ground = {at.x + (fx_random() - 0.5f) * 0.4f * big, at.y + (fx_random() - 0.5f) * 0.4f * big};
+        p.ground = {at.x + (fx_random() - 0.5f) * 0.3f * big, at.y + (fx_random() - 0.5f) * 0.3f * big};
         p.z = 2.0f + 6.0f * fx_random();
-        p.vel = {0.15f + (fx_random() - 0.5f) * 0.3f, -0.1f + (fx_random() - 0.5f) * 0.3f};
-        // A column of earth and smoke thrown up, the rest rolling out low round it.
-        p.vz = i % 3 == 0 ? 40.0f + 30.0f * big * fx_random() : 8.0f + 14.0f * fx_random();
-        p.life = 1.6f + 1.2f * fx_random() + big;
-        p.size = 3.0f + 4.0f * big * fx_random();
-        p.grow = 6.0f + 5.0f * fx_random();
-        const bool dark = big >= 1.2f && i % 2 == 0;
-        p.color = water ? Color{214, 222, 226, 170} : dark ? Color{52, 48, 44, 200} : Color{118, 106, 88, 190};
+        const float out = column ? 0.1f : look.spread * (0.5f + fx_random());
+        p.vel = {0.12f + std::cos(a) * out, -0.08f + std::sin(a) * out};
+        p.vz = column ? look.rise * (0.6f + 0.5f * fx_random()) * (0.7f + 0.3f * big) : 6.0f + 10.0f * fx_random();
+        p.life = look.life * (0.75f + 0.5f * fx_random()) + big * 0.6f;
+        p.size = (2.5f + 3.5f * big * fx_random()) * look.size;
+        p.grow = (5.0f + 4.0f * fx_random()) * look.size;
+        const Color c = column ? look.up : look.low;
+        p.color = water ? Color{214, 222, 226, 170} : c;
         particles_.push_back(p);
+    }
+    if (kind == Burst::Phosphorus) {  // its streamers: burning bits arcing out, white trails
+        for (int i = 0; i < 18; ++i) {
+            const float a = fx_random() * 6.2831853f;
+            const float v = 1.2f + 2.0f * fx_random();
+            Particle p{};
+            p.kind = Particle::Kind::Spark;
+            p.ground = at;
+            p.z = 4.0f;
+            p.vel = {std::cos(a) * v, std::sin(a) * v};
+            p.vz = 70.0f + 70.0f * fx_random();
+            p.life = 1.2f + 0.8f * fx_random();
+            p.size = 1.5f;
+            p.color = {255, 255, 240, 255};
+            particles_.push_back(p);
+        }
+    }
+    if (kind == Burst::Incendiary) {  // burning bits scattered
+        spawn_sparks(at, 4.0f, 14, {255, 170, 60, 255}, 1.6f);
     }
 }
 
@@ -516,7 +585,7 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
     if (u.type == engine::UnitTypeId::Mlrs) {  // a rocket's back-blast rolling out behind the launcher
         for (int i = 0; i < 4; ++i) {
             Particle p{};
-            p.kind = Particle::Kind::Smoke;
+            p.kind = Particle::Kind::Blow;
             p.ground = {g.x - f.x * 0.4f, g.y - f.y * 0.4f};
             p.z = 10.0f;
             p.vel = {-f.x * (1.0f + fx_random()) + (fx_random() - 0.5f) * 0.6f, -f.y * (1.0f + fx_random()) + (fx_random() - 0.5f) * 0.6f};
@@ -531,7 +600,7 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
     const int puffs = big ? 5 : 1;
     for (int i = 0; i < puffs; ++i) {
         Particle p{};
-        p.kind = Particle::Kind::Smoke;
+        p.kind = big ? Particle::Kind::Blow : Particle::Kind::Smoke;
         p.ground = muzzle;
         p.z = height;
         const float k = big ? 0.4f + 0.9f * fx_random() : 0.3f;
@@ -547,7 +616,7 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
     for (int i = 0, n = splash >= 1.0f ? 14 : 6; i < n; ++i) {  // the blast off the ground
         const float a = fx_random() * 6.2831853f;
         Particle p{};
-        p.kind = Particle::Kind::Smoke;
+        p.kind = Particle::Kind::Blow;
         p.ground = {g.x + f.x * reach * 0.7f, g.y + f.y * reach * 0.7f};
         p.z = 1.0f;
         p.vel = {std::cos(a) * 0.9f, std::sin(a) * 0.9f};
@@ -906,7 +975,7 @@ void WorldRenderer::spawn_fire(Vector2 at, float height, int wear, float dt) {
         p.life = 2.5f + 1.5f * fx_random();
         p.size = 2.0f + 1.5f * fx_random();
         p.grow = 4.0f + 3.0f * fx_random();
-        p.color = wear >= 3 ? Color{34, 32, 30, 200} : Color{112, 110, 106, 170};
+        p.color = wear >= 3 ? Color{24, 22, 20, 225} : Color{112, 110, 106, 170};
         p.age = fx_random() * dt;  // spread over the frame
         particles_.push_back(p);
     }
@@ -1062,7 +1131,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         const float splash = to_float(impact.splash);
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
         const bool fire = impact.shooter_type == engine::UnitTypeId::FuelTanker;  // a load going up: fire, not a shell's dust (drawn with the wreck)
-        if (splash > 0.0f && !fire) spawn_burst(world, to_vector2(impact.pos), splash);
+        if (splash > 0.0f && !fire) spawn_burst(world, to_vector2(impact.pos), splash, static_cast<uint8_t>(burst_of(impact)));
     }
     impacts_seen_until_ = world.tick();
 
@@ -1399,7 +1468,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             p.life = 3.0f + fx_random();
             p.size = 2.5f + 1.5f * fx_random();
             p.grow = 5.0f;
-            p.color = wooded ? Color{40, 36, 32, 200} : Color{150, 146, 140, 130};
+            p.color = wooded ? Color{26, 24, 22, 215} : Color{150, 146, 140, 130};
             particles_.push_back(p);
         }
     }
@@ -1419,7 +1488,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             p.life = f.flames ? 2.6f + 1.2f * fx_random() : 2.0f + fx_random();
             p.size = f.flames ? 2.5f + 1.5f * fx_random() : 1.8f + fx_random();
             p.grow = f.flames ? 5.0f : 3.5f;
-            p.color = f.flames ? Color{36, 32, 30, 210} : Color{96, 94, 92, 150};
+            p.color = f.flames ? Color{22, 20, 18, 225} : Color{96, 94, 92, 150};
             particles_.push_back(p);
         }
     }
@@ -1459,6 +1528,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         p.size = std::max(0.3f, p.size + p.grow * dt);
         switch (p.kind) {
             case Particle::Kind::Smoke:
+            case Particle::Kind::Blow:
                 p.vz *= 1.0f - 0.6f * dt;
                 p.vel = {p.vel.x * (1.0f - 0.8f * dt) + 0.12f * dt, p.vel.y * (1.0f - 0.8f * dt) - 0.08f * dt};  // the wind
                 break;
@@ -1577,11 +1647,25 @@ struct FxSheet {
     int frames = 0;
     Vector2 origin{};  // its foot (a blast's, a flame's) or its middle (a flash's)
 };
-enum class Fx : uint8_t { Blast0, Blast1, Blast2, Blast3, Flame0, Flame1, Flame2, Star0, Star1, Star2, Embers, Scorch0, Scorch1, Scorch2, Count };
+enum class Fx : uint8_t {
+    Blast0, Blast1, Blast2, Blast3,
+    Flame0, Flame1, Flame2,
+    Star0, Star1, Star2,
+    Embers,
+    Scorch0, Scorch1, Scorch2,
+    Smoke0, Smoke1, Smoke2, Smoke3, Smoke4, Smoke5,
+    Roof0, Roof1,
+    Count
+};
+constexpr int kSmokeFrames = 8;  // a puff's life: dense (0..2), breaking up (3, 4), rings thinning out (5..7)
+constexpr float kSmokeTiers[6] = {4.0f, 6.0f, 9.0f, 13.0f, 18.0f, 26.0f};  // its sizes, pixels round
+constexpr int kStreakTurns = 8;  // blown smoke: its sheets turned every 22.5 degrees
+constexpr float kStreakSizes[3][2] = {{14.0f, 6.0f}, {22.0f, 9.0f}, {32.0f, 13.0f}};  // long, wide
 constexpr int kFxVariants = 3;
 constexpr int kBlastFrames = 18;
 constexpr float kBlastSeconds[4] = {0.7f, 1.0f, 1.3f, 1.7f};  // how long a blast's sheet plays, by its size
 std::vector<FxSheet> g_fx;
+std::vector<FxSheet> g_streaks;  // blown smoke: by variant, size, turn
 
 const FxSheet& fx_sheet(Fx kind, int variant) {
     return g_fx[static_cast<size_t>(kind) * kFxVariants + static_cast<size_t>(variant % kFxVariants)];
@@ -1860,6 +1944,169 @@ FxSheet bake_scorch(float rx, uint32_t seed) {
     });
 }
 
+// A cloud of smoke in lumps (`lumps`: where they are round its middle, how
+// big; `r` how big it is), in grey (tinted as it's drawn: black off a
+// fire, white off a screen, brown off a burst): lumps inside a dark line,
+// lit on top to the left, a crescent of shade under each; then breaking up,
+// the lumps shrinking apart, a few gone; then only its rim left, a thick
+// ring broken into arcs, thinning out.
+struct CloudLump {
+    float x, y, r, wob;
+};
+FxSheet bake_cloud(std::vector<CloudLump> lumps, float r, uint32_t seed) {
+    constexpr float kMostSpread = 1.75f;
+    float ex = 0.0f;
+    float ey = 0.0f;
+    for (const CloudLump& l : lumps) {
+        ex = std::max(ex, std::fabs(l.x) * kMostSpread + l.r * 1.15f);
+        ey = std::max(ey, std::fabs(l.y) * kMostSpread + l.r * 1.15f);
+    }
+    const int w = static_cast<int>(ex * 2.0f) + 6;
+    const int h = static_cast<int>(ey * 2.0f + r * 0.4f) + 6;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h / 2) + r * 0.2f};
+    std::sort(lumps.begin(), lumps.end(), [](const CloudLump& a, const CloudLump& b) { return a.y < b.y; });  // the lower ones in front
+    constexpr Color kLight{238, 238, 238, 255};
+    constexpr Color kMid{196, 196, 196, 255};
+    constexpr Color kShadow{148, 148, 148, 255};
+    constexpr Color kLine{72, 72, 72, 255};
+    return bake_fx(w, h, kSmokeFrames, o, [&](Canvas& c, int f) {
+        const float rise = r * 0.05f * static_cast<float>(f);
+        const float spread = f < 3 ? 0.86f + 0.07f * static_cast<float>(f) : 1.0f + 0.15f * static_cast<float>(f - 2);
+        auto shape = [&](const CloudLump& l, float scale, auto&& pixel) {
+            const float lx = o.x + l.x * spread;
+            const float ly = o.y + l.y * spread - rise;
+            const float lr = l.r * scale;
+            for (int y = static_cast<int>(ly - lr) - 2; y <= static_cast<int>(ly + lr) + 2; ++y) {
+                for (int x = static_cast<int>(lx - lr) - 2; x <= static_cast<int>(lx + lr) + 2; ++x) {
+                    const float dx = static_cast<float>(x) + 0.5f - lx;
+                    const float dy = static_cast<float>(y) + 0.5f - ly;
+                    const float a = std::atan2(dy, dx);
+                    const float rr = lr * (1.0f + 0.08f * std::sin(3.0f * a + l.wob) + 0.04f * std::sin(5.0f * a + 2.0f * l.wob));
+                    const float d = std::sqrt(dx * dx + dy * dy);
+                    if (d <= rr) pixel(x, y, dx / rr, dy / rr, d / rr, a);
+                }
+            }
+        };
+        if (f < 5) {
+            // Dense, then breaking up: the lumps shrinking apart, a few of them gone.
+            const float shrink = f < 3 ? 1.0f : f == 3 ? 0.84f : 0.66f;
+            for (size_t li = 0; li < lumps.size(); ++li) {
+                if (f == 4 && li > 0 && rand01(seed, 300 + static_cast<int>(li)) < 0.3f) continue;
+                shape(lumps[li], shrink, [&](int x, int y, float nx, float ny, float d, float) {
+                    Color tone = kMid;
+                    if (ny < -0.28f && nx < 0.4f && d < 0.86f) tone = kLight;
+                    if (ny > 0.2f && d > 0.6f) tone = kShadow;
+                    if (f >= 3 && ny > 0.0f && d > 0.45f) tone = kShadow;  // breaking up: darker
+                    c.set(x, y, tone);
+                });
+            }
+            c.outline(kLine);
+            return;
+        }
+        // Only its rim left: a thick ring round where it was, broken into
+        // arcs, thinning out; a crescent or two inside it.
+        std::vector<uint8_t> in(static_cast<size_t>(w * h), 0);
+        for (const CloudLump& l : lumps) {
+            shape(l, 1.0f, [&](int x, int y, float, float, float, float) {
+                if (x >= 0 && y >= 0 && x < w && y < h) in[static_cast<size_t>(y * w + x)] = 1;
+            });
+        }
+        auto inside = [&](int x, int y) { return x >= 0 && y >= 0 && x < w && y < h && in[static_cast<size_t>(y * w + x)] != 0; };
+        const float keep = 1.0f - 0.28f * static_cast<float>(f - 5);
+        const int thick = r >= 9.0f ? 3 : 2;
+        const auto g = static_cast<unsigned char>(112 + 24 * (f - 5));
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (!inside(x, y)) continue;
+                bool rim = false;
+                for (int k = 1; k <= thick && !rim; ++k) rim = !inside(x - k, y) || !inside(x + k, y) || !inside(x, y - k) || !inside(x, y + k);
+                if (!rim) continue;
+                const float a = std::atan2(static_cast<float>(y) - o.y, static_cast<float>(x) - o.x);
+                if (std::sin(5.0f * a + rand01(seed, 400) * 6.28f + 0.7f * static_cast<float>(f)) < 1.0f - 2.0f * keep) continue;  // broken into arcs
+                c.set(x, y, {g, g, g, 255});
+            }
+        }
+        if (f < 7) {  // a crescent under the biggest lump or two
+            for (size_t li = lumps.size() >= 2 ? lumps.size() - 2 : 0; li < lumps.size(); ++li) {
+                const CloudLump& l = lumps[li];
+                shape(l, 0.8f, [&](int x, int y, float nx, float ny, float d, float) {
+                    if (d > 0.72f && ny > 0.25f && std::fabs(nx) < 0.75f) c.set(x, y, {g, g, g, 255});
+                });
+            }
+        }
+    });
+}
+
+// A round puff `r` pixels round.
+FxSheet bake_smoke(float r, uint32_t seed) {
+    std::vector<CloudLump> lumps{{0.0f, 0.0f, r * 0.62f, rand01(seed, 0) * 6.28f}};
+    const int n = 4 + static_cast<int>(r / 5.0f);
+    for (int i = 1; i <= n; ++i) {
+        const float a = (static_cast<float>(i) + rand01(seed, i) * 0.6f) * 6.2831853f / static_cast<float>(n);
+        const float d = r * (0.38f + 0.26f * rand01(seed, i + 20));
+        lumps.push_back({std::cos(a) * d, std::sin(a) * d * 0.8f, r * (0.32f + 0.18f * rand01(seed, i + 40)), rand01(seed, i + 60) * 6.28f});
+    }
+    return bake_cloud(lumps, r, seed);
+}
+
+// Smoke blown out along `angle` (on the screen): a drawn-out cloud `len`
+// pixels long, `wide` across, lumps along it, fattest in its middle.
+FxSheet bake_streak(float len, float wide, float angle, uint32_t seed) {
+    std::vector<CloudLump> lumps;
+    const Vector2 d{std::cos(angle), std::sin(angle)};
+    const Vector2 n{-d.y, d.x};
+    const int k = std::max(3, static_cast<int>(len / (wide * 0.55f)));
+    for (int i = 0; i < k; ++i) {
+        const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(k) * 2.0f - 1.0f;  // -1..1 along it
+        const float at = t * len * 0.42f;
+        const float side = (rand01(seed, i) - 0.5f) * wide * 0.3f;
+        const float lr = wide * 0.5f * (1.0f - 0.45f * t * t) * (0.85f + 0.3f * rand01(seed, i + 20));
+        lumps.push_back({d.x * at + n.x * side, d.y * at + n.y * side, lr, rand01(seed, i + 40) * 6.28f});
+    }
+    return bake_cloud(lumps, wide, seed);
+}
+
+// Fire over a roof, `fw` pixels across: a bed of embers, dark red, and
+// small tongues of fire all along it flaring up and dying down by turns.
+FxSheet bake_roof_fire(float fw, uint32_t seed) {
+    const float fh = fw * 0.9f;
+    const int w = static_cast<int>(fw) + 6;
+    const int h = static_cast<int>(fh) + 6;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h - 3)};
+    constexpr int kFrames = 8;
+    const int tongues = 4 + static_cast<int>(fw / 4.0f);
+    return bake_fx(w, h, kFrames, o, [&](Canvas& c, int f) {
+        const float ph = static_cast<float>(f) / kFrames * 6.2831853f;
+        const float bx = fw * 0.5f;
+        const float by = std::max(1.5f, fw * 0.16f);
+        for (int y = 0; y < h; ++y) {  // the bed of embers
+            for (int x = 0; x < w; ++x) {
+                const float dx = (static_cast<float>(x) + 0.5f - o.x) / bx;
+                const float dy = (static_cast<float>(y) + 0.5f - (o.y - by)) / by;
+                if (dx * dx + dy * dy > 1.0f) continue;
+                const float nz = fx_noise(seed + static_cast<uint32_t>(f / 2), x, y);
+                c.set(x, y, nz < 0.12f ? kHeat[1] : nz < 0.4f ? kHeat[3] : nz < 0.7f ? kHeat[4] : Color{70, 26, 18, 255});
+            }
+        }
+        for (int i = 0; i < tongues; ++i) {  // the tongues, each flaring its own way
+            const float tx = o.x + (rand01(seed, i) - 0.5f) * fw * 0.85f;
+            const float edge = 1.0f - std::fabs(tx - o.x) / (fw * 0.5f);
+            const float tall = fh * (0.35f + 0.55f * rand01(seed, i + 20)) * (0.5f + 0.5f * edge) * (0.55f + 0.45f * std::sin(ph + rand01(seed, i + 40) * 6.28f));
+            const float hw = 1.2f + 1.4f * rand01(seed, i + 60);
+            const float base = o.y - by * (0.6f + 0.8f * rand01(seed, i + 80));
+            for (int y = static_cast<int>(base - tall); y <= static_cast<int>(base); ++y) {
+                const float k = (base - static_cast<float>(y)) / std::max(tall, 1.0f);  // 0 at its foot, 1 at its tip
+                const float half = hw * (1.0f - k * k);
+                const float sway = std::sin(k * 3.0f + ph + static_cast<float>(i)) * 0.8f * k;
+                for (int x = static_cast<int>(tx - half + sway); x <= static_cast<int>(tx + half + sway); ++x) {
+                    c.set(x, y, k < 0.3f ? kHeat[0] : k < 0.6f ? kHeat[1] : k < 0.85f ? kHeat[2] : kHeat[3]);
+                }
+            }
+        }
+        c.outline({90, 26, 16, 255});
+    });
+}
+
 // Every sheet, once there's a window to make textures in.
 void ensure_fx() {
     if (!g_fx.empty()) return;
@@ -1881,6 +2128,17 @@ void ensure_fx() {
         put(Fx::Scorch0, bake_scorch(34.0f, seed + 11u));
         put(Fx::Scorch1, bake_scorch(48.0f, seed + 12u));
         put(Fx::Scorch2, bake_scorch(68.0f, seed + 13u));
+        for (int k = 0; k < 6; ++k) put(static_cast<Fx>(static_cast<int>(Fx::Smoke0) + k), bake_smoke(kSmokeTiers[k], seed + 20u + static_cast<uint32_t>(k)));
+        put(Fx::Roof0, bake_roof_fire(12.0f, seed + 30u));
+        if (v < 2) {
+            for (int k = 0; k < 3; ++k) {
+                for (int t = 0; t < kStreakTurns; ++t) {
+                    g_streaks.push_back(bake_streak(kStreakSizes[k][0], kStreakSizes[k][1], static_cast<float>(t) * 3.14159265f / kStreakTurns,
+                                                    seed + 50u + static_cast<uint32_t>(k * 16 + t)));
+                }
+            }
+        }
+        put(Fx::Roof1, bake_roof_fire(20.0f, seed + 31u));
     }
 }
 
@@ -2496,10 +2754,11 @@ std::vector<FineLine>* g_fine = nullptr;
 struct FireSpot {
     Vector2 at;
     bool flames;
+    bool roof = false;  // on a roof: a patch of fire over it
 };
 std::vector<FireSpot>* g_fires = nullptr;
-void fire_spot(Vector2 at, bool flames) {
-    if (g_fires) g_fires->push_back({at, flames});
+void fire_spot(Vector2 at, bool flames, bool roof = false) {
+    if (g_fires) g_fires->push_back({at, flames, roof});
 }
 
 // A building's damage in four stages (0 whole, 1 hit, 2 burning, badly
@@ -3248,7 +3507,7 @@ void roof_holes(const engine::TileMap& map, Rectangle r, float z, float damage, 
         DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), rr + 1.0f, rr * 0.6f + 0.8f, lit(shade(roof, 0.55f)));
         DrawEllipse(static_cast<int>(c.x), static_cast<int>(c.y), rr, rr * 0.6f, lit({22, 18, 16, 255}));
         for (const float d : {-1.5f, 1.2f}) DrawLineV({c.x - rr, c.y + d - 0.5f}, {c.x + rr, c.y + d + 0.8f}, lit({92, 70, 50, 255}));
-        if (k < 2) fire_spot(c, stage_of(damage) == 2);
+        if (k < 2) fire_spot(c, stage_of(damage) == 2, true);
     }
 }
 
@@ -6634,8 +6893,9 @@ bool WorldRenderer::draw_baked(const BuildingBake& want) const {
         for (size_t i = 0; i < it->second.burning.size(); ++i) {
             const auto& f = it->second.burning[i];
             if (!f.flames) continue;
-            const FxSheet& s = fx_sheet(i % 2 == 0 ? Fx::Flame1 : Fx::Flame0, static_cast<int>(i % 3));
-            draw_fx(s, static_cast<int>(now * 12.0f + static_cast<float>(i) * 3.0f) % s.frames, {f.at.x, f.at.y + 2.0f});
+            const FxSheet& s = f.roof ? fx_sheet(i % 2 == 0 ? Fx::Roof1 : Fx::Roof0, static_cast<int>(i % 3))
+                                      : fx_sheet(i % 2 == 0 ? Fx::Flame1 : Fx::Flame0, static_cast<int>(i % 3));
+            draw_fx(s, static_cast<int>(now * (f.roof ? 9.0f : 12.0f) + static_cast<float>(i) * 3.0f) % s.frames, {f.at.x, f.at.y + 2.0f});
         }
     }
     return true;
@@ -6704,7 +6964,7 @@ void WorldRenderer::bake_buildings(const engine::World& world) const {
         sprite.at = {bounds.x, bounds.y};
         sprite.look = b.look;
         sprite.burning.clear();
-        for (const FireSpot& f : fires) sprite.burning.push_back({f.at, f.flames});
+        for (const FireSpot& f : fires) sprite.burning.push_back({f.at, f.flames, f.roof});
         sprite.ground = b.kind == 0 || b.kind == 3 ? Vector2{static_cast<float>(b.tx) + 0.5f, static_cast<float>(b.ty) + 0.5f} : to_vector2(b.s.center);
         sprite.anchor = on_terrain(map, sprite.ground);
         sprite.used = frame_;
@@ -12649,77 +12909,31 @@ void WorldRenderer::draw_services(const engine::World& world, float alpha) const
     }
 }
 
-// Smoke in soft puffs fading as it spreads, clods of earth dark against the
-// ground, flames going from yellow to red as they rise and die, spray.
-// A disc of smoke shaded round: lit from above on the left (as the houses
-// are), shading off to its lower right, soft in its middle.
-void shaded_disc(Vector2 c, float rad, Color light, Color dark, float alpha) {
-    constexpr int kMaxSides = 16;
-    // The unit circle, and how lit each point of its rim is (towards the
-    // light, up and to the left), once for each number of sides.
-    struct Rim {
-        std::array<Vector2, kMaxSides + 1> p{};
-        std::array<float, kMaxSides + 1> k{};
-    };
-    static const std::array<Rim, kMaxSides + 1> rims = [] {
-        std::array<Rim, kMaxSides + 1> out{};
-        for (int n = 3; n <= kMaxSides; ++n) {
-            for (int i = 0; i <= n; ++i) {
-                const float t = static_cast<float>(i) * 6.2831853f / static_cast<float>(n);
-                out[static_cast<size_t>(n)].p[static_cast<size_t>(i)] = {std::cos(t), std::sin(t)};
-                out[static_cast<size_t>(n)].k[static_cast<size_t>(i)] = 0.5f + 0.5f * (-std::cos(t) * 0.6f - std::sin(t) * 0.8f);
-            }
-        }
-        return out;
-    }();
-    const int sides = std::clamp(static_cast<int>(rad * 0.6f) + 7, 7, kMaxSides);
-    const Rim& rim = rims[static_cast<size_t>(sides)];
-    const auto a = static_cast<unsigned char>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
-    auto colour = [&](float k) {
-        return Color{static_cast<unsigned char>(dark.r + (light.r - dark.r) * k), static_cast<unsigned char>(dark.g + (light.g - dark.g) * k),
-                     static_cast<unsigned char>(dark.b + (light.b - dark.b) * k), a};
-    };
-    const Color mid = colour(0.58f);
-    const Texture2D shapes = GetShapesTexture();
-    const Rectangle sr = GetShapesTextureRectangle();
-    const float u = (sr.x + sr.width * 0.5f) / static_cast<float>(shapes.width);
-    const float v = (sr.y + sr.height * 0.5f) / static_cast<float>(shapes.height);
-    rlCheckRenderBatchLimit(4 * sides);
-    rlSetTexture(shapes.id);
-    rlBegin(RL_QUADS);
-    auto vertex = [&](Vector2 p, Color col) {
-        rlNormal3f(g_grain.x, g_grain.y, g_grain.z);
-        rlColor4ub(col.r, col.g, col.b, col.a);
-        rlTexCoord2f(u, v);
-        rlVertex2f(p.x, p.y);
-    };
-    for (int i = 0; i < sides; ++i) {  // a fan round its middle (its triangles as quads, the way the shapes batch)
-        const Vector2 p0{c.x + rim.p[static_cast<size_t>(i)].x * rad, c.y + rim.p[static_cast<size_t>(i)].y * rad};
-        const Vector2 p1{c.x + rim.p[static_cast<size_t>(i) + 1].x * rad, c.y + rim.p[static_cast<size_t>(i) + 1].y * rad};
-        const Color c1 = colour(rim.k[static_cast<size_t>(i) + 1]);
-        vertex(c, mid);
-        vertex(p1, c1);
-        vertex(p0, colour(rim.k[static_cast<size_t>(i)]));
-        vertex(p0, colour(rim.k[static_cast<size_t>(i)]));
-    }
-    rlEnd();
-    rlSetTexture(0);
+// Smoke, clods of earth dark against the ground, flames, spray.
+// A puff of smoke `r` pixels round, its frame of the sheet for its size
+// (see bake_smoke; -1: one of the dense ones, by its seed), tinted `light`
+// (the colour its lit top has), `alpha` see-through.
+void puff(Vector2 at, float r, Color light, float alpha, uint32_t seed, int frame = -1) {
+    if (alpha <= 0.02f || r < 0.5f) return;
+    int tier = 0;
+    while (tier < 5 && r > kSmokeTiers[tier] * 1.15f) ++tier;
+    const FxSheet& s = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Smoke0) + tier), static_cast<int>(seed % 3u));
+    auto up = [](unsigned char c) { return static_cast<unsigned char>(std::min(255, static_cast<int>(c) * 255 / 244)); };
+    const Color tint{up(light.r), up(light.g), up(light.b), static_cast<unsigned char>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)};
+    draw_fx(s, frame >= 0 ? std::min(frame, kSmokeFrames - 1) : static_cast<int>(seed % 3u), at, tint);
 }
 
-// A puff of smoke, fluffy: smaller puffs bulging out round its top, each
-// shaded from its lit top to its shadowed underside.
-void puff(Vector2 at, float r, Color light, Color dark, float alpha, uint32_t seed) {
-    if (alpha <= 0.02f || r < 0.5f) return;
-    if (r >= 3.5f) {
-        const int bulges = r < 6.0f ? 2 : 3 + static_cast<int>(seed % 2);
-        for (int i = 0; i < bulges; ++i) {
-            const uint32_t h = seed * 2654435761u + static_cast<uint32_t>(i) * 40503u;
-            const float a = -3.0f + 2.9f * (static_cast<float>(i) + 0.5f) / static_cast<float>(bulges) + static_cast<float>((h >> 8) % 100) * 0.003f;
-            const float br = r * (0.5f + 0.15f * static_cast<float>((h >> 16) % 100) * 0.01f);
-            shaded_disc({at.x + std::cos(a) * r * 0.62f, at.y + std::sin(a) * r * 0.55f}, br, shade(light, 1.04f), dark, alpha);
-        }
-    }
-    shaded_disc(at, r, light, dark, alpha);
+// A puff blown out along `dir` (on the screen), `r` pixels round: drawn out along it.
+void blown_puff(Vector2 at, float r, Vector2 dir, Color light, float alpha, uint32_t seed, int frame) {
+    if (alpha <= 0.02f || g_streaks.empty()) return;
+    const int size = r < 3.0f ? 0 : r < 5.5f ? 1 : 2;
+    float a = std::atan2(dir.y, dir.x);
+    if (a < 0.0f) a += 3.14159265f;  // (the same drawn out either way)
+    if (a >= 3.14159265f) a -= 3.14159265f;
+    const int turn = static_cast<int>(std::lround(a / 3.14159265f * kStreakTurns)) % kStreakTurns;
+    const FxSheet& s = g_streaks[static_cast<size_t>(((seed % 2u) * 3u + static_cast<uint32_t>(size)) * kStreakTurns + static_cast<uint32_t>(turn))];
+    auto up = [](unsigned char c) { return static_cast<unsigned char>(std::min(255, static_cast<int>(c) * 255 / 244)); };
+    draw_fx(s, std::min(frame, kSmokeFrames - 1), at, {up(light.r), up(light.g), up(light.b), static_cast<unsigned char>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)});
 }
 
 // The smoke on the field, as clouds of puffs, drawn back to front. A screen:
@@ -12738,6 +12952,7 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
         Color dark;
         float alpha;
         uint32_t seed;
+        int frame = -1;  // of its sheet: -1 dense
     };
     std::vector<Puff> puffs;
     const Vector2 drift = to_vector2(engine::kPlumeDrift);
@@ -12774,8 +12989,9 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
                     const float f = std::clamp(z / (top + 6.0f), 0.0f, 1.0f);  // high up: lighter
                     const float pr = (body ? 17.0f + 6.0f * rnd(i, 4) : 8.0f + 6.0f * rnd(i, 4)) * (0.55f + 0.45f * bloom) *
                                      (0.5f + 0.5f * end) * (0.8f + 0.2f * middle) * (1.0f + 0.06f * std::sin(now * 1.3f + static_cast<float>(i) * 1.7f));
-                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr, mix({172, 174, 176, 255}, {250, 250, 246, 255}, f),
-                                     mix({74, 78, 86, 255}, {150, 150, 150, 255}, f), appear, seed + static_cast<uint32_t>(i)});
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr, mix({200, 202, 204, 255}, {250, 250, 246, 255}, f),
+                                     mix({74, 78, 86, 255}, {150, 150, 150, 255}, f), appear, seed + static_cast<uint32_t>(i),
+                                     end < 1.0f ? 3 + static_cast<int>((1.0f - end) * 4.99f) : -1});
                 }
                 break;
             }
@@ -12794,8 +13010,9 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
                     const float z = 6.0f + f * 62.0f;
                     const float pr = (4.0f + 10.0f * f) * (0.8f + 0.4f * rnd(i, 3)) * (0.8f + 0.2f * radius);
                     const float a = std::min(1.0f, f / 0.08f) * (1.0f - std::max(0.0f, f - 0.65f) / 0.35f);
-                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.6f + 0.4f * a), mix({70, 66, 62, 255}, {176, 174, 170, 255}, f),
-                                     mix({20, 18, 16, 255}, {100, 98, 96, 255}, f), std::min(1.0f, 1.4f * a) * fade, seed + static_cast<uint32_t>(i)});
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.6f + 0.4f * a), mix({40, 38, 36, 255}, {130, 128, 124, 255}, f),
+                                     mix({20, 18, 16, 255}, {100, 98, 96, 255}, f), std::min(1.0f, 1.4f * a) * fade, seed + static_cast<uint32_t>(i),
+                                     f < 0.45f ? -1 : 3 + static_cast<int>((f - 0.45f) / 0.55f * 2.99f)});  // (black smoke: thinning out, no rings)
                 }
                 break;
             }
@@ -12808,8 +13025,8 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
                 for (int i = 0; i < ring; ++i) {  // rolling out along the ground
                     const float a = (static_cast<float>(i) + rnd(i, 5)) * 6.2831853f / static_cast<float>(ring);
                     const Vector2 g{c.x + std::cos(a) * r, c.y + std::sin(a) * r};
-                    puffs.push_back({g.x + g.y, on_terrain(map, g, 2.5f), 4.5f + 3.0f * rnd(i, 6) + 2.5f * k, {196, 184, 160, 255},
-                                     {112, 100, 82, 255}, 0.7f * fade, seed + 97u + static_cast<uint32_t>(i)});
+                    puffs.push_back({g.x + g.y, on_terrain(map, g, 2.5f), 4.5f + 3.0f * rnd(i, 6) + 2.5f * k, {204, 190, 164, 255},
+                                     {112, 100, 82, 255}, 0.85f * fade, seed + 97u + static_cast<uint32_t>(i), static_cast<int>(k * 7.99f)});
                 }
                 const int n = 6 + static_cast<int>(radius * 6.0f);
                 for (int i = 0; i < n; ++i) {  // the dome over the burst
@@ -12820,15 +13037,16 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
                     const float z = 3.0f + middle * 20.0f * (1.0f - 0.3f * k) + rnd(i, 3) * 6.0f;
                     const float f = std::clamp(z / 28.0f, 0.0f, 1.0f);
                     const float pr = (5.0f + 5.0f * rnd(i, 4)) * (0.8f + 0.5f * k) * (0.6f + 0.4f * middle) * (0.7f + 0.3f * radius);
-                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.5f + 0.5f * fade), mix({150, 138, 116, 255}, {206, 198, 180, 255}, f),
-                                     mix({70, 62, 50, 255}, {128, 120, 106, 255}, f), std::min(1.0f, 1.5f * fade), seed + static_cast<uint32_t>(i)});
+                    puffs.push_back({g.x + g.y + z * 0.01f, on_terrain(map, g, z), pr * (0.5f + 0.5f * fade), mix({170, 156, 132, 255}, {214, 206, 188, 255}, f),
+                                     mix({70, 62, 50, 255}, {128, 120, 106, 255}, f), std::min(1.0f, 1.5f * fade), seed + static_cast<uint32_t>(i),
+                                     static_cast<int>(k * 7.99f)});
                 }
                 break;
             }
         }
     }
     std::sort(puffs.begin(), puffs.end(), [](const Puff& a, const Puff& b) { return a.depth < b.depth; });
-    for (const Puff& p : puffs) puff(p.at, p.r, p.light, p.dark, p.alpha, p.seed);
+    for (const Puff& p : puffs) puff(p.at, p.r, p.light, p.alpha, p.seed, p.frame);
 }
 
 void WorldRenderer::draw_particles(const engine::TileMap& map) const {
@@ -12838,11 +13056,22 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
         const Vector2 at{g.x, g.y - p.z};
         switch (p.kind) {
             case Particle::Kind::Smoke: {
-                // Fluffy, shaded from its lit top to its underside; paler, greyer as it thins out.
-                const float alpha = static_cast<float>(p.color.a) / 255.0f * (t < 0.55f ? 1.0f : 1.0f - (t - 0.55f) / 0.45f) *
+                // A puff: dense, breaking up, its rings thinning out, as its life goes; paler, greyer as it goes.
+                const float alpha = static_cast<float>(p.color.a) / 255.0f * (t < 0.75f ? 1.0f : 1.0f - (t - 0.75f) / 0.25f) *
                                     std::min(1.0f, p.age * 8.0f);
-                const Color base = mix(Color{p.color.r, p.color.g, p.color.b, 255}, {186, 184, 180, 255}, t * 0.4f);
-                puff(at, p.size, shade(base, 1.28f), shade(base, 0.6f), alpha, p.seed);
+                const int shade_sum = p.color.r + p.color.g + p.color.b;
+                const bool black = shade_sum < 150;
+                const Color base = mix(Color{p.color.r, p.color.g, p.color.b, 255}, black ? Color{64, 62, 60, 255} : Color{186, 184, 180, 255}, t * 0.4f);
+                const Color light = black ? shade(base, 1.7f) : shade(base, 1.28f);
+                // Dark smoke thins out in its clumps (its rings would be black scribbles); the light goes to rings.
+                const int frame = std::min(static_cast<int>(t * 7.99f), black ? 4 : shade_sum < 300 ? 5 : kSmokeFrames - 1);
+                puff(at, p.size, light, std::min(1.0f, alpha * 1.25f), p.seed, frame);
+                break;
+            }
+            case Particle::Kind::Blow: {  // blown out of a muzzle, off the ground: drawn out along the way it goes
+                const float alpha = static_cast<float>(p.color.a) / 255.0f * (t < 0.7f ? 1.0f : 1.0f - (t - 0.7f) / 0.3f) * std::min(1.0f, p.age * 10.0f);
+                const Color base = mix(Color{p.color.r, p.color.g, p.color.b, 255}, {186, 184, 180, 255}, t * 0.3f);
+                blown_puff(at, p.size, iso_offset(p.vel), shade(base, 1.2f), std::min(1.0f, alpha * 1.25f), p.seed, static_cast<int>(t * 7.99f));
                 break;
             }
             case Particle::Kind::Clod:

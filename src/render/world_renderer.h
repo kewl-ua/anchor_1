@@ -86,7 +86,8 @@ private:
     // cases: flying about for a moment. Only for the eye: nothing in the game
     // depends on them.
     struct Particle {
-        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing };
+        // Blow: smoke blown out of a gun's muzzle, off the ground by its blast: drawn drawn out along its flight.
+        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing, Blow };
         Kind kind;
         Vector2 ground;  // tiles
         float z;         // pixels above the ground
@@ -159,7 +160,8 @@ private:
     void update_vehicles(const engine::World& world, float dt);
     uint32_t fx_rng_ = 0x2545F491u;
     float fx_random();  // 0..1
-    void spawn_burst(const engine::World& world, Vector2 at, float splash);
+    // `kind`: what went off (see Burst in the .cpp): a shell's, a mortar bomb's, a rocket's, a bomb's...
+    void spawn_burst(const engine::World& world, Vector2 at, float splash, uint8_t kind = 0);
     void spawn_muzzle(const engine::World& world, const engine::Unit& u);
     // A gun's elevation as drawn (degrees), and where its muzzle is: along
     // its facing from its middle (tiles) and how high (pixels).
@@ -216,6 +218,7 @@ private:
         struct Burning {
             Vector2 at;
             bool flames;
+            bool roof = false;  // on a roof: a patch of fire over it
         };
         std::vector<Burning> burning;
         Vector2 ground{};

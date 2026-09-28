@@ -1333,6 +1333,7 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
     WeaponDef weapon = p.weapon;
     auto blow = [&](FixedVec2 spot) {
         recent_impacts_.push_back({tick_, spot, p.shooter_type, weapon.splash_radius});
+        recent_impacts_.back().shell = p.shell;
         maybe_crater(p, spot, weapon);
         raise_dust(spot, weapon);
         shred_trees(spot, weapon);
