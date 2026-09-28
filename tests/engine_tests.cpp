@@ -5134,6 +5134,120 @@ void test_crater_kinds() {
     CHECK(old[0] == 0 && old[1] > 0 && old[2] > 0 && old[3] > 0 && old[4] > 0);
 }
 
+// Every building has a way to it, all the way to the highway: its yard (a
+// village's streets) touches a road that leads on to it. The blocks of
+// flats, the elevator, the gas station, the headquarters and the railway
+// station on a concrete road.
+void test_every_building_has_a_road() {
+    for (const MapSizePreset& preset : kMapSizes) {
+        Simulation sim(1, make_demo_map(preset.tiles));
+        setup_demo_scenario(sim.world_for_setup());
+        const World& w = sim.world();
+        const TileMap& map = w.map();
+        const int size = map.width();
+        auto idx = [size](int x, int y) { return static_cast<size_t>(y * size + x); };
+        // The network: road tiles joined to the highway.
+        std::vector<uint8_t> net(static_cast<size_t>(size * size), 0);
+        std::vector<TilePos> open;
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                if (map.terrain(x, y) == Terrain::Road && std::abs(x + y + 1 - size) <= 1) {
+                    net[idx(x, y)] = 1;
+                    open.push_back({x, y});
+                }
+            }
+        }
+        while (!open.empty()) {
+            const TilePos t = open.back();
+            open.pop_back();
+            for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                if (!map.contains_tile(t.x + dx, t.y + dy) || net[idx(t.x + dx, t.y + dy)] || !is_road(map.terrain(t.x + dx, t.y + dy))) continue;
+                net[idx(t.x + dx, t.y + dy)] = 1;
+                open.push_back({t.x + dx, t.y + dy});
+            }
+        }
+        int buildings = 0;
+        for (const Structure& s : w.structures()) {
+            if (s.type == StructureType::Bridge) continue;
+            ++buildings;
+            // Its yard: through the streets round it.
+            std::vector<uint8_t> yard(static_cast<size_t>(size * size), 0);
+            std::vector<TilePos> area = s.tiles;
+            for (const TilePos& t : area) yard[idx(t.x, t.y)] = 1;
+            for (size_t i = 0; i < area.size(); ++i) {
+                for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                    const int x = area[i].x + dx;
+                    const int y = area[i].y + dy;
+                    if (!map.contains_tile(x, y) || yard[idx(x, y)] || map.terrain(x, y) != Terrain::Urban) continue;
+                    yard[idx(x, y)] = 1;
+                    area.push_back({x, y});
+                }
+            }
+            bool reached = false;
+            bool concrete = false;
+            for (const TilePos& t : area) {
+                for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                    const int x = t.x + dx;
+                    const int y = t.y + dy;
+                    if (!map.contains_tile(x, y) || !net[idx(x, y)]) continue;
+                    reached = true;
+                    concrete = concrete || map.terrain(x, y) == Terrain::Road;
+                }
+            }
+            CHECK(reached);
+            if (s.type == StructureType::Apartment || s.type == StructureType::Elevator || s.type == StructureType::GasStation ||
+                s.type == StructureType::Headquarters || s.type == StructureType::Station) {
+                CHECK(concrete);
+            }
+        }
+        CHECK(buildings > 30);
+    }
+}
+
+// A building put up by the rear troops gets a dirt track to it from the
+// nearest road, over the field (round a parapet in the way); none if the
+// nearest road's too far off.
+void test_new_buildings_get_a_track() {
+    auto build = [](bool road_near, bool parapet) {
+        TileMap map(60, 50);
+        for (int x = 0; x < 60; ++x) map.set_terrain(x, 5, Terrain::Road);  // a road along y = 5
+        Simulation sim(1, map);
+        World& w = sim.world_for_setup();
+        w.set_stock(0, {10, 1000, 1000, 1000, 1000});
+        const int y0 = road_near ? 14 : 5 + kTrackReach + 6;
+        if (parapet) {  // in front of it, all along
+            w.place_structure(StructureType::Parapet, 0, {20, y0 - 1}, 1, 1);
+            w.place_structure(StructureType::Parapet, 0, {21, y0 - 1}, 1, 1);
+        }
+        const EntityId site = w.place_structure(StructureType::Warehouse, 0, {20, y0}, 2, 2);
+        Structure* s = w.structure_for_setup(site);
+        s->built = false;
+        s->build_progress = 0;
+        s->hp = 1;
+        const EntityId worker = w.spawn_unit(0, UnitTypeId::Worker, at(19, y0));
+        issue(sim, Command{.type = CommandType::Build, .player = 0, .units = {worker}, .target_unit = site});
+        for (int i = 0; i < 3000 && !sim.world().find_structure(site)->built; ++i) sim.step();
+        CHECK(sim.world().find_structure(site)->built);
+        // Walk the dirt road from the road towards it: it gets there.
+        int track = 0;
+        for (int y = 0; y < 50; ++y) {
+            for (int x = 0; x < 60; ++x) track += sim.world().map().terrain(x, y) == Terrain::DirtRoad ? 1 : 0;
+        }
+        bool touches = false;
+        for (const TilePos& t : sim.world().find_structure(site)->tiles) {
+            for (const auto& [dx, dy] : {std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}}) {
+                touches = touches || is_road(sim.world().map().terrain(t.x + dx, t.y + dy));
+            }
+        }
+        if (parapet) CHECK(sim.world().map().terrain(20, y0 - 1) != Terrain::DirtRoad && sim.world().map().terrain(21, y0 - 1) != Terrain::DirtRoad);
+        return touches ? track : -1;
+    };
+    const int straight = build(true, false);
+    CHECK(straight >= 7 && straight <= 9);  // from y = 6 up to the building (y 14)
+    CHECK(build(true, true) > 0);           // round the parapet
+    CHECK(build(false, false) == -1);       // too far: none
+}
+
 // The highway runs straight along the diagonal, the same three tiles across
 // on both halves, so it crosses the river on a bridge as wide as the road.
 // The side bridges are two rows wide, a dirt road up to them from either
@@ -5150,10 +5264,7 @@ void test_highway_and_bridges() {
             for (int x = 0; x < size; ++x) {
                 const Terrain t = map.terrain(x, y);
                 const int a = x + y + 1 - size;  // along the river from the center
-                if (t == Terrain::Road) {
-                    ++road;
-                    CHECK(std::abs(a) <= 1);
-                }
+                if (t == Terrain::Road && std::abs(a) <= 1) ++road;  // (concrete roads lead off it to the blocks, the works)
                 if (t != Terrain::Bridge) continue;
                 if (std::abs(a) <= 1) {
                     ++central;
@@ -6718,6 +6829,8 @@ int main() {
     test_cannon_kills_with_a_hit();
     test_guns_bring_houses_down();
     test_highway_and_bridges();
+    test_every_building_has_a_road();
+    test_new_buildings_get_a_track();
     test_infantry_walks_through_forest_slower();
     test_vehicle_stops_at_the_shore();
     test_group_moves_at_slowest_speed();

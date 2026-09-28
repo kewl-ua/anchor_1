@@ -1,6 +1,7 @@
 #include "engine/scenario.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -169,6 +170,7 @@ constexpr int32_t kBaseInsetPct = 15;     // bases sit this far from the corners
 constexpr int32_t kBaseClearingPct = 6;
 constexpr int32_t kArmyForwardTiles = 10;  // the army stands this far in front of the headquarters
 constexpr int32_t kHeadquartersSize = 3;
+constexpr int32_t kBaseRoadReach = 40;  // tiles: how far the concrete is laid to the headquarters, the station
 constexpr int kStartingWorkers = 5;
 // Personnel, Food, Materials, Ammo, Fuel: enough for a barracks and a warehouse.
 constexpr Stock kStartingStock = {10, 300, 300, 150, 150};
@@ -343,6 +345,168 @@ void raise_chalk_ridge(TileMap& map, Painter& p, const Ridge& ridge) {
     raise(p.at(ridge.x0_pct), p.at(ridge.y0_pct), p.at(ridge.x1_pct), p.at(ridge.y1_pct), false);
     raise(size - p.at(ridge.x0_pct), size - p.at(ridge.y0_pct), size - p.at(ridge.x1_pct), size - p.at(ridge.y1_pct),
           true);
+}
+
+// A way to every building: a concrete road to the blocks of flats, the
+// grain elevator, the works, the gas station, the headquarters and the
+// railway station; a dirt road to the villages, the farms, the barns, the
+// masts. A building whose yard (its own, a village's streets) already
+// touches a road that leads on to the highway has one; for the rest the
+// cheapest way is laid from its yard to the nearest such road, over the
+// fields rather than through the woods. Done on one side of the river and
+// mirrored, like the rest of the map.
+void connect_buildings(TileMap& map, Painter& p) {
+    const int32_t size = map.width();
+    auto idx = [size](int32_t x, int32_t y) { return static_cast<size_t>(y * size + x); };
+    constexpr std::array<std::pair<int32_t, int32_t>, 4> kSteps = {{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}};
+    // The road network: every road tile joined to the highway.
+    std::vector<uint8_t> net(static_cast<size_t>(size * size), 0);
+    std::vector<TilePos> open;
+    for (int32_t y = 0; y < size; ++y) {
+        for (int32_t x = 0; x < size; ++x) {
+            if (map.terrain(x, y) == Terrain::Road) {
+                net[idx(x, y)] = 1;
+                open.push_back({x, y});
+            }
+        }
+    }
+    while (!open.empty()) {
+        const TilePos t = open.back();
+        open.pop_back();
+        for (const auto& [dx, dy] : kSteps) {
+            const int32_t nx = t.x + dx;
+            const int32_t ny = t.y + dy;
+            if (!map.contains_tile(nx, ny) || net[idx(nx, ny)] || !is_road(map.terrain(nx, ny))) continue;
+            net[idx(nx, ny)] = 1;
+            open.push_back({nx, ny});
+        }
+    }
+    // The buildings on the first player's side of the river (y > x), each patch of them once.
+    auto built = [](Terrain t) {
+        return t == Terrain::House || t == Terrain::Apartment || t == Terrain::Tower || t == Terrain::GasStation || t == Terrain::Elevator;
+    };
+    struct Site {
+        std::vector<TilePos> tiles;
+        bool concrete;
+    };
+    std::vector<Site> sites;
+    std::vector<uint8_t> seen(static_cast<size_t>(size * size), 0);
+    for (int32_t y = 0; y < size; ++y) {
+        for (int32_t x = 0; x < y; ++x) {
+            const Terrain t = map.terrain(x, y);
+            if (!built(t) || seen[idx(x, y)]) continue;
+            Site site{{}, t == Terrain::Apartment || t == Terrain::Elevator || t == Terrain::GasStation};
+            std::vector<TilePos> stack{{x, y}};
+            seen[idx(x, y)] = 1;
+            while (!stack.empty()) {
+                const TilePos c = stack.back();
+                stack.pop_back();
+                site.tiles.push_back(c);
+                for (const auto& [dx, dy] : kSteps) {
+                    const int32_t nx = c.x + dx;
+                    const int32_t ny = c.y + dy;
+                    if (!map.contains_tile(nx, ny) || seen[idx(nx, ny)] || map.terrain(nx, ny) != t) continue;
+                    seen[idx(nx, ny)] = 1;
+                    stack.push_back({nx, ny});
+                }
+            }
+            for (const Shed& shed : kSheds) {  // the works' sheds: concrete up to them
+                const TilePos corner{p.at(shed.x_pct), p.at(shed.y_pct)};
+                if (std::find(site.tiles.begin(), site.tiles.end(), corner) != site.tiles.end()) site.concrete = true;
+            }
+            sites.push_back(std::move(site));
+        }
+    }
+    for (const Site& site : sites) {
+        // Its yard: the patch and the yard and streets round it.
+        std::vector<uint8_t> yard(static_cast<size_t>(size * size), 0);
+        std::vector<TilePos> area = site.tiles;
+        for (const TilePos& t : area) yard[idx(t.x, t.y)] = 1;
+        for (size_t i = 0; i < area.size(); ++i) {
+            const TilePos c = area[i];
+            for (const auto& [dx, dy] : kSteps) {
+                const int32_t nx = c.x + dx;
+                const int32_t ny = c.y + dy;
+                if (!map.contains_tile(nx, ny) || yard[idx(nx, ny)] || map.terrain(nx, ny) != Terrain::Urban) continue;
+                yard[idx(nx, ny)] = 1;
+                area.push_back({nx, ny});
+            }
+        }
+        // What it's to be joined to: the network (a concrete road of it, to the concrete sites).
+        auto joins = [&](int32_t x, int32_t y) {
+            return map.contains_tile(x, y) && net[idx(x, y)] && (!site.concrete || map.terrain(x, y) != Terrain::DirtRoad);
+        };
+        bool reached = false;
+        for (const TilePos& c : area) {
+            for (const auto& [dx, dy] : kSteps) {
+                if (joins(c.x + dx, c.y + dy)) reached = true;
+            }
+        }
+        if (reached) continue;
+        // The cheapest way out of the yard to the network: open fields cheap, a wood dear.
+        auto cost = [&](Terrain t) {
+            switch (t) {
+                case Terrain::Urban: return 1;
+                case Terrain::Grass:
+                case Terrain::Plowed:
+                case Terrain::Chalk:
+                case Terrain::Trail: return 2;
+                case Terrain::Wheat:
+                case Terrain::Crops:
+                case Terrain::Garden:
+                case Terrain::Riverbed: return 3;
+                case Terrain::Orchard: return 4;
+                case Terrain::Forest: return 8;
+                default: return 0;  // (not over it)
+            }
+        };
+        std::vector<int32_t> dist(static_cast<size_t>(size * size), INT32_MAX);
+        std::vector<int32_t> from(static_cast<size_t>(size * size), -1);
+        std::vector<std::vector<TilePos>> buckets(16);
+        int32_t bucket = 0;
+        size_t queued = 0;
+        for (const TilePos& c : area) {
+            dist[idx(c.x, c.y)] = 0;
+            buckets[0].push_back(c);
+            ++queued;
+        }
+        TilePos goal{-1, -1};
+        int32_t d = 0;
+        while (queued > 0 && goal.x < 0) {
+            std::vector<TilePos>& b = buckets[static_cast<size_t>(bucket)];
+            if (b.empty()) {
+                bucket = (bucket + 1) % 16;
+                ++d;
+                continue;
+            }
+            const TilePos c = b.front();
+            b.erase(b.begin());
+            --queued;
+            if (dist[idx(c.x, c.y)] < d) continue;
+            for (const auto& [dx, dy] : kSteps) {
+                const int32_t nx = c.x + dx;
+                const int32_t ny = c.y + dy;
+                if (!map.contains_tile(nx, ny) || ny <= nx) continue;  // (our side of the river)
+                if (joins(nx, ny)) {
+                    goal = c;
+                    break;
+                }
+                const int32_t step = map.terrain(nx, ny) == Terrain::DirtRoad && site.concrete ? 1 : cost(map.terrain(nx, ny));  // (paved over)
+                if (step == 0 || yard[idx(nx, ny)] || dist[idx(nx, ny)] <= d + step) continue;
+                dist[idx(nx, ny)] = d + step;
+                from[idx(nx, ny)] = static_cast<int32_t>(idx(c.x, c.y));
+                buckets[static_cast<size_t>((bucket + step) % 16)].push_back({nx, ny});
+                ++queued;
+            }
+        }
+        if (goal.x < 0) continue;  // (walled in: none)
+        for (int32_t at = static_cast<int32_t>(idx(goal.x, goal.y)); at >= 0 && !yard[static_cast<size_t>(at)]; at = from[static_cast<size_t>(at)]) {
+            const int32_t x = at % size;
+            const int32_t y = at / size;
+            p.paint(x, y, site.concrete ? Terrain::Road : Terrain::DirtRoad);
+            net[static_cast<size_t>(at)] = 1;
+        }
+    }
 }
 
 void spawn_squad(World& world, PlayerId owner, int32_t cx, int32_t cy, UnitTypeId type, int count) {
@@ -589,6 +753,8 @@ TileMap make_demo_map(int32_t size) {
         building(x - 5, size - x - 1, 2, 2, Terrain::GasStation);
     }
 
+    connect_buildings(map, p);
+
     for (const Hill& hill : kHills) raise_hill(map, p, hill);
     for (const Cone& cone : kSpoilTips) raise_spoil_tip(map, p, cone);
     for (const Ridge& ridge : kChalkRidges) raise_chalk_ridge(map, p, ridge);
@@ -641,6 +807,12 @@ void setup_demo_scenario(World& world) {
                               kHeadquartersSize);
         world.place_structure(StructureType::Station, player, demo_station_origin(world.map().width(), player),
                               kStationWidth, kStationHeight);
+        // Concrete up to them from the highway.
+        for (const Structure& s : std::vector<Structure>(world.structures())) {
+            if (s.owner == player && (s.type == StructureType::Headquarters || s.type == StructureType::Station)) {
+                world.lay_road(s, Terrain::Road, kBaseRoadReach);
+            }
+        }
         // Rear troops behind the headquarters, the army in front of it.
         for (int i = 0; i < kStartingWorkers; ++i) {
             world.spawn_unit(player, UnitTypeId::Worker,

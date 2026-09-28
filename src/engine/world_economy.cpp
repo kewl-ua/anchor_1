@@ -2,6 +2,9 @@
 // construction, production, and the supply chain: trains, trucks and depots.
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <vector>
 
 #include "engine/world.h"
 
@@ -82,6 +85,78 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
     structures_.push_back(std::move(s));  // ids only grow: still sorted
     on_map_changed();
     return structures_.back().id;
+}
+
+void World::lay_road(const Structure& s, Terrain kind, int32_t reach) {
+    const int32_t w = map_.width();
+    auto idx = [w](int32_t x, int32_t y) { return static_cast<size_t>(y * w + x); };
+    static constexpr std::array<std::pair<int32_t, int32_t>, 4> kSteps = {{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}};
+    auto joins = [&](int32_t x, int32_t y) {
+        return map_.contains_tile(x, y) && is_road(map_.terrain(x, y)) && (kind != Terrain::Road || map_.terrain(x, y) != Terrain::DirtRoad);
+    };
+    auto cost = [&](int32_t x, int32_t y) {
+        if (structure_id_at({x, y}) != 0) return 0;  // (a parapet, a post: something built there)
+        const Terrain t = map_.terrain(x, y);
+        if (t == Terrain::DirtRoad && kind == Terrain::Road) return 1;  // paved over
+        if (!roadable(t)) return 0;
+        return t == Terrain::Urban ? 1 : t == Terrain::Grass || t == Terrain::Plowed || t == Terrain::Chalk || t == Terrain::Trail ? 2 : 3;
+    };
+    // Dijkstra out from round its walls (costs 1..3: buckets), nearest road first.
+    std::vector<int32_t> dist(static_cast<size_t>(w * map_.height()), INT32_MAX);
+    std::vector<size_t> from(dist.size(), SIZE_MAX);
+    std::array<std::vector<TilePos>, 4> buckets;
+    size_t queued = 0;
+    for (const TilePos& t : s.tiles) {
+        for (const auto& [dx, dy] : kSteps) {
+            const int32_t x = t.x + dx;
+            const int32_t y = t.y + dy;
+            if (!map_.contains_tile(x, y) || structure_id_at({x, y}) == s.id) continue;
+            if (joins(x, y)) return;  // on a road already
+            if (cost(x, y) == 0 || dist[idx(x, y)] != INT32_MAX) continue;
+            dist[idx(x, y)] = 0;
+            buckets[0].push_back({x, y});
+            ++queued;
+        }
+    }
+    std::sort(buckets[0].begin(), buckets[0].end(), [](const TilePos& a, const TilePos& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; });
+    const TilePos c0 = tile_of(s.center);
+    int32_t d = 0;
+    size_t goal = SIZE_MAX;
+    while (queued > 0 && goal == SIZE_MAX && d <= reach * 3) {
+        std::vector<TilePos>& b = buckets[static_cast<size_t>(d % 4)];
+        if (b.empty()) {
+            ++d;
+            continue;
+        }
+        const TilePos c = b.front();
+        b.erase(b.begin());
+        --queued;
+        if (dist[idx(c.x, c.y)] < d) continue;
+        if (std::abs(c.x - c0.x) > reach || std::abs(c.y - c0.y) > reach) continue;
+        for (const auto& [dx, dy] : kSteps) {
+            const int32_t x = c.x + dx;
+            const int32_t y = c.y + dy;
+            if (joins(x, y)) {
+                goal = idx(c.x, c.y);
+                break;
+            }
+            if (!map_.contains_tile(x, y)) continue;
+            const int32_t step = cost(x, y);
+            if (step == 0) continue;
+            if (dist[idx(x, y)] <= d + step) continue;
+            dist[idx(x, y)] = d + step;
+            from[idx(x, y)] = idx(c.x, c.y);
+            buckets[static_cast<size_t>((d + step) % 4)].push_back({x, y});
+            ++queued;
+        }
+    }
+    if (goal == SIZE_MAX) return;  // no road near enough
+    for (size_t at = goal;;) {
+        map_.set_terrain(static_cast<int32_t>(at % static_cast<size_t>(w)), static_cast<int32_t>(at / static_cast<size_t>(w)), kind);
+        if (from[at] == SIZE_MAX) break;
+        at = from[at];
+    }
+    on_map_changed();
 }
 
 bool World::can_convert(const Structure& s, PlayerId player) const {
@@ -353,6 +428,8 @@ void World::update_building(Unit& u) {
             s->built = true;
             // A finished pillbox is held by whoever sits in it, like a house.
             if (is_shelter(s->type) && s->garrison.empty()) s->owner = kNoOwner;
+            // The trucks, the men will come and go: a dirt track to it from the nearest road.
+            if (def.buildable) lay_road(*s, Terrain::DirtRoad, kTrackReach);
         }
         return;
     }

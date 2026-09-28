@@ -3862,6 +3862,24 @@ void draw_house(const engine::TileMap& map, Rectangle plot, uint32_t h, float da
     const float soot = 1.0f - 0.3f * damage;
     const int stage = stage_of(damage);
 
+    // The path trodden from its door out to the street, across the yard.
+    if (plot.y + plot.height > y1 + 0.05f) {
+        const float door_x = x1 - 0.78f * (x1 - x0);
+        const float half = 0.07f * s;
+        const float out = plot.y + plot.height;
+        const Vector2 a0 = on_terrain(map, {door_x - half, y1});
+        const Vector2 a1 = on_terrain(map, {door_x + half, y1});
+        const Vector2 b1 = on_terrain(map, {door_x + half * 1.4f, out});
+        const Vector2 b0 = on_terrain(map, {door_x - half * 1.4f, out});
+        fill_quad(a0, a1, b1, b0, {150, 128, 94, 255});
+        DrawLineV(a0, b0, lit({120, 100, 72, 255}));
+        DrawLineV(a1, b1, lit({176, 156, 118, 255}));
+        for (int k2 = 0; k2 < 3; ++k2) {  // a pebble, a bare patch
+            const Vector2 g = on_terrain(map, {door_x + (rnd(90 + k2) - 0.5f) * half * 1.4f, y1 + (out - y1) * (0.2f + 0.6f * rnd(95 + k2))});
+            DrawPixelV(g, lit({112, 94, 70, 255}));
+        }
+    }
+
     // The walls.
     static constexpr Wall kKinds[5] = {Wall::Whitewash, Wall::RedBrick, Wall::YellowBrick, Wall::Silicate, Wall::Pastel};
     static constexpr Color kWalls[5] = {{232, 232, 224, 255}, {160, 84, 60, 255}, {206, 174, 112, 255}, {190, 188, 180, 255}, {222, 206, 160, 255}};

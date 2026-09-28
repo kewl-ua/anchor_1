@@ -106,6 +106,14 @@ static_assert(std::size(kTerrainDefs) == kTerrainCount);
 
 inline const TerrainDef& terrain_def(Terrain t) { return kTerrainDefs[static_cast<size_t>(t)]; }
 
+// A road (a concrete one, a dirt one, a bridge): what every building is reached by.
+inline bool is_road(Terrain t) { return t == Terrain::Road || t == Terrain::DirtRoad || t == Terrain::Bridge; }
+// Open ground a road can be laid over (a field, a yard, a clearing).
+inline bool roadable(Terrain t) {
+    return t == Terrain::Grass || t == Terrain::Plowed || t == Terrain::Crops || t == Terrain::Wheat || t == Terrain::Garden ||
+           t == Terrain::Orchard || t == Terrain::Urban || t == Terrain::Trail || t == Terrain::Chalk || t == Terrain::Riverbed;
+}
+
 struct TilePos {
     int32_t x = 0;
     int32_t y = 0;

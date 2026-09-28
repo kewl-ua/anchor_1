@@ -323,6 +323,8 @@ inline constexpr Fixed kTowerDfRange = Fixed::from_int(45);
 // A scout makes an observation post in this long. Observing from it, he's
 // hidden (as in a wood); up a tree he sees this much farther over the woods.
 inline constexpr Tick kPostWork = 10 * kTicksPerSecond;
+// A building put up gets a dirt track to it from the nearest road this near.
+inline constexpr int32_t kTrackReach = 30;
 inline constexpr int32_t kTreePostRange = 4;
 inline constexpr Fixed kTreePostEye = Fixed::from_int(2);
 inline constexpr uint8_t kUpperFloorLevels = 2;
@@ -655,6 +657,10 @@ public:
     const Structure* post_of(const Unit& u) const;
     // Setup: a player's building on a w x h block of tiles starting at `origin`.
     EntityId place_structure(StructureType type, PlayerId owner, TilePos origin, int32_t w, int32_t h);
+    // Lays a road (`kind`: concrete or dirt) to a building from the nearest
+    // road within `reach` tiles, over open ground (fields, yards; not the
+    // woods, not anything built): the way the trucks and the men go to it.
+    void lay_road(const Structure& s, Terrain kind, int32_t reach);
     // Whether a building of this type fits with its top-left tile at `origin`:
     // open ground only, nothing else there.
     bool can_place(StructureType type, TilePos origin) const;
