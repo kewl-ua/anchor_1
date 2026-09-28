@@ -42,7 +42,7 @@ int32_t structure_sight(const Structure& s) {
 // Cover: forests, the trails under their canopy, trenches and foxholes, and
 // the inside of a house or dugout.
 bool in_cover(const TileMap& map, const Unit& u) {
-    if (u.airborne) return false;  // up in the open sky
+    if (u.airborne || u.riding) return false;  // up in the open sky; up on the armor
     if (u.inside || u.camouflaged) return true;
     const Terrain t = map.terrain_at(u.pos);
     if (t == Terrain::Crops || t == Terrain::Swamp || t == Terrain::Crater || t == Terrain::Orchard) {

@@ -264,8 +264,8 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
     }
     const engine::Unit* own = unit_at(world, camera, mouse, alpha, true);
     if (own && engine::unit_type(own->type).troop_capacity > 0 && has_riders(world)) {
-        hint_ = TextFormat("RMB: mount up (%d / %d aboard)", static_cast<int>(own->passengers.size()),
-                           engine::unit_type(own->type).troop_capacity);
+        hint_ = TextFormat("RMB: mount up (%d / %d aboard, %d / %d on the armor)", static_cast<int>(own->passengers.size()),
+                           engine::unit_type(own->type).troop_capacity, static_cast<int>(own->riders.size()), engine::kRidersOnArmor);
         return;
     }
     if (own && !own->inside && has_service_vehicles(world) &&
@@ -707,10 +707,11 @@ void PlayerController::rebuild_grid(const engine::World& world) {
     if (def.troop_capacity > 0) {
         int aboard = 0;
         for (engine::EntityId id : selection_) {
-            if (const engine::Unit* u = world.find_unit(id)) aboard += static_cast<int>(u->passengers.size());
+            if (const engine::Unit* u = world.find_unit(id)) aboard += static_cast<int>(u->passengers.size() + u->riders.size());
         }
         put(7, Action::Dismount, 0, "Dismount",
-            "Dismount the squad: the IFV stops, the men get out at the back (RMB with infantry on an IFV: mount up)")
+            "Dismount the squad: the IFV stops, the men get out at the back, those on the armor down its sides "
+            "(RMB with infantry on an IFV: mount up; full inside, six more ride on top, in the open)")
             .enabled = aboard > 0;
     }
     if (armed) {
@@ -780,7 +781,7 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
             engine::Command out{.type = engine::CommandType::Unload};
             for (engine::EntityId id : selection_) {
                 const engine::Unit* u = world.find_unit(id);
-                if (u && !u->passengers.empty()) out.units.push_back(id);
+                if (u && (!u->passengers.empty() || !u->riders.empty())) out.units.push_back(id);
             }
             if (!out.units.empty()) lockstep.submit(std::move(out));
             break;

@@ -871,6 +871,42 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(14.0f, 0.0f));
     }
 
+    if (options.scene == "riders" && options.mode == Options::Mode::Offline) {
+        // Offline: a BMP-2 full inside with six more men riding on its armor,
+        // driving across the field; a BTR-82A beside it the same, parked.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(14.0f, 0.0f), 10);
+        auto load_up = [&](engine::UnitTypeId type, engine::FixedVec2 at) {
+            const engine::EntityId id = w.spawn_unit(me, type, at);
+            engine::Unit* v = w.unit_for_setup(id);
+            for (int i = 0; i < engine::unit_type(type).troop_capacity + engine::kRidersOnArmor; ++i) {
+                const engine::UnitTypeId kind = i % 5 == 3 ? engine::UnitTypeId::MachineGunner
+                                              : i % 5 == 4 ? engine::UnitTypeId::Grenadier
+                                                           : engine::UnitTypeId::Rifleman;
+                engine::Unit* m = w.unit_for_setup(w.spawn_unit(me, kind, at));
+                if (i < engine::unit_type(type).troop_capacity) {
+                    v->passengers.push_back(m->id);
+                    m->inside = id;
+                } else {
+                    v->riders.push_back(m->id);
+                    m->riding = id;
+                }
+                v = w.unit_for_setup(id);  // (spawning may move the units about)
+            }
+            return id;
+        };
+        const engine::EntityId bmp = load_up(engine::UnitTypeId::Ifv, ahead(10.0f, -1.0f));
+        load_up(engine::UnitTypeId::Btr82a, ahead(14.0f, 1.5f));
+        game.submit({.type = engine::CommandType::Move, .units = {bmp}, .target = ahead(20.0f, -1.0f)});
+        return render::to_vector2(ahead(13.0f, 0.0f));
+    }
+
     if (options.scene == "infantry" && options.mode == Options::Mode::Offline) {
         // Offline: every kind of foot soldier in a row down the field, in
         // columns: hit two seconds in (falling, lying there); standing about;

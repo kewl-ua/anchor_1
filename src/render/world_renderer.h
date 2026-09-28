@@ -299,6 +299,8 @@ private:
     void draw_unit(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_aircraft(const engine::TileMap& map, const engine::Unit& u, float alpha) const;
     void draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const;
+    // The men riding on top of an IFV's armor, sitting on its deck.
+    void draw_riders(const engine::World& world, const engine::Unit& carrier, float alpha) const;
     // Foot soldiers in pixel art (see soldiers.h): each kit in each side's colours, baked when first drawn.
     mutable std::map<std::pair<int, int>, SpriteSheet> soldier_sheets_;
     const SpriteSheet& soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const;

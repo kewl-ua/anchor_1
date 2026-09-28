@@ -39,9 +39,9 @@ constexpr Fixed kEnterDistance = Fixed::from_int(1);
 const UnitTypeDef& def_of(const Unit& u) { return unit_type(u.type); }
 MoveClass class_of(const Unit& u) { return move_class(def_of(u)); }
 
-Fixed top_height(const Unit& u) { return def_of(u).vehicle ? kVehicleTop : kInfantryTop; }
+Fixed top_height(const Unit& u) { return u.riding ? kRiderTop : def_of(u).vehicle ? kVehicleTop : kInfantryTop; }
 Fixed muzzle_height(const Unit& u) { return def_of(u).vehicle ? kVehicleMuzzle : kInfantryMuzzle; }
-Fixed center_height(const Unit& u) { return def_of(u).vehicle ? kVehicleCenter : kInfantryCenter; }
+Fixed center_height(const Unit& u) { return u.riding ? kRiderCenter : def_of(u).vehicle ? kVehicleCenter : kInfantryCenter; }
 
 // A shot from `from` into a vehicle's side or rear: more than 60 degrees off
 // the way its hull points.
@@ -244,7 +244,7 @@ void World::apply_board(const Command& cmd, const Unit& carrier) {
     if (carrier.owner != cmd.player || def_of(carrier).troop_capacity == 0) return;
     const TilePos goal = map_.clamp_tile(tile_of(carrier.pos));
     for (Unit* u : collect_owned(cmd, [this](EntityId id) { return find_unit_mut(id); })) {
-        if (!can_ride(def_of(*u)) || u->inside == carrier.id) continue;
+        if (!can_ride(def_of(*u)) || u->inside == carrier.id || u->riding == carrier.id) continue;
         leave_structure(*u);
         u->order = Order::Garrison;
         u->order_target = carrier.id;
@@ -274,9 +274,15 @@ void World::seek_carrier(Unit& u, Unit& carrier) {
 }
 
 bool World::board(Unit& u, Unit& carrier) {
-    if (static_cast<int32_t>(carrier.passengers.size()) >= def_of(carrier).troop_capacity) return false;
-    carrier.passengers.push_back(u.id);
-    u.inside = carrier.id;
+    if (static_cast<int32_t>(carrier.passengers.size()) < def_of(carrier).troop_capacity) {
+        carrier.passengers.push_back(u.id);
+        u.inside = carrier.id;
+    } else if (static_cast<int32_t>(carrier.riders.size()) < kRidersOnArmor && is_armor(def_of(carrier))) {
+        carrier.riders.push_back(u.id);  // full inside: up on top
+        u.riding = carrier.id;
+    } else {
+        return false;
+    }
     u.pos = carrier.pos;
     u.prev_pos = carrier.prev_pos;
     u.moving = false;
@@ -323,6 +329,30 @@ bool World::enter(Unit& u, Structure& s) {
 }
 
 void World::leave_structure(Unit& u) {
+    if (u.riding) {
+        // Off the armor, down its sides, left and right by turns.
+        FixedVec2 from = u.pos;
+        if (Unit* carrier = find_unit_mut(u.riding)) {
+            std::erase(carrier->riders, u.id);
+            const auto n = static_cast<int32_t>(carrier->riders.size());
+            const Fixed length = carrier->facing.length();
+            if (length.raw > 0) {
+                const FixedVec2 ahead = carrier->facing * (Fixed::from_int(1) / length);
+                const FixedVec2 side{-ahead.y, ahead.x};
+                const Fixed out = def_of(*carrier).radius + Fixed::from_ratio(1, 2);
+                from = carrier->pos + side * (n % 2 == 0 ? out : -out) + ahead * (Fixed::from_ratio(1, 2) * (n / 2 - 1));
+            }
+        }
+        u.riding = 0;
+        const TilePos t = map_.clamp_tile(tile_of(from));
+        if (map_.passable(t, class_of(u))) {
+            u.pos = clamp_to_map(from, def_of(u).radius);
+        } else if (auto spot = nearest_passable(map_, t, class_of(u))) {
+            u.pos = tile_center(*spot);
+        }
+        u.prev_pos = u.pos;
+        return;
+    }
     if (!u.inside) return;
     FixedVec2 from = u.pos;
     if (Structure* s = find_structure_mut(u.inside)) {
@@ -665,12 +695,14 @@ void World::step() {
 
     separate_units();
     for (Unit& u : units_) u.pos = clamp_to_map(u.pos, def_of(u).radius);
-    // The men aboard ride along.
+    // The men aboard ride along, and those on top.
     for (const Unit& v : units_) {
-        for (EntityId id : v.passengers) {
-            if (Unit* p = find_unit_mut(id)) {
-                p->pos = v.pos;
-                p->prev_pos = v.prev_pos;
+        for (const std::vector<EntityId>* men : {&v.passengers, &v.riders}) {
+            for (EntityId id : *men) {
+                if (Unit* p = find_unit_mut(id)) {
+                    p->pos = v.pos;
+                    p->prev_pos = v.prev_pos;
+                }
             }
         }
     }
@@ -688,6 +720,7 @@ void World::update_unit(Unit& u) {
     if (u.cooldown > 0) --u.cooldown;
     if (def_of(u).aircraft) return update_aircraft(u);
     if (u.inside) return update_garrisoned(u);
+    if (u.riding) return;  // on the armor: holding on
 
     auto finish_order = [&u] {
         u.order = Order::Idle;
@@ -805,6 +838,10 @@ const Unit* World::find_enemy_in_sight(Unit& u) {
             best = &other;
             best_sq = d;
         }
+    }
+    // A gun that doesn't go through armor picks off the men riding on it.
+    if (best && weapon_of(u).damage_type == DamageType::Bullet && !best->riders.empty()) {
+        if (const Unit* rider = find_unit(best->riders.front())) best = rider;
     }
     u.engaged = best ? best->id : 0;
     return best;
@@ -1308,6 +1345,8 @@ void World::splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon, c
         if (d <= square_raw(weapon.splash_radius + def_of(u).radius)) {
             Shot shot = blast;
             shot.on_it = &u == direct_hit || d <= square_raw(def_of(u).radius);  // the shell struck it
+            // Up on the armor in the open: a shell's, a mortar bomb's fragments sweep them off.
+            if (u.riding && is_tube_artillery(unit_type(p.shooter_type))) shot.damage_percent = kRiderBlastPercent;
             hurt(u, weapon, shot);
         }
     }
@@ -1500,7 +1539,7 @@ void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& wea
 }
 
 int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
-    if (shot.plunging || victim.inside) return 0;
+    if (shot.plunging || victim.inside || victim.riding) return 0;  // (on top of the armor: in the open)
     if (shot.elevation > map_.elevation_at(victim.pos)) return 0;  // fired down into it
     const TilePos tile = map_.clamp_tile(tile_of(victim.pos));
     const Structure* works = structure_at(tile);
@@ -1596,11 +1635,12 @@ void World::apply_damage_and_remove_dead() {
         on_map_changed();
     }
 
-    // An IFV knocked out: the squad bails out, knocked about; the worse off
-    // don't make it.
+    // An IFV knocked out: the squad bails out, knocked about, those on top
+    // thrown off; the worse off don't make it.
     for (const Unit& v : units_) {
-        if (v.hp > 0 || v.passengers.empty()) continue;
-        const std::vector<EntityId> aboard = v.passengers;
+        if (v.hp > 0 || (v.passengers.empty() && v.riders.empty())) continue;
+        std::vector<EntityId> aboard = v.riders;
+        aboard.insert(aboard.end(), v.passengers.begin(), v.passengers.end());
         for (EntityId id : aboard) {
             Unit* p = find_unit_mut(id);
             if (!p) continue;
@@ -1670,6 +1710,9 @@ void World::apply_damage_and_remove_dead() {
         smokes_.push_back({clamp_to_map(u.pos + kPlumeDrift, Fixed{}), kPlumeRadius, tick_ + kPlumeTicks, SmokeKind::Plume, tick_});
     }
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
+    for (Unit& v : units_) {  // the men killed on top of the armor
+        if (!v.riders.empty()) std::erase_if(v.riders, [this](EntityId id) { return find_unit(id) == nullptr; });
+    }
     for (Structure& s : structures_) {
         std::erase_if(s.garrison, [this](EntityId id) { return find_unit(id) == nullptr; });
         if (s.garrison.empty() && is_shelter(role_of(s))) s.owner = kNoOwner;
@@ -1685,7 +1728,7 @@ void World::separate_units() {
         for (size_t j = i + 1; j < units_.size(); ++j) {
             Unit& a = units_[i];
             Unit& b = units_[j];
-            if (a.inside || b.inside || def_of(a).aircraft || def_of(b).aircraft) continue;
+            if (a.inside || b.inside || a.riding || b.riding || def_of(a).aircraft || def_of(b).aircraft) continue;
 
             const FixedVec2 delta = b.pos - a.pos;
             const Fixed min_dist = def_of(a).radius + def_of(b).radius;
@@ -1756,6 +1799,9 @@ uint64_t World::checksum() const {
         mix(u.inside);
         mix(static_cast<uint32_t>(u.passengers.size()));
         for (EntityId id : u.passengers) mix(id);
+        mix(static_cast<uint32_t>(u.riders.size()));
+        for (EntityId id : u.riders) mix(id);
+        mix(u.riding);
         mix(static_cast<uint32_t>(u.gather_tile.x));
         mix(static_cast<uint32_t>(u.gather_tile.y));
         mix(static_cast<uint32_t>(u.carrying));

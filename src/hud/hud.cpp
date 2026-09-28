@@ -997,6 +997,7 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
     if (u.order == engine::Order::Garrison && world.find_unit(u.order_target)) state = "Mounting up";
     if (def.troop_capacity > 0) {
         state = TextFormat("%s, squad aboard %d/%d", state, static_cast<int>(u.passengers.size()), def.troop_capacity);
+        if (!u.riders.empty()) state = TextFormat("%s, on the armor %d/%d", state, static_cast<int>(u.riders.size()), engine::kRidersOnArmor);
     }
     if (const engine::Structure* s = world.find_structure(u.inside)) {
         if (s->type == engine::StructureType::House) {

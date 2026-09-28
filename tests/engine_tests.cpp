@@ -1601,7 +1601,10 @@ void test_ifv_carries_squad() {
     CHECK(v->passengers.size() == 7);
     int aboard = 0;
     for (EntityId id : squad) aboard += sim.world().find_unit(id)->inside == ifv ? 1 : 0;
-    CHECK(aboard == 7);  // the eighth: no room, he waits beside it
+    CHECK(aboard == 7);
+    int on_top = 0;
+    for (EntityId id : squad) on_top += sim.world().find_unit(id)->riding == ifv ? 1 : 0;
+    CHECK(v->riders.size() == 1 && on_top == 1);  // the eighth: full inside, up on top
     CHECK(sim.world().find_unit(mortar)->inside == 0);
     CHECK(sim.world().find_unit(stranger)->inside == 0);
     const std::vector<EntityId> riders = v->passengers;
@@ -1629,7 +1632,7 @@ void test_ifv_carries_squad() {
     issue(sim, Command{.type = CommandType::Unload, .player = 0, .units = {ifv}});
     for (int i = 0; i < 3; ++i) sim.step();
     v = sim.world().find_unit(ifv);
-    CHECK(v->passengers.empty() && v->order == Order::Idle);
+    CHECK(v->passengers.empty() && v->riders.empty() && v->order == Order::Idle);
     const FixedVec2 stop = v->pos;
     for (EntityId id : riders) {
         const Unit* p = sim.world().find_unit(id);
@@ -1645,6 +1648,114 @@ void test_ifv_carries_squad() {
     issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = {mortar}, .target_unit = ifv});
     for (int i = 0; i < 1500; ++i) sim.step();
     CHECK(sim.world().find_unit(mortar)->inside == 0 && sim.world().find_unit(ifv)->passengers.empty());
+}
+
+// Full inside, an IFV takes six more men on top of its armor; one more
+// waits beside it. Up there they ride along in the open: fire reaches them
+// (the squad inside is safe); they get off down its sides; knocked out, it
+// throws them off.
+void test_riders_on_armor() {
+    TileMap map(50, 30);
+    Simulation sim(1, map);
+    World& w = sim.world_for_setup();
+    const EntityId ifv = w.spawn_unit(0, UnitTypeId::Ifv, at(20, 15));
+    std::vector<EntityId> men;
+    for (int i = 0; i < 14; ++i) men.push_back(w.spawn_unit(0, UnitTypeId::Rifleman, at(11 + (i % 3), 8 + i)));
+    issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = men, .target_unit = ifv});
+    for (int i = 0; i < 900; ++i) sim.step();
+    const Unit* v = sim.world().find_unit(ifv);
+    CHECK(v->passengers.size() == 7 && v->riders.size() == static_cast<size_t>(kRidersOnArmor));
+    int waiting = 0;
+    for (EntityId id : men) {
+        const Unit* m = sim.world().find_unit(id);
+        if (m->inside == 0 && m->riding == 0) ++waiting;
+    }
+    CHECK(waiting == 1);
+    const std::vector<EntityId> on_top = v->riders;
+    const std::vector<EntityId> inside = v->passengers;
+
+    // Riding along; an enemy machine gunner (made hard to kill) opens up on them.
+    issue(sim, make_move(0, {ifv}, 34, 15));
+    for (int i = 0; i < 400; ++i) sim.step();
+    v = sim.world().find_unit(ifv);
+    CHECK((v->pos - at(34, 15)).length() < Fixed::from_int(2));
+    for (EntityId id : on_top) {
+        const Unit* m = sim.world().find_unit(id);
+        CHECK(m && m->riding == ifv && m->pos == v->pos);
+    }
+    const EntityId gunner = sim.world_for_setup().spawn_unit(1, UnitTypeId::MachineGunner, at(40, 15));
+    sim.world_for_setup().unit_for_setup(gunner)->hp = 100000;
+    for (int i = 0; i < 200; ++i) sim.step();
+    int hurt_on_top = 0;
+    for (EntityId id : on_top) hurt_on_top += hp_of(sim, id) < unit_type(UnitTypeId::Rifleman).max_hp ? 1 : 0;
+    CHECK(hurt_on_top > 0);
+    size_t alive_on_top = 0;
+    for (EntityId id : on_top) alive_on_top += sim.world().find_unit(id) ? 1 : 0;
+    CHECK(sim.world().find_unit(ifv)->riders.size() == alive_on_top);  // the dead no longer take a seat
+    for (EntityId id : inside) CHECK(hp_of(sim, id) == unit_type(UnitTypeId::Rifleman).max_hp);
+    sim.world_for_setup().unit_for_setup(gunner)->hp = 0;
+    sim.step();
+
+    // Off the armor, down its sides.
+    issue(sim, Command{.type = CommandType::Unload, .player = 0, .units = {ifv}});
+    for (int i = 0; i < 3; ++i) sim.step();
+    v = sim.world().find_unit(ifv);
+    CHECK(v->riders.empty() && v->passengers.empty());
+    for (EntityId id : on_top) {
+        const Unit* m = sim.world().find_unit(id);
+        if (!m) continue;
+        CHECK(m->riding == 0 && (m->pos - v->pos).length() < Fixed::from_int(3));
+    }
+
+    // Up again, then knocked out: those on top thrown off, knocked about.
+    std::vector<EntityId> alive;
+    for (EntityId id : men) {
+        if (sim.world().find_unit(id)) alive.push_back(id);
+    }
+    issue(sim, Command{.type = CommandType::Garrison, .player = 0, .units = alive, .target_unit = ifv});
+    for (int i = 0; i < 300; ++i) sim.step();
+    const std::vector<EntityId> thrown = sim.world().find_unit(ifv)->riders;
+    CHECK(!thrown.empty());
+    sim.world_for_setup().unit_for_setup(ifv)->hp = 0;
+    sim.step();
+    for (EntityId id : thrown) {
+        const Unit* m = sim.world().find_unit(id);
+        CHECK(!m || (m->riding == 0 && m->hp <= unit_type(UnitTypeId::Rifleman).max_hp / 2));
+    }
+}
+
+// A shell or a mortar bomb bursting on armor with men on top: they take it
+// at half again its full force (a man standing there in the open: the full).
+int32_t mortar_loss(bool riding) {
+    int32_t total = 0;
+    for (uint64_t seed = 1; seed <= 6; ++seed) {
+        Simulation sim(seed, TileMap(40, 24));
+        World& w = sim.world_for_setup();
+        const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, post());
+        w.unit_for_setup(man)->hp = 100000;
+        if (riding) {
+            const EntityId ifv = w.spawn_unit(0, UnitTypeId::Ifv, post());
+            Unit* v = w.unit_for_setup(ifv);
+            v->hp = 100000;
+            v->rounds = 0;
+            v->riders.push_back(man);
+            w.unit_for_setup(man)->riding = ifv;
+        }
+        const EntityId mortar = w.spawn_unit(1, UnitTypeId::Mortar, {post().x + Fixed::from_int(14), post().y});
+        Command fire = make_order(CommandType::AttackGround, 1, {mortar}, 0, 0);
+        fire.target = post();
+        sim.schedule(sim.world().tick(), fire);
+        for (int i = 0; i < 600; ++i) sim.step();
+        total += 100000 - hp_of(sim, man);
+    }
+    return total;
+}
+
+void test_riders_take_bursts() {
+    const int32_t open = mortar_loss(false);
+    const int32_t riding = mortar_loss(true);
+    CHECK(open > 0);
+    CHECK(riding * 100 >= open * 140);
 }
 
 // Mounting up with an IFV that drives off: they follow and get in. Knocked
@@ -6324,6 +6435,8 @@ int main() {
     test_rally_points();
     test_ifv_carries_squad();
     test_ifv_bail_out();
+    test_riders_on_armor();
+    test_riders_take_bursts();
     test_quarters_house_the_men();
     test_tank_reaches_far();
     test_rpg_catches_tanks();

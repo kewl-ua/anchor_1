@@ -14,6 +14,9 @@ inline constexpr Fixed kVehicleTop = Fixed::from_ratio(4, 5);
 inline constexpr Fixed kVehicleMuzzle = Fixed::from_ratio(7, 10);
 inline constexpr Fixed kVehicleCenter = Fixed::from_ratio(1, 2);
 inline constexpr Fixed kGroundAim = Fixed::from_ratio(1, 10);  // shooting at a spot on the ground
+// Men riding on top of armor, sitting on the hull: above it, in the open.
+inline constexpr Fixed kRiderCenter = Fixed::from_int(1);
+inline constexpr Fixed kRiderTop = Fixed::from_ratio(6, 5);
 
 inline constexpr Fixed kTreeHeight = Fixed::from_ratio(3, 2);
 inline constexpr Fixed kHouseHeight = Fixed::from_ratio(6, 5);

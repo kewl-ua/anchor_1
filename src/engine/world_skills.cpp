@@ -141,10 +141,11 @@ void World::apply_unload(const Command& cmd) {
     // IFVs told to dismount: they stop, and the squad gets out at the back.
     for (EntityId carrier : cmd.units) {
         Unit* v = find_unit_mut(carrier);
-        if (!v || v->owner != cmd.player || v->passengers.empty()) continue;
+        if (!v || v->owner != cmd.player || (v->passengers.empty() && v->riders.empty())) continue;
         v->order = Order::Idle;
         v->order_path.reset();
-        const std::vector<EntityId> aboard = v->passengers;
+        std::vector<EntityId> aboard = v->riders;
+        aboard.insert(aboard.end(), v->passengers.begin(), v->passengers.end());
         for (EntityId id : aboard) {
             if (Unit* u = find_unit_mut(id)) {
                 leave_structure(*u);

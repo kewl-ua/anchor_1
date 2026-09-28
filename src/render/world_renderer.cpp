@@ -7560,7 +7560,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     drawables.reserve(world.units().size() + world.projectiles().size() + 1024);
     std::vector<const engine::Structure*> barns;
     for (const engine::Unit& u : world.units()) {
-        if (u.inside || u.airborne || !shows(world, u)) continue;  // behind walls, up in the sky, or unseen
+        if (u.inside || u.riding || u.airborne || !shows(world, u)) continue;  // behind walls, on the armor (with it), up in the sky, or unseen
         const Vector2 g = unit_ground_pos(u, alpha);
         const Vector2 p = on_terrain(map, g);
         if (!CheckCollisionPointRec(p, {view.x - 60, view.y - 60, view.width + 120, view.height + 120})) continue;
@@ -7730,6 +7730,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         set_grain(d.unit || d.projectile ? Grain{} : kObjectGrain);
         if (d.unit) {
             draw_unit(map, *d.unit, alpha);
+            if (!d.unit->riders.empty()) draw_riders(world, *d.unit, alpha);
             const engine::Unit& u = *d.unit;
             const engine::UnitTypeDef& def = engine::unit_type(u.type);
             const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
@@ -8870,6 +8871,7 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u
     const float hurt = hit != hurt_.end() ? static_cast<float>(now - hit->second.second) : 99.0f;
     const float t = static_cast<float>(now) + static_cast<float>(u.id % 17) * 0.37f;
     const Kit kit = kit_of(u.type);
+    if (u.riding) return {Pose::Sit, 0};  // on the armor
     if (u.moving) return {Pose::Walk, static_cast<int>(t * 9.0f) % soldiers::frame_count(Pose::Walk)};
     if (u.type == UnitTypeId::Worker && u.order == Order::Gather && u.work > 0) {
         const float stroke = static_cast<float>(u.work % engine::kChopTicks) / static_cast<float>(engine::kChopTicks);
@@ -8906,6 +8908,36 @@ void WorldRenderer::soldier_muzzle(const engine::Unit& u, Vector2 ground, Vector
     const Vector2 left{facing.y, -facing.x};  // (his own left, as he's drawn)
     at = {ground.x + facing.x * m.ahead + left.x * m.left, ground.y + facing.y * m.ahead + left.y * m.left};
     z = m.up;
+}
+
+// The men on top of an IFV, an APC: sitting along its deck on both sides,
+// legs over the edge, facing out; the nearer ones drawn last.
+void WorldRenderer::draw_riders(const engine::World& world, const engine::Unit& carrier, float alpha) const {
+    const engine::TileMap& map = world.map();
+    const engine::UnitTypeDef& def = engine::unit_type(carrier.type);
+    Vector2 f = to_vector2(carrier.hull);
+    const float fl = std::hypot(f.x, f.y);
+    f = fl > 0.0f ? Vector2{f.x / fl, f.y / fl} : Vector2{1.0f, 0.0f};
+    const Vector2 side{-f.y, f.x};
+    const Vector2 size = drawn_as_armor(def) ? armor_size(def.model) : Vector2{0.9f, 0.3f};
+    const float deck = drawn_as_armor(def) ? armor_engine(def.model).y - kVehicleScale : 12.0f;
+    const Vector2 g = unit_ground_pos(carrier, alpha);
+    struct Seat {
+        const engine::Unit* man;
+        Vector2 at;
+        Vector2 facing;
+    };
+    std::vector<Seat> seats;
+    for (size_t i = 0; i < carrier.riders.size(); ++i) {
+        const engine::Unit* man = world.find_unit(carrier.riders[i]);
+        if (!man) continue;
+        const float along = (0.14f - 0.27f * static_cast<float>(i / 2)) * size.x * kVehicleScale;
+        const float out = (i % 2 == 0 ? 1.0f : -1.0f) * size.y * 0.72f * kVehicleScale;
+        seats.push_back({man, {g.x + f.x * along + side.x * out, g.y + f.y * along + side.y * out},
+                         {side.x * (out > 0.0f ? 1.0f : -1.0f), side.y * (out > 0.0f ? 1.0f : -1.0f)}});
+    }
+    std::sort(seats.begin(), seats.end(), [](const Seat& a, const Seat& b) { return a.at.x + a.at.y < b.at.x + b.at.y; });
+    for (const Seat& s : seats) draw_soldier(*s.man, on_terrain(map, s.at, deck), s.facing);
 }
 
 // A soldier in our pixel art (see soldiers.h), his pose as he's doing;
@@ -14116,14 +14148,21 @@ void WorldRenderer::draw_supply_warning(const engine::TileMap& map, const engine
 
 // Our rear troops at the wood and trucks collecting there: how full they are.
 void WorldRenderer::draw_load_bar(const engine::TileMap& map, const engine::Unit& u, float alpha) const {
-    if (const int32_t seats = engine::unit_type(u.type).troop_capacity; seats > 0 && !u.passengers.empty()) {
-        // The squad aboard: a pip a man, over the seats.
+    if (const int32_t seats = engine::unit_type(u.type).troop_capacity; seats > 0 && (!u.passengers.empty() || !u.riders.empty())) {
+        // The squad aboard: a pip a man, over the seats; those on the armor above, greener.
         const Vector2 feet = on_terrain(map, unit_ground_pos(u, alpha));
         const float x = feet.x - static_cast<float>(seats) * 2.0f;
         const float y = feet.y - 32.0f;
         DrawRectangleRec({x - 1, y - 1, static_cast<float>(seats) * 4.0f + 1, 5}, {0, 0, 0, 170});
         for (int32_t i = 0; i < static_cast<int32_t>(u.passengers.size()); ++i) {
             DrawRectangleRec({x + static_cast<float>(i) * 4.0f, y, 3, 3}, {225, 215, 160, 255});
+        }
+        if (!u.riders.empty()) {
+            const float rx = feet.x - static_cast<float>(engine::kRidersOnArmor) * 2.0f;
+            DrawRectangleRec({rx - 1, y - 7, static_cast<float>(engine::kRidersOnArmor) * 4.0f + 1, 5}, {0, 0, 0, 170});
+            for (int32_t i = 0; i < static_cast<int32_t>(u.riders.size()); ++i) {
+                DrawRectangleRec({rx + static_cast<float>(i) * 4.0f, y - 6, 3, 3}, {170, 214, 120, 255});
+            }
         }
         return;
     }

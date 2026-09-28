@@ -159,6 +159,12 @@ inline constexpr Tick kHealTicks = kTicksPerSecond / 2;
 // they bail out, each losing this share of his health.
 inline constexpr Fixed kBoardDistance = Fixed::from_ratio(3, 2);
 inline constexpr int32_t kBailOutHurtPercent = 50;
+// Riding on the armor: an IFV or APC full inside takes this many more men on
+// top. Up there they're in the open: fire reaches them as it would anyone on
+// the ground (no cover), and a shell's or a mortar bomb's burst hits them at
+// this much of its full force.
+inline constexpr int32_t kRidersOnArmor = 6;
+inline constexpr int32_t kRiderBlastPercent = 150;
 
 // Vehicle supply. A unit of fuel from the stock drives a vehicle this many tiles.
 inline constexpr int32_t kTilesPerFuel = 2;
@@ -457,8 +463,11 @@ struct Unit {
     // outside. In a structure the unit stands at its center, can't be hit and
     // fires from the windows; in an IFV it rides along and doesn't fire.
     EntityId inside = 0;
-    // An IFV: the men aboard, in the order they got in.
+    // An IFV: the men aboard, in the order they got in; and the men riding
+    // on top of it once it's full inside (they're outside, `riding` on it).
     std::vector<EntityId> passengers;
+    std::vector<EntityId> riders;
+    EntityId riding = 0;
 
     // Rear troops and trucks at work.
     TilePos gather_tile{};  // the forest or rock being worked
