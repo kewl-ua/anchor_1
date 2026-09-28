@@ -96,7 +96,8 @@ private:
     // depends on them.
     struct Particle {
         // Blow: smoke blown out of a gun's muzzle, off the ground by its blast: drawn drawn out along its flight.
-        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing, Blow };
+        // Muzzle: the fire out of a muzzle (a back-blast's) along `dir` on the screen, its shape `size` (see MuzzleFire).
+        enum class Kind : uint8_t { Smoke, Clod, Flame, Spray, Spark, Flash, Casing, Blow, Muzzle };
         Kind kind;
         Vector2 ground;  // tiles
         float z;         // pixels above the ground
@@ -108,7 +109,10 @@ private:
         Color color;
         float age = 0.0f;
         uint32_t seed = 0;  // its own shape (a puff's bulges), given as it first moves
+        Vector2 dir{};      // a muzzle's fire: the way it points on the screen
     };
+    // Fire out of a muzzle at `at` (`z` up) along `dir` on the screen: its shape (MuzzleFire), how long it lasts.
+    void spawn_muzzle_fire(Vector2 at, float z, Vector2 dir, int shape, float life);
     std::vector<Particle> particles_;
     uint32_t particle_seed_ = 0;
     // Tracks left in the ground by tracked vehicles: two ruts from `a` to `b`,

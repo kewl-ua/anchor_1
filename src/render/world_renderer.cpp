@@ -22,6 +22,15 @@ namespace render {
 namespace {
 
 constexpr float kPingLifetime = 0.5f;
+// The fire out of a muzzle, its shapes (see bake_muzzle_fire).
+enum MuzzleFire : int {
+    kRifleFire,    // a rifle's, a machine gun's: a spurt
+    kGunFire,      // a heavy machine gun's, an autocannon's, a rocket's
+    kBrakeFire,    // an autocannon's out of its muzzle brake, a mortar's
+    kTankFire,     // a tank's big gun: a great tongue of fire, a ball at its end
+    kHowitzerFire, // a howitzer's out of its muzzle brake: ahead and to both sides
+    kMuzzleShapes
+};
 constexpr float kBlastLifetime = 3.6f;  // (the longest blast's sheet: a crash's mushroom)
 constexpr float kMushroomBlast = 4.5f;  // a Blast this big (tiles) is an aircraft's crash: the mushroom
 constexpr float kWreckLifetime = 25.0f;
@@ -588,7 +597,58 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
     }
     // The flash: a gun's big and white-hot, a rifle's a spark.
     const bool gun = drawn_as_armor(def) || def.weapon.indirect;
-    spawn_flash(muzzle, height, gun ? 6.0f + 4.0f * splash : def.vehicle ? 3.0f : 1.6f, {255, 236, 170, 255});
+    spawn_flash(muzzle, height, gun ? 4.0f + 3.0f * splash : def.vehicle ? 3.0f : 1.6f, {255, 236, 170, 255});
+    // The fire out of the muzzle, along the barrel as it's laid: a tank's a great tongue of it, a
+    // howitzer's out of its muzzle brake to the sides too, an autocannon's, a machine gun's, a rifle's spurt;
+    // a mortar's up out of its tube. An RPG's, a MANPADS's: the back-blast's fire out behind as well.
+    {
+        const engine::WeaponDef& weapon = engine::weapon_of(u);
+        const bool tube = engine::is_tube_artillery(def) || u.type == engine::UnitTypeId::Spg;
+        const bool mortar = u.type == engine::UnitTypeId::Mortar;
+        float pitch = (drawn_as_armor(def) || has_gun_look(def.model)) ? gun_elevation(u) : mortar ? 62.0f : 0.0f;
+        pitch *= 0.0174533f;
+        const Vector2 flat = iso_offset(f);
+        Vector2 sd{flat.x * std::cos(pitch), flat.y * std::cos(pitch) - std::sin(pitch) * kZPerTile};
+        const float sl = std::hypot(sd.x, sd.y);
+        sd = sl > 0.0f ? Vector2{sd.x / sl, sd.y / sl} : Vector2{1.0f, 0.0f};
+        int shape = kRifleFire;
+        float life = 0.12f;
+        if (def.tank && drawn_as_armor(def)) {
+            shape = kTankFire;
+            life = 0.26f;
+        } else if (tube) {
+            shape = kHowitzerFire;
+            life = 0.28f;
+        } else if (mortar) {
+            shape = kBrakeFire;
+            life = 0.14f;
+        } else if (def.vehicle) {
+            shape = u.type == engine::UnitTypeId::Mlrs || def.aircraft ? kGunFire : kBrakeFire;
+            life = 0.1f;
+        } else if (u.type == engine::UnitTypeId::MachineGunner || u.type == engine::UnitTypeId::Ags) {
+            shape = kGunFire;
+            life = 0.1f;
+        }
+        if (u.type != engine::UnitTypeId::Mlrs) spawn_muzzle_fire(muzzle, height, sd, shape, life);
+        const bool back_blast = weapon.damage_type == engine::DamageType::AntiTank && !def.vehicle;  // an RPG
+        if (back_blast || u.type == engine::UnitTypeId::Manpads || u.type == engine::UnitTypeId::Mlrs) {
+            const Vector2 behind{g.x - f.x * (u.type == engine::UnitTypeId::Mlrs ? 0.45f : 0.2f), g.y - f.y * (u.type == engine::UnitTypeId::Mlrs ? 0.45f : 0.2f)};
+            spawn_muzzle_fire(behind, u.type == engine::UnitTypeId::Mlrs ? 10.0f : height, {-sd.x, -sd.y}, u.type == engine::UnitTypeId::Mlrs ? kTankFire : kGunFire, 0.16f);
+            for (int i = 0; i < 4; ++i) {  // its dust, blown out behind
+                Particle p{};
+                p.kind = Particle::Kind::Blow;
+                p.ground = behind;
+                p.z = 3.0f;
+                p.vel = {-f.x * (0.8f + fx_random()) + (fx_random() - 0.5f) * 0.5f, -f.y * (0.8f + fx_random()) + (fx_random() - 0.5f) * 0.5f};
+                p.vz = 3.0f + 4.0f * fx_random();
+                p.life = 1.0f + 0.6f * fx_random();
+                p.size = 2.0f + 1.5f * fx_random();
+                p.grow = 6.0f;
+                p.color = {176, 160, 132, 170};
+                particles_.push_back(p);
+            }
+        }
+    }
     if (u.type == engine::UnitTypeId::Mlrs) {  // a rocket's back-blast rolling out behind the launcher
         for (int i = 0; i < 4; ++i) {
             Particle p{};
@@ -635,6 +695,17 @@ void WorldRenderer::spawn_muzzle(const engine::World& world, const engine::Unit&
         particles_.push_back(p);
     }
     (void)world;
+}
+
+void WorldRenderer::spawn_muzzle_fire(Vector2 at, float z, Vector2 dir, int shape, float life) {
+    Particle p{};
+    p.kind = Particle::Kind::Muzzle;
+    p.ground = at;
+    p.z = z;
+    p.life = life;
+    p.size = static_cast<float>(shape);
+    p.dir = dir;
+    particles_.push_back(p);
 }
 
 // A flash: a muzzle's, a round punching through armor, reactive armor going off.
@@ -1595,8 +1666,11 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     std::erase_if(g_drawn_height, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     // The particles fly, fall, spread and fade.
     for (Particle& p : particles_) {
-        if (p.seed == 0) p.seed = ++particle_seed_ * 2654435761u | 1u;
-        p.age += dt;
+        const bool fresh = p.seed == 0;
+        if (fresh) p.seed = ++particle_seed_ * 2654435761u | 1u;
+        // (A flash, a muzzle's fire: seen at least a frame, however slow the frames come.)
+        const bool brief = p.kind == Particle::Kind::Muzzle || p.kind == Particle::Kind::Flash;
+        p.age += fresh && brief ? std::min(dt, p.life * 0.2f) : dt;
         if (p.age < 0.0f) continue;  // (not yet: waiting where it will come out)
         p.ground = {p.ground.x + p.vel.x * dt, p.ground.y + p.vel.y * dt};
         p.z += p.vz * dt;
@@ -1627,7 +1701,8 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 }
                 break;
             case Particle::Kind::Flame:
-            case Particle::Kind::Flash: break;
+            case Particle::Kind::Flash:
+            case Particle::Kind::Muzzle: break;
         }
     }
     std::erase_if(particles_, [](const Particle& p) { return p.age >= p.life; });
@@ -2410,6 +2485,72 @@ FxSheet bake_mushroom(uint32_t seed) {
         }
         c.outline(t < 0.6f ? Color{96, 34, 18, 255} : Color{30, 26, 24, 255});
     });
+}
+
+// Fire out of a muzzle, baked into sheets turned every way on the screen:
+// a white-hot core at the muzzle, a tongue of flame bulging out ahead of
+// it, yellow in its heart, orange, red at its ragged tip; out of a muzzle
+// brake, jets of fire to the sides too. Four frames: blazing, swelling
+// orange, breaking up red, wisps.
+// (Its shapes: MuzzleFire, above.)
+constexpr int kMuzzleTurns = 16;
+constexpr int kMuzzleFrames = 4;
+std::vector<FxSheet> g_muzzles;  // by shape, then turn
+
+FxSheet bake_muzzle_fire(float len, float wide, bool brake, float angle, uint32_t seed) {
+    const int sz = static_cast<int>((len + wide) * 2.0f) + 6;
+    const Vector2 o{static_cast<float>(sz / 2), static_cast<float>(sz / 2)};
+    const Vector2 d{std::cos(angle), std::sin(angle)};
+    const Vector2 n{-d.y, d.x};
+    return bake_fx(sz, sz, kMuzzleFrames, o, [&](Canvas& c, int f) {
+        const float grow = 1.0f + 0.18f * static_cast<float>(f);
+        const float cool = static_cast<float>(f) / static_cast<float>(kMuzzleFrames - 1);
+        // How hot a point is (0 outside the fire), by where it is along the tongue and off its middle.
+        auto tongue = [&](float u, float v, float l, float w) {
+            if (u < -w * 0.3f || u > l) return 0.0f;
+            const float k = std::max(0.0f, u) / l;
+            const float half = w * 0.5f * std::sin(3.14159f * std::pow(std::max(0.02f, k), 0.6f)) * (1.0f + 0.25f * (fx_noise(seed + static_cast<uint32_t>(f), static_cast<int>(u), 7) - 0.5f));
+            const float tip = k > 0.7f ? 0.35f * std::sin(u * 1.7f + static_cast<float>(f) * 2.0f) : 0.0f;  // ragged at its tip
+            const float off = std::fabs(v) / std::max(0.5f, half);
+            if (off > 1.0f + tip) return 0.0f;
+            return (1.0f - off * 0.7f) * (1.0f - 0.55f * k);
+        };
+        for (int y = 0; y < sz; ++y) {
+            for (int x = 0; x < sz; ++x) {
+                const float px = static_cast<float>(x) + 0.5f - o.x;
+                const float py = static_cast<float>(y) + 0.5f - o.y;
+                const float u = px * d.x + py * d.y;
+                const float v = px * n.x + py * n.y;
+                float heat = tongue(u, v, len * grow, wide * grow);
+                if (brake) {  // the side jets, swept a little back
+                    for (const float side : {-1.0f, 1.0f}) {
+                        const float su = v * side * 0.94f - u * 0.34f;
+                        const float sv = u * 0.94f + v * side * 0.34f - len * 0.08f;
+                        heat = std::max(heat, 0.85f * tongue(su, sv, len * 0.42f * grow, wide * 0.55f * grow));
+                    }
+                }
+                const float core = 1.0f - std::sqrt(px * px + py * py) / (wide * 0.45f);
+                if (f == 0 && core > 0.0f) heat = std::max(heat, 0.9f + core * 0.2f);
+                if (heat <= 0.0f) continue;
+                heat = heat * (1.0f - 0.55f * cool) + (fx_noise(seed * 3u + static_cast<uint32_t>(f), x, y) - 0.5f) * 0.18f;
+                if (f >= 2 && fx_noise(seed * 5u + static_cast<uint32_t>(f), x, y) < 0.18f * static_cast<float>(f - 1)) continue;  // breaking up
+                if (heat <= 0.08f) continue;
+                c.set(x, y, heat > 0.72f ? kHeat[0] : heat > 0.5f ? kHeat[1] : heat > 0.32f ? kHeat[2] : heat > 0.18f ? kHeat[3] : kHeat[4]);
+            }
+        }
+        if (f < 3) c.outline({110, 34, 18, 255});
+    });
+}
+
+void ensure_muzzles() {
+    if (!g_muzzles.empty()) return;
+    static constexpr float kShapes[kMuzzleShapes][3] = {{10.0f, 4.0f, 0.0f}, {13.0f, 5.0f, 0.0f}, {14.0f, 7.0f, 1.0f}, {34.0f, 17.0f, 0.0f}, {28.0f, 15.0f, 1.0f}};
+    for (int k = 0; k < kMuzzleShapes; ++k) {
+        for (int t = 0; t < kMuzzleTurns; ++t) {
+            g_muzzles.push_back(bake_muzzle_fire(kShapes[k][0], kShapes[k][1], kShapes[k][2] > 0.0f, static_cast<float>(t) * 6.2831853f / kMuzzleTurns,
+                                                 0x3C1u + static_cast<uint32_t>(k * 31 + t)));
+        }
+    }
 }
 
 // Every sheet, once there's a window to make textures in.
@@ -7299,6 +7440,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
 
     ensure_fx();
+    ensure_muzzles();
     if (grain_.id == 0) {
         grain_ = LoadShaderFromMemory(kGrainVertex, kGrainFragment);
         grain_zoom_loc_ = GetShaderLocation(grain_, "zoom");
@@ -13329,8 +13471,6 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
         Vector2 m{def.vehicle ? 0.5f : 0.25f, def.vehicle ? 8.0f : 9.0f};
         if (drawn_as_armor(def) || has_gun_look(def.model)) m = muzzle_of(u);
         const Vector2 muzzle = on_terrain(map, {ground.x + facing.x * m.x, ground.y + facing.y * m.x}, m.y);
-
-        DrawCircleV(muzzle, def.vehicle ? 4.0f : 2.0f, {255, 230, 140, 220});
         const bool sweep = u.order == engine::Order::Ability && u.order_ability == engine::AbilityId::MgSweep;
         if (engine::weapon_of(u).projectile_speed.raw == 0 || sweep) {  // instant hit: draw the tracer
             const engine::Unit* target = world.find_unit(u.engaged);
@@ -13525,7 +13665,11 @@ void WorldRenderer::draw_smoke(const engine::World& world) const {
 }
 
 void WorldRenderer::draw_particles(const engine::TileMap& map) const {
+    // Twice: everything, then the fire out of muzzles and the flashes over it (over their own smoke).
+    for (int pass = 0; pass < 2; ++pass)
     for (const Particle& p : particles_) {
+        const bool bright = p.kind == Particle::Kind::Muzzle || p.kind == Particle::Kind::Flash;
+        if (bright != (pass == 1)) continue;
         const float t = std::clamp(p.age / p.life, 0.0f, 1.0f);
         const Vector2 g = on_terrain(map, p.ground);
         const Vector2 at{g.x, g.y - p.z};
@@ -13541,6 +13685,16 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
                 // Dark smoke thins out in its clumps (its rings would be black scribbles); the light goes to rings.
                 const int frame = std::min(static_cast<int>(t * 7.99f), black ? 4 : shade_sum < 300 ? 5 : kSmokeFrames - 1);
                 puff(at, p.size, light, std::min(1.0f, alpha * 1.25f), p.seed, frame);
+                break;
+            }
+            case Particle::Kind::Muzzle: {  // fire out of a muzzle, pointing the way the barrel does
+                if (g_muzzles.empty()) break;
+                float a = std::atan2(p.dir.y, p.dir.x);
+                if (a < 0.0f) a += 6.2831853f;
+                const int turn = static_cast<int>(std::lround(a / 6.2831853f * kMuzzleTurns)) % kMuzzleTurns;
+                const int shape = std::clamp(static_cast<int>(p.size), 0, kMuzzleShapes - 1);
+                const FxSheet& s = g_muzzles[static_cast<size_t>(shape * kMuzzleTurns + turn)];
+                draw_fx(s, static_cast<int>(t * static_cast<float>(kMuzzleFrames)), at);
                 break;
             }
             case Particle::Kind::Blow: {  // blown out of a muzzle, off the ground: drawn out along the way it goes

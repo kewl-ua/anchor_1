@@ -845,6 +845,32 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(13.0f + gap * 4.5f, 0.5f));
     }
 
+    if (options.scene == "firing_line" && options.mode == Options::Mode::Offline) {
+        // Offline: a firefight up close, to see the fire out of the muzzles:
+        // our riflemen, a machine gunner, an RPG gunner against the enemy's
+        // men and a tank (made hard to kill, to keep them at it).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(16.0f, 0.0f), 10);
+        const engine::PlayerId enemy = me == 0 ? 1 : 0;
+        using engine::UnitTypeId;
+        for (const auto& [type, side] : {std::pair{UnitTypeId::Rifleman, -1.5f}, std::pair{UnitTypeId::MachineGunner, -0.5f},
+                                         std::pair{UnitTypeId::Rifleman, 0.5f}, std::pair{UnitTypeId::Grenadier, 1.5f}}) {
+            w.spawn_unit(me, type, ahead(12.0f, side));
+        }
+        for (const auto& [type, side] : {std::pair{UnitTypeId::Rifleman, -1.0f}, std::pair{UnitTypeId::Tank, 1.0f}, std::pair{UnitTypeId::Rifleman, 0.0f}}) {
+            engine::Unit* u = w.unit_for_setup(w.spawn_unit(enemy, type, ahead(15.0f, side)));
+            u->hp = 100000;
+            u->rounds = 0;  // (not answering: ours keep at it)
+        }
+        return render::to_vector2(ahead(14.0f, 0.0f));
+    }
+
     if (options.scene == "air_down" && options.mode == Options::Mode::Offline) {
         // Offline: our aircraft over the field ahead of the base. One is hit
         // a second and a half in (brought down: it falls on ahead, on fire,
