@@ -3998,14 +3998,15 @@ void fly_sortie(AirSetup& a) {
 }
 
 // A bomb from the air (the Su-34's FAB-500) that hits a building brings
-// down a section of it (up to three: how it looks); a shell doesn't, not
-// even the heaviest. What's brought down leaves rubble that looks like
-// what stood there.
+// down the section of it where it fell (up to three: how it looks); a
+// shell doesn't, not even the heaviest. What's brought down leaves rubble
+// that looks like what stood there.
 void test_bombs_and_rubble() {
     AirSetup a = air_setup();
     Simulation& sim = a.sim;
     World& w = sim.world_for_setup();
-    const EntityId block = w.place_structure(StructureType::Apartment, kNoOwner, {48, 18}, 4, 2);
+    // Long along y, across the bombers' run (along x, down its middle).
+    const EntityId block = w.place_structure(StructureType::Apartment, kNoOwner, {48, 17}, 2, 4);
     const FixedVec2 at = sim.world().find_structure(block)->center;
     // A mortar's bursts on it: no section down.
     const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, {at.x - Fixed::from_int(12), at.y});
@@ -4031,6 +4032,8 @@ void test_bombs_and_rubble() {
         if (const Structure* b = sim.world().find_structure(block)) bombed = bombed || b->bombed > 0;
     }
     CHECK(bombed);
+    // The section down is the one the run went over: the middle of its length, not an end.
+    if (const Structure* b = sim.world().find_structure(block)) CHECK(b->bomb_at[0] > 64 && b->bomb_at[0] < 192);
     // Brought down (by hand, whatever's left of it): rubble of a block of flats.
     if (Structure* b = w.structure_for_setup(block)) b->hp = 0;
     sim.step();

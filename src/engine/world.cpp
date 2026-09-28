@@ -385,13 +385,29 @@ void World::update_garrisoned(Unit& u) {
     if (u.cooldown == 0) try_fire(u, target->pos, target, weapon_of(u));
 }
 
-void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
+// Where along a building's long side a point is: 0 at its x0 (or y0) end, 255 at the other.
+uint8_t along_structure(const Structure& s, FixedVec2 at) {
+    int32_t x0 = s.tiles.front().x, x1 = x0, y0 = s.tiles.front().y, y1 = y0;
+    for (const TilePos& t : s.tiles) {
+        x0 = std::min(x0, t.x);
+        x1 = std::max(x1, t.x);
+        y0 = std::min(y0, t.y);
+        y1 = std::max(y1, t.y);
+    }
+    const bool along_x = x1 - x0 >= y1 - y0;
+    const int64_t start = Fixed::from_int(along_x ? x0 : y0).raw;
+    const int64_t length = Fixed::from_int((along_x ? x1 - x0 : y1 - y0) + 1).raw;
+    const int64_t p = (along_x ? at.x : at.y).raw;
+    return static_cast<uint8_t>(std::clamp<int64_t>((p - start) * 256 / length, 0, 255));
+}
+
+void World::hurt_structure(const Structure& s, const WeaponDef& weapon, FixedVec2 at) {
     if (weapon.damage_type == DamageType::Bullet) return;  // rifles don't knock down walls
     const int32_t damage = weapon.structure_damage > 0 ? weapon.structure_damage : weapon.damage;
     const int32_t amount = damage - structure_type(s.type).armor[static_cast<size_t>(weapon.damage_type)];
     if (amount > 0) pending_damage_.push_back({s.id, amount});
-    if (weapon.aerial_bomb) {  // a bomb from the air: a section of it down
-        if (Structure* hit = find_structure_mut(s.id); hit && hit->bombed < 3) ++hit->bombed;
+    if (weapon.aerial_bomb) {  // a bomb from the air: the section of it where it fell comes down
+        if (Structure* hit = find_structure_mut(s.id); hit && hit->bombed < hit->bomb_at.size()) hit->bomb_at[hit->bombed++] = along_structure(*hit, at);
     }
 }
 
@@ -1305,7 +1321,7 @@ void World::splash(const Projectile& p, FixedVec2 at, const WeaponDef& weapon, c
             if (id == 0 || std::find(hit.begin(), hit.end(), id) != hit.end()) continue;
             if (distance_sq_to_tile({x, y}, at) > square_raw(weapon.splash_radius)) continue;
             hit.push_back(id);
-            hurt_structure(*find_structure(id), weapon);
+            hurt_structure(*find_structure(id), weapon, at);
         }
     }
 }
@@ -1817,6 +1833,7 @@ uint64_t World::checksum() const {
         mix(s.built ? 1 : 0);
         mix(s.build_progress);
         mix(s.bombed);
+        for (const uint8_t b : s.bomb_at) mix(b);
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
         mix(s.parapet ? 1 : 0);

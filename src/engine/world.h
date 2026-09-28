@@ -764,7 +764,8 @@ private:
     void apply_board(const Command& cmd, const Unit& carrier);
     void seek_carrier(Unit& u, Unit& carrier);
     bool board(Unit& u, Unit& carrier);
-    void hurt_structure(const Structure& s, const WeaponDef& weapon);
+    // `at`: where the burst was (a bomb's brings down the section there).
+    void hurt_structure(const Structure& s, const WeaponDef& weapon, FixedVec2 at = {});
     void collapse(const Structure& s);
     void on_map_changed();
     EntityId structure_id_at(TilePos tile) const;

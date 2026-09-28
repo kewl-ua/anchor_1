@@ -702,10 +702,11 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
 
     if (options.scene.starts_with("ruins") && options.mode == Options::Mode::Offline) {
         // Offline: how buildings go as they're hit, on a flat field ahead of
-        // the base. A row of blocks of flats whole, hit, burning, burnt out,
-        // one bombed once, one twice; houses the same; a works' shop, a barn,
-        // an elevator, a gas station burnt out; and the rubble of each kind
-        // (ruins_rubble: the camera on it).
+        // the base. A row of blocks of flats whole, hit, burning, burnt out;
+        // bombed: a section down in the middle (its ends standing), both
+        // ends' sections down, one end's; houses by stage; a works' shop, a
+        // barn, an elevator, a gas station burnt out; and the rubble of each
+        // kind (ruins_rubble: the camera on it).
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
         const Vector2 b = render::to_vector2(base);
@@ -713,44 +714,49 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
         };
         engine::World& w = game.world_for_setup();
-        flat_field(w, ahead(18.0f, 0.0f), 20);
+        flat_field(w, ahead(24.0f, -4.0f), 30);
         using engine::StructureType;
         using engine::Terrain;
-        auto put = [&](StructureType type, float d, float side, int wide, int deep, Terrain ground, float damage, int bombs,
+        // `bombs`: where along it each bomb fell, 0 its x0 end .. 255 the other.
+        auto put = [&](StructureType type, float d, float side, int wide, int deep, Terrain ground, float damage, std::vector<uint8_t> bombs,
                        engine::HouseLook look = engine::HouseLook::House) {
             const engine::TilePos at = engine::tile_of(ahead(d, side));
             const engine::EntityId id = w.place_structure(type, engine::kNoOwner, at, wide, deep);
             engine::Structure* s = w.structure_for_setup(id);
             for (const engine::TilePos& t : s->tiles) w.map_for_setup().set_terrain(t.x, t.y, ground);
             s->look = look;
-            s->bombed = static_cast<uint8_t>(bombs);
+            s->bombed = static_cast<uint8_t>(std::min<size_t>(bombs.size(), s->bomb_at.size()));
+            for (size_t k = 0; k < s->bombed; ++k) s->bomb_at[k] = bombs[k];
             s->hp = std::max(0, static_cast<int32_t>(static_cast<float>(engine::structure_type(type).max_hp) * (1.0f - damage)));
         };
-        for (int i = 0; i < 6; ++i) {  // blocks of flats: whole, hit, burning, burnt out; bombed once, twice
-            const float damage[6] = {0.0f, 0.33f, 0.58f, 0.85f, 0.58f, 0.85f};
-            put(StructureType::Apartment, 8.0f + 6.0f * static_cast<float>(i), -9.0f, 4, 2, Terrain::Apartment, damage[i], i < 4 ? 0 : i - 3);
+        for (int i = 0; i < 7; ++i) {  // blocks of flats: whole, hit, burning, burnt out; bombed in the middle, at both ends, at one end
+            const float damage[7] = {0.0f, 0.33f, 0.58f, 0.85f, 0.33f, 0.85f, 0.58f};
+            const std::vector<uint8_t> bombs[7] = {{}, {}, {}, {}, {128}, {20, 235}, {235}};
+            put(StructureType::Apartment, 8.0f + 6.0f * static_cast<float>(i), -9.0f, 4, 2, Terrain::Apartment, damage[i], bombs[i]);
         }
         for (int i = 0; i < 4; ++i) {  // houses the same
-            put(StructureType::House, 9.0f + 2.5f * static_cast<float>(i), -4.0f, 1, 1, Terrain::House, 0.33f * static_cast<float>(i) - (i == 3 ? 0.14f : 0.0f), 0);
+            put(StructureType::House, 9.0f + 2.5f * static_cast<float>(i), -4.0f, 1, 1, Terrain::House, 0.33f * static_cast<float>(i) - (i == 3 ? 0.14f : 0.0f), {});
         }
-        put(StructureType::House, 20.0f, -4.5f, 5, 2, Terrain::House, 0.85f, 0, engine::HouseLook::Factory);
-        put(StructureType::House, 27.0f, -4.5f, 4, 2, Terrain::House, 0.85f, 0);
-        put(StructureType::Elevator, 33.0f, -4.5f, 3, 2, Terrain::Elevator, 0.85f, 0);
-        put(StructureType::GasStation, 38.0f, -4.0f, 2, 2, Terrain::GasStation, 0.85f, 0);
+        // Burnt out, in a row of their own (ruins_burnt: the camera on it).
+        put(StructureType::House, 20.0f, 10.0f, 5, 2, Terrain::House, 0.85f, {}, engine::HouseLook::Factory);
+        put(StructureType::House, 27.0f, 10.0f, 4, 2, Terrain::House, 0.85f, {});
+        put(StructureType::Elevator, 33.0f, 10.0f, 3, 2, Terrain::Elevator, 0.85f, {});
+        put(StructureType::GasStation, 38.0f, 10.0f, 2, 2, Terrain::GasStation, 0.85f, {});
         // Rubble: each kind brought down (it comes down on the first step).
-        put(StructureType::Apartment, 8.0f, 2.0f, 4, 2, Terrain::Apartment, 1.0f, 0);
-        put(StructureType::Apartment, 8.0f, 5.0f, 4, 2, Terrain::Apartment, 1.0f, 0);
-        for (int i = 0; i < 3; ++i) put(StructureType::House, 15.0f + 1.5f * static_cast<float>(i), 2.0f, 1, 1, Terrain::House, 1.0f, 0);
-        put(StructureType::House, 20.0f, 2.0f, 5, 2, Terrain::House, 1.0f, 0, engine::HouseLook::Factory);
-        put(StructureType::House, 27.0f, 2.0f, 4, 2, Terrain::House, 1.0f, 0);
-        put(StructureType::Elevator, 33.0f, 2.0f, 3, 2, Terrain::Elevator, 1.0f, 0);
-        put(StructureType::GasStation, 38.0f, 2.0f, 2, 2, Terrain::GasStation, 1.0f, 0);
-        put(StructureType::CellTower, 15.0f, 5.0f, 1, 1, Terrain::Tower, 1.0f, 0);
-        put(StructureType::InfantryBarracks, 20.0f, 6.0f, 3, 3, Terrain::Building, 1.0f, 0);
-        put(StructureType::ArmorBarracks, 26.0f, 6.0f, 4, 4, Terrain::Building, 1.0f, 0);
+        put(StructureType::Apartment, 8.0f, 2.0f, 4, 2, Terrain::Apartment, 1.0f, {});
+        put(StructureType::Apartment, 8.0f, 5.0f, 4, 2, Terrain::Apartment, 1.0f, {});
+        for (int i = 0; i < 3; ++i) put(StructureType::House, 15.0f + 1.5f * static_cast<float>(i), 2.0f, 1, 1, Terrain::House, 1.0f, {});
+        put(StructureType::House, 20.0f, 2.0f, 5, 2, Terrain::House, 1.0f, {}, engine::HouseLook::Factory);
+        put(StructureType::House, 27.0f, 2.0f, 4, 2, Terrain::House, 1.0f, {});
+        put(StructureType::Elevator, 33.0f, 2.0f, 3, 2, Terrain::Elevator, 1.0f, {});
+        put(StructureType::GasStation, 38.0f, 2.0f, 2, 2, Terrain::GasStation, 1.0f, {});
+        put(StructureType::CellTower, 15.0f, 5.0f, 1, 1, Terrain::Tower, 1.0f, {});
+        put(StructureType::InfantryBarracks, 20.0f, 6.0f, 3, 3, Terrain::Building, 1.0f, {});
+        put(StructureType::ArmorBarracks, 26.0f, 6.0f, 4, 4, Terrain::Building, 1.0f, {});
         // (ruins_rubble: the camera on the rubble; ruins_bombed: on the blocks bombed)
         return render::to_vector2(options.scene == "ruins_rubble"   ? ahead(14.0f, 4.0f)
-                                  : options.scene == "ruins_bombed" ? ahead(35.0f, -8.0f)
+                                  : options.scene == "ruins_bombed" ? ahead(38.0f, -8.0f)
+                                  : options.scene == "ruins_burnt"  ? ahead(29.0f, 9.0f)
                                                                     : ahead(22.0f, -7.0f));
     }
 

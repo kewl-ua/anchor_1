@@ -3822,9 +3822,10 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     const float kf = long_front ? 0.74f : 1.0f;  // how lit the long front is
     const float ks = long_front ? 1.0f : 0.74f;
     const float px = facade.px();
-    // Its bays; the entrances every few; the sections bombs brought down (each an entrance's).
+    // Its bays; the entrances every few; the sections bombs brought down (each
+    // an entrance's, the one where the bomb fell; one at least left standing).
     const int bays = std::max(4, static_cast<int>(facade.pixels() / 11.0f));
-    const int entrances = std::max(2, bays / 6);
+    const int entrances = std::max(2, bays / 3);
     auto entrance_at = [&](int b) {
         for (int e = 0; e < entrances; ++e) {
             if (b == static_cast<int>((static_cast<float>(e) + 0.5f) * static_cast<float>(bays) / static_cast<float>(entrances))) return true;
@@ -3834,9 +3835,10 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
     std::vector<bool> gone(static_cast<size_t>(bays), false);
     std::vector<std::pair<int, int>> gaps;
     if (long_front) {
-        for (int k = 0; k < std::min<int>(s.bombed, entrances - 1); ++k) {
-            int sec = static_cast<int>((h >> (5 + 3 * k)) % static_cast<uint32_t>(entrances));
-            while (std::any_of(gaps.begin(), gaps.end(), [&](auto g) { return g.first == sec * bays / entrances; })) sec = (sec + 1) % entrances;
+        for (int k = 0; k < s.bombed && static_cast<int>(gaps.size()) < entrances - 1; ++k) {
+            // Where it fell along the block (from its x0 end; the facade runs from the other).
+            const int sec = std::min(entrances - 1, (255 - static_cast<int>(s.bomb_at[static_cast<size_t>(k)])) * entrances / 256);
+            if (std::any_of(gaps.begin(), gaps.end(), [&](auto g) { return g.first == sec * bays / entrances; })) continue;  // the same one again
             const int b0 = sec * bays / entrances;
             const int b1 = (sec + 1) * bays / entrances;
             gaps.emplace_back(b0, b1);
@@ -3871,15 +3873,33 @@ void draw_apartment(const engine::TileMap& map, const engine::Structure& s, floa
         // The cut end of the section beside it (facing the light): the floors' slabs, the rooms between.
         if (b1 >= bays) continue;  // (at the far end: the cut faces away)
         const Face cut{on_terrain(map, {x_at(u1), r.y + r.height}), on_terrain(map, {x_at(u1), r.y})};
+        // Room by room across its depth (the partitions, a door through one), in the shadow of the floor
+        // over them; the floor's dark along the foot; a wardrobe, a sofa; the outer walls' ends at its edges.
+        const float cpx = cut.px();
+        static constexpr float kParts[4] = {0.0f, 0.34f, 0.68f, 1.0f};
         for (int fl = 0; fl < kFloors; ++fl) {
             const float v = kPlinth + kFloor * fl;
-            face_fill(cut, 0.0f, 1.0f, v + 1.5f, v + kFloor, shade(kRooms[(b1 + fl) % 5], 0.95f));
-            face_line(cut, 0.35f, v + 1.5f, 0.35f, v + kFloor, shade(concrete, 0.6f));  // a partition
-            face_fill(cut, 0.0f, 1.0f, v, v + 1.5f, shade(concrete, 1.05f));  // the slab's end
-            if (rand01(h, 20 + fl) < 0.4f) face_fill(cut, 0.5f, 0.7f, v + 1.5f, v + 5.0f, {110, 80, 60, 255});  // a wardrobe, a sofa
+            for (int part = 0; part < 3; ++part) {
+                const float a = kParts[part];
+                const float b = kParts[part + 1];
+                face_fill(cut, a, b, v + 1.5f, v + kFloor, shade(kRooms[(b1 + fl * 2 + part) % 5], 0.72f * soot));
+                face_fill(cut, a, b, v + kFloor - 2.0f, v + kFloor, shade(kRooms[(b1 + fl * 2 + part) % 5], 0.5f * soot));  // under the ceiling
+                face_fill(cut, a, b, v + 1.5f, v + 3.0f, shade({96, 80, 64, 255}, soot));  // the floor
+                if (rand01(h, 20 + fl * 3 + part) < 0.35f) {
+                    const float m = a + (b - a) * (0.2f + 0.5f * rand01(h, 40 + fl * 3 + part));
+                    face_fill(cut, m, m + 4.0f * cpx, v + 3.0f, v + 3.0f + 3.0f + 3.0f * rand01(h, 60 + fl), shade({110, 80, 60, 255}, soot));
+                }
+            }
+            for (int k = 1; k < 3; ++k) {  // the partitions, a door in one
+                face_fill(cut, kParts[k] - cpx, kParts[k] + cpx, v + 1.5f, v + kFloor, shade(concrete, 0.62f * soot));
+                if (rand01(h, 80 + fl * 2 + k) < 0.5f) face_fill(cut, kParts[k] - cpx, kParts[k] + cpx, v + 3.0f, v + 9.0f, {30, 26, 24, 255});
+            }
+            face_fill(cut, 0.0f, 1.0f, v, v + 1.5f, shade(concrete, 1.05f * soot));  // the slab's end
         }
-        face_fill(cut, 0.0f, 1.0f, 0.0f, kPlinth, shade(concrete, 0.8f));
-        face_fill(cut, 0.0f, 1.0f, kWall - 1.0f, kWall + 1.0f, shade(concrete, 1.1f));
+        for (const float e : {0.0f, 1.0f - 2.0f * cpx}) face_fill(cut, e, e + 2.0f * cpx, 0.0f, kWall, shade(wall, 0.9f));  // the outer walls' ends
+        face_fill(cut, 0.0f, 1.0f, 0.0f, kPlinth, shade(concrete, 0.8f * soot));
+        face_fill(cut, 0.0f, 1.0f, kWall - 1.0f, kWall + 1.0f, shade(concrete, 1.1f * soot));
+        if (stage >= 2) burnt(cut, 0.0f, 1.0f, kPlinth, kWall, stage == 2 ? 0.35f : 0.7f, h + static_cast<uint32_t>(b1));
         // Slabs hanging off the cut floors.
         for (int k = 0; k < 2; ++k) {
             const float v = kPlinth + kFloor * (1 + static_cast<int>(rand01(h, 30 + k) * 3.0f));
@@ -5267,6 +5287,45 @@ void wall_fragment(const Face& f, float u0, float u1, int floors, float floor_h,
     }
 }
 
+// A wall left standing seen from inside: the rooms' wallpaper and paint
+// floor by floor, the floors' slabs broken off along it, the partitions'
+// ends, the windows' openings with the sky through them; its top broken
+// off ragged; burnt.
+void inner_wall(const Face& f, float u0, float u1, int floors, float floor_h, float k, uint32_t seed) {
+    if (u1 <= u0) return;
+    static constexpr Color kRooms[5] = {{186, 204, 170, 255}, {214, 196, 150, 255}, {170, 190, 210, 255}, {214, 176, 170, 255}, {200, 196, 186, 255}};
+    const float px = f.px();
+    const float top = floor_h * static_cast<float>(floors);
+    std::vector<float> tops;
+    float v = top;
+    int i = 0;
+    for (float u = u0; u < u1; u += 3.0f * px, ++i) {  // its ragged top, a few pixels at a time
+        v = std::clamp(v + (rand01(seed, i) - 0.5f) * 10.0f, std::max(4.0f, top * 0.45f), top + 3.0f);
+        tops.push_back(v);
+        const float ue = std::min(u1, u + 3.0f * px);
+        const auto room = static_cast<uint32_t>((u - u0) / (12.0f * px));
+        for (int fl = 0; fl < floors; ++fl) {
+            const float a = floor_h * static_cast<float>(fl);
+            if (a >= v) break;
+            face_fill(f, u, ue, a, std::min(v, a + floor_h), shade(kRooms[(room + static_cast<uint32_t>(fl) * 3u + seed) % 5u], 0.7f * k));
+            if (fl > 0 && a + 1.5f <= v) face_fill(f, u, ue, a - 0.5f, a + 1.5f, shade({150, 146, 138, 255}, k));  // the slab's broken end
+        }
+        face_fill(f, u, ue, 0.0f, v, ColorAlpha({28, 24, 22, 255}, 0.35f));  // burnt
+    }
+    auto top_at = [&](float u) {
+        const auto n = static_cast<size_t>(std::clamp((u - u0) / (3.0f * px), 0.0f, static_cast<float>(tops.size() - 1)));
+        return tops[n];
+    };
+    for (float u = u0 + 12.0f * px; u < u1 - px; u += 12.0f * px) face_line(f, u, 0.0f, u, top_at(u) - 1.0f, shade({110, 106, 100, 255}, k));  // partitions
+    for (int fl = 0; fl < floors; ++fl) {  // the windows: the sky through them
+        const float a = floor_h * static_cast<float>(fl);
+        for (float u = u0 + 6.0f * px; u < u1 - 4.0f * px; u += 12.0f * px) {
+            if (std::min(top_at(u - 2.0f * px), top_at(u + 2.0f * px)) < a + 9.0f) continue;
+            face_fill(f, u - 2.0f * px, u + 2.0f * px, a + 3.0f, a + 8.0f, {150, 172, 190, 255});
+        }
+    }
+}
+
 // Charred beams, lying every which way.
 void beams(Vector2 at, int n, uint32_t seed) {
     for (int i = 0; i < n; ++i) {
@@ -5314,12 +5373,12 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
         DrawRectangleRec({std::round(p.x), std::round(p.y), 1.0f + static_cast<float>(i % 2), 1.0f},
                          lit(i % 3 == 0 ? Color{70, 62, 54, 255} : i % 3 == 1 ? concrete : Color{120, 104, 86, 255}));
     }
-    // What's next to it (rubble too): the pile runs on into it, and a wall's left standing more on an edge with none.
+    // What's next to it (rubble too): the pile runs on into it; an edge with none is the building's outer wall.
     auto same = [&](int dx, int dy) { return map.contains_tile(tx + dx, ty + dy) && map.terrain(tx + dx, ty + dy) == engine::Terrain::Ruins; };
     const std::array<bool, 4> open{!same(-1, 0), !same(1, 0), !same(0, -1), !same(0, 1)};
-    // The pile over the tile, `top` pixels at its highest: down to nothing at an edge with no rubble beyond.
-    auto height_of = [open, x, y](float top) {
-        return [open, x, y, top](Vector2 g) {
+    // The pile over the tile, `top` pixels at its highest: down to nothing at the edges `falls` says.
+    auto height_of = [x, y](std::array<bool, 4> falls, float top) {
+        return [falls, x, y, top](Vector2 g) {
             const float s = g.x - x;
             const float t = g.y - y;
             auto ramp = [](float d) {
@@ -5327,10 +5386,10 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
                 return k * k * (3.0f - 2.0f * k);
             };
             float f = 1.0f;
-            if (open[0]) f *= ramp(s);
-            if (open[1]) f *= ramp(1.0f - s);
-            if (open[2]) f *= ramp(t);
-            if (open[3]) f *= ramp(1.0f - t);
+            if (falls[0]) f *= ramp(s);
+            if (falls[1]) f *= ramp(1.0f - s);
+            if (falls[2]) f *= ramp(t);
+            if (falls[3]) f *= ramp(1.0f - t);
             return top * f * (0.45f + 0.55f * ruin_noise(g));
         };
     };
@@ -5346,20 +5405,41 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
             const bool brick = (tile_hash(tx / 4, ty / 2) & 1u) != 0;
             const Color wall = brick ? Color{176, 172, 164, 255} : Color{172, 166, 152, 255};
             const RubbleMix mix{concrete, brick ? Color{196, 194, 186, 255} : red_brick, 0.18f, true};
-            const auto height = height_of(18.0f + 10.0f * rand01(h, 6));
-            const float roll = rand01(h, 1);
-            if (roll < 0.5f) {  // a wall standing up out of it: along the tile, or across it
-                const int floors = 2 + static_cast<int>(rand01(h, 2) * 3.5f);
-                const bool along = open[3] || rand01(h, 3) < 0.5f;
-                const float at = 0.35f + 0.3f * rand01(h, 7);
-                const Face f = along ? Face{on_terrain(map, {x + 1.0f, y + at}), on_terrain(map, {x, y + at})}
-                                     : Face{on_terrain(map, {x + at, y}), on_terrain(map, {x + at, y + 1.0f})};
-                pile_around(height, mix, 10, [=](Vector2 g) { return along ? g.y < y + at : g.x < x + at; }, [&] {
-                    wall_fragment(f, 0.05f + 0.2f * rand01(h, 4), 0.95f - 0.2f * rand01(h, 5), floors, 11.0f, shade(wall, along ? 0.74f : 1.0f), brick, h);
+            // A wall left standing where the block's own walls were, on an
+            // outer edge of the rubble: on the near ones (the front, the lit
+            // end) its outside, its windows empty, the heap low behind it; on
+            // the far ones its inside, the rooms' colours floor by floor, the
+            // heap against it.
+            int edge = -1;  // -x, +x, -y, +y
+            if (rand01(h, 1) < 0.6f) {
+                const int first = static_cast<int>(rand01(h, 8) * 4.0f);
+                for (int k = 0; k < 4 && edge < 0; ++k) {
+                    if (open[static_cast<size_t>((first + k) % 4)]) edge = (first + k) % 4;
+                }
+            }
+            std::array<bool, 4> falls = open;
+            if (edge == 0 || edge == 2) falls[static_cast<size_t>(edge)] = false;  // heaped against a far one; low behind a near one
+            const auto height = height_of(falls, 18.0f + 10.0f * rand01(h, 6));
+            if (edge >= 0) {
+                const bool far = edge == 0 || edge == 2;
+                const bool along_x = edge >= 2;  // on a -y or +y edge: running along x
+                const float at = far ? 0.06f : 0.94f;
+                const Face f = along_x ? Face{on_terrain(map, {x + 1.0f, y + at}), on_terrain(map, {x, y + at})}
+                                       : Face{on_terrain(map, {x + at, y}), on_terrain(map, {x + at, y + 1.0f})};
+                const float u0 = rand01(h, 4) < 0.5f ? 0.0f : 0.3f * rand01(h, 9);  // on to the next tile's, or broken off
+                const float u1 = rand01(h, 5) < 0.5f ? 1.0f : 1.0f - 0.3f * rand01(h, 10);
+                const int floors = far ? 2 + static_cast<int>(rand01(h, 2) * 3.5f) : 2 + static_cast<int>(rand01(h, 2) * 2.5f);
+                const float k = along_x ? 0.74f : 1.0f;
+                pile_around(height, mix, 10, [=](Vector2 g) { return along_x ? g.y < y + at : g.x < x + at; }, [&] {
+                    if (far) {
+                        inner_wall(f, u0, u1, floors, 11.0f, k, h);
+                    } else {
+                        wall_fragment(f, u0, u1, floors, 11.0f, shade(wall, k), brick, h);
+                    }
                 });
             } else {
                 rubble_pile(map, {x, y}, {1.0f, 1.0f}, height, mix, h, 10);
-                if (roll < 0.72f) {  // a floor slab leaning on the heap
+                if (rand01(h, 3) < 0.45f) {  // a floor slab leaning on the heap
                     const Vector2 a{mid.x - 13.0f, mid.y - 10.0f};
                     fill_quad(a, {a.x + 24.0f, a.y - 12.0f}, {a.x + 26.0f, a.y - 8.0f}, {a.x + 2.0f, a.y + 4.0f}, shade(concrete, 1.05f));
                     DrawLineV({a.x + 2.0f, a.y + 4.0f}, {a.x + 26.0f, a.y - 8.0f}, lit(shade(concrete, 0.6f)));
@@ -5371,7 +5451,7 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
         case engine::RuinKind::House: {
             const Color white{214, 212, 202, 255};
             const RubbleMix mix{{190, 182, 168, 255}, red_brick, 0.45f, false};
-            const auto height = height_of(8.0f + 5.0f * rand01(h, 2));
+            const auto height = height_of(open, 8.0f + 5.0f * rand01(h, 2));
             const float top = 8.0f;
             auto corner = [&] {
                 if (rand01(h, 1) >= 0.4f) return;  // a corner of its walls left
@@ -5419,7 +5499,7 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
                     burnt(f, 0.0f, 1.0f, 0.0f, 9.0f, 0.4f, h);
                 }
             };
-            pile_around(height_of(6.0f), mix, 2, [=](Vector2 g) { return g.x < x + 0.9f && g.y < y + 0.9f; }, walls);
+            pile_around(height_of(open, 6.0f), mix, 2, [=](Vector2 g) { return g.x < x + 0.9f && g.y < y + 0.9f; }, walls);
             sheets({mid.x, mid.y - 5.0f}, 4, {122, 126, 130, 255}, h);
             beams({mid.x, mid.y - 4.0f}, 2, h + 1);
             break;
@@ -5438,7 +5518,7 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
                     }
                 }
             };
-            pile_around(height_of(5.0f), mix, 2, [=](Vector2 g) { return g.y < y + 0.9f; }, standing);
+            pile_around(height_of(open, 5.0f), mix, 2, [=](Vector2 g) { return g.y < y + 0.9f; }, standing);
             sheets({mid.x, mid.y - 3.0f}, 5, iron, h);
             sheets({mid.x + 4.0f, mid.y - 1.0f}, 2, {120, 122, 122, 255}, h + 3);
             if (rand01(h, 1) < 0.6f) {  // a post standing, a bit of the truss bent off it
@@ -5470,13 +5550,13 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
                 }
                 burnt(Face{{foot.x - kRadius, foot.y}, {foot.x + kRadius, foot.y}}, 0.0f, 1.0f, 0.0f, tall, 0.5f, h);
             };
-            pile_around(height_of(9.0f), mix, 4, [=](Vector2 g) { return g.x + g.y < x + y + 1.0f; }, silo);
+            pile_around(height_of(open, 9.0f), mix, 4, [=](Vector2 g) { return g.x + g.y < x + y + 1.0f; }, silo);
             DrawEllipse(static_cast<int>(mid.x - 8.0f), static_cast<int>(mid.y + 6.0f), 12.0f, 4.0f, lit({196, 170, 96, 255}));  // the grain spilt
             DrawEllipse(static_cast<int>(mid.x - 9.0f), static_cast<int>(mid.y + 5.0f), 8.0f, 2.5f, lit({214, 190, 112, 255}));
             break;
         }
         case engine::RuinKind::GasStation: {
-            rubble_pile(map, {x, y}, {1.0f, 1.0f}, height_of(3.0f), {{160, 156, 148, 255}, {200, 60, 50, 255}, 0.08f, false}, h, 2);
+            rubble_pile(map, {x, y}, {1.0f, 1.0f}, height_of(open, 3.0f), {{160, 156, 148, 255}, {200, 60, 50, 255}, 0.08f, false}, h, 2);
             const Vector2 a = on_terrain(map, {x + 0.1f, y + 0.3f}, 12.0f);
             const Vector2 b = on_terrain(map, {x + 0.9f, y + 0.3f}, 2.0f);
             const Vector2 c = on_terrain(map, {x + 0.9f, y + 0.8f}, 1.0f);
@@ -5497,7 +5577,7 @@ void draw_ruin_tile(const engine::TileMap& map, int tx, int ty) {
             break;
         }
         case engine::RuinKind::Base: {
-            rubble_pile(map, {x, y}, {1.0f, 1.0f}, height_of(5.0f), {{150, 132, 96, 255}, {110, 90, 70, 255}, 0.3f, false}, h, 2);
+            rubble_pile(map, {x, y}, {1.0f, 1.0f}, height_of(open, 5.0f), {{150, 132, 96, 255}, {110, 90, 70, 255}, 0.3f, false}, h, 2);
             beams({mid.x, mid.y - 4.0f}, 4, h);
             sheets({mid.x, mid.y - 4.0f}, 2, {120, 128, 110, 255}, h);
             for (int i = 0; i < 6; ++i) {  // sandbags scattered

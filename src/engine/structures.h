@@ -158,9 +158,11 @@ struct Structure {
 
     // How a house is drawn (it plays the same): a cottage, a cowshed, a coop.
     HouseLook look = HouseLook::House;
-    // Bombs from the air that hit it (up to 3): a block of flats has a
-    // section brought down by each (how it looks, nothing else).
+    // Bombs from the air that hit it (up to 3), and where along its long
+    // side each fell (0 at its x0 or y0 end, 255 at the other): a block of
+    // flats has the section there brought down (how it looks, nothing else).
     uint8_t bombed = 0;
+    std::array<uint8_t, 3> bomb_at{};
 
     // Where the units it hires go (AoE's rally point): rear troops to work
     // if it's on the wood or the stone, trucks to collect there.
