@@ -4427,6 +4427,28 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
 // armour boxes forward, the sloped glacis with its rows of ERA bricks and
 // the splash guard, the engine deck's grilles, two fuel drums across the
 // back, headlights. `frame` moves the track links on.
+// A road wheel standing along the hull at (a, c), `r` pixels high: the
+// rubber tyre, the dished face in shadow at its rim, the hub lit, its cap.
+void road_wheel(const Frame& fr, float a, float c, float r, Color face) {
+    constexpr int kPoints = 14;
+    const float ra = r / 32.0f;
+    const Vector2 mid = fr.at(a, c, r);
+    auto ring = [&](float k, Color color) {
+        Vector2 prev{};
+        for (int i = 0; i <= kPoints; ++i) {
+            const float t = static_cast<float>(i) * 6.2831853f / kPoints;
+            const Vector2 p = fr.at(a + std::cos(t) * ra * k, c, r + std::sin(t) * r * k);
+            if (i > 0) fill_triangle(mid, prev, p, color);
+            prev = p;
+        }
+    };
+    ring(1.0f, {26, 26, 24, 255});
+    ring(0.78f, shade(face, 0.62f));
+    ring(0.62f, face);
+    ring(0.34f, shade(face, 1.4f));
+    ring(0.14f, shade(face, 0.5f));
+}
+
 void draw_tank_hull(const Frame& fr, Color paint, int frame) {
     const Color rubber{30, 30, 27, 255};
     const Color steel{64, 66, 58, 255};
@@ -4445,8 +4467,11 @@ void draw_tank_hull(const Frame& fr, Color paint, int frame) {
         const float z = kTankDeck - 1.4f - 2.2f * static_cast<float>(row);
         for (int k = 0; k < 5; ++k) {
             const float c = -0.16f + 0.08f * static_cast<float>(k);
-            fill_quad(fr.at(a, c, z), fr.at(a, c + 0.065f, z), fr.at(a + 0.05f, c + 0.065f, z - 1.6f), fr.at(a + 0.05f, c, z - 1.6f),
-                      shade(paint, 0.9f + 0.08f * static_cast<float>((k + row) % 2)));
+            const Color brick = shade(paint, 0.95f + 0.1f * static_cast<float>((k + row) % 2));
+            fill_quad(fr.at(a, c, z + 0.8f), fr.at(a, c + 0.065f, z + 0.8f), fr.at(a + 0.05f, c + 0.065f, z - 0.8f),
+                      fr.at(a + 0.05f, c, z - 0.8f), brick);
+            DrawLineV(fr.at(a, c, z + 0.8f), fr.at(a, c + 0.065f, z + 0.8f), lit(shade(brick, 1.4f)));  // its top edge in the light
+            DrawLineV(fr.at(a + 0.05f, c, z - 0.8f), fr.at(a + 0.05f, c + 0.065f, z - 0.8f), lit(shade(brick, 0.5f)));
         }
     }
     DrawLineV(fr.at(0.36f, -0.2f, kTankDeck), fr.at(0.44f, 0.0f, kTankDeck - 1.5f), lit(shade(paint, 0.7f)));
@@ -4471,21 +4496,28 @@ void draw_tank_hull(const Frame& fr, Color paint, int frame) {
     // The near track: the sprocket, the idler, six road wheels, the links along the top.
     const float c = near * 0.29f;
     side_block(near, -0.5f, 0.48f, 0.18f, 0.29f, 0.0f, 5.5f, rubber, 0.03f);
-    wheel(fr, -0.45f, c, 2.3f, steel, {48, 48, 44, 255});
-    wheel(fr, 0.43f, c, 2.1f, steel, {48, 48, 44, 255});
-    for (int i = 0; i < 6; ++i) wheel(fr, -0.35f + 0.135f * static_cast<float>(i), c, 2.7f, {58, 60, 52, 255}, wheel_hub);
+    // The links along the ground run, moving as it drives.
+    for (float a = -0.47f + 0.03f * static_cast<float>(frame); a < 0.46f; a += 0.06f) {
+        DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.4f), lit({58, 58, 52, 255}));
+    }
+    road_wheel(fr, -0.45f, c + near * 0.004f, 2.4f, steel);   // the drive sprocket
+    road_wheel(fr, 0.43f, c + near * 0.004f, 2.2f, steel);    // the idler
+    for (int i = 0; i < 6; ++i) road_wheel(fr, -0.345f + 0.132f * static_cast<float>(i), c + near * 0.008f, 3.0f, {74, 76, 64, 255});
     for (float a = -0.46f + 0.04f * static_cast<float>(frame); a < 0.46f; a += 0.08f) {
         DrawLineV(fr.at(a, near * 0.19f, 5.5f), fr.at(a, near * 0.29f, 5.5f), lit({26, 26, 24, 255}));
     }
-    // The side skirt over the upper run, its panels, the ERA boxes forward of it.
-    side_block(near, -0.44f, 0.2f, 0.2f, 0.3f, 4.0f, 6.5f, shade(paint, 0.85f));
-    for (int k = 1; k < 6; ++k) {
-        const float a = -0.44f + 0.64f * static_cast<float>(k) / 6.0f;
-        DrawLineV(fr.at(a, c + near * 0.01f, 4.0f), fr.at(a, c + near * 0.01f, 6.5f), lit(shade(paint, 0.6f)));
+    // The side skirt over the upper run: plates each standing a little
+    // proud of the next, the ERA boxes forward of them, bolted on.
+    for (int k = 0; k < 5; ++k) {
+        const float a0 = -0.44f + 0.128f * static_cast<float>(k);
+        side_block(near, a0 + 0.004f, a0 + 0.124f, 0.2f, 0.3f + 0.006f * static_cast<float>(k % 2), 4.0f, 6.6f,
+                   shade(paint, 0.84f + 0.05f * static_cast<float>(k % 2)));
     }
     for (int k = 0; k < 3; ++k) {
         const float a = 0.2f + 0.085f * static_cast<float>(k);
-        side_block(near, a, a + 0.08f, 0.2f, 0.31f, 3.5f, 7.0f, shade(paint, 0.95f + 0.07f * static_cast<float>(k % 2)));
+        side_block(near, a, a + 0.078f, 0.2f, 0.32f, 3.4f, 7.2f, shade(paint, 0.96f + 0.08f * static_cast<float>(k % 2)));
+        disc(fr.at(a + 0.02f, near * 0.322f, 6.4f), 0.5f, shade(paint, 1.5f));  // the bolts
+        disc(fr.at(a + 0.058f, near * 0.322f, 4.2f), 0.5f, shade(paint, 0.5f));
     }
 }
 
@@ -4528,7 +4560,14 @@ void draw_tank_turret(const Frame& tf, Color paint, Color team) {
             const Vector2 top_r[4] = {top[3], top[2], top[1], top[0]};
             solid(tf, base_r, top_r, 4, z0 + 1.2f, z0 + 4.6f, shade(paint, 1.04f));
         }
-        DrawLineV(tf.at(0.16f, sgn * 0.08f, z0 + 4.6f), tf.at(0.07f, sgn * 0.12f, z0 + 4.6f), lit(shade(paint, 0.7f)));
+        // The bricks under the cover, in chevrons: a lit ridge, a dark groove behind it.
+        for (int k = 0; k < 3; ++k) {
+            const float d = 0.035f * static_cast<float>(k);
+            DrawLineV(tf.at(0.17f - d, sgn * 0.04f, z0 + 4.6f), tf.at(0.11f - d, sgn * 0.16f, z0 + 4.6f), lit(shade(paint, 1.45f)));
+            DrawLineV(tf.at(0.155f - d, sgn * 0.04f, z0 + 4.6f), tf.at(0.095f - d, sgn * 0.16f, z0 + 4.6f), lit(shade(paint, 0.55f)));
+        }
+        // A stowage box on the turret's side, towards the back.
+        block(tf, -0.17f, -0.05f, sgn > 0 ? 0.15f : -0.2f, sgn > 0 ? 0.2f : -0.15f, z0 + 1.0f, z0 + 3.6f, shade(paint, 0.9f));
         for (int k = 0; k < 3; ++k) {  // smoke grenade launchers
             disc(tf.at(0.02f - 0.03f * static_cast<float>(k), sgn * 0.19f, z0 + 3.2f), 0.9f, {50, 52, 44, 255});
         }
@@ -4583,6 +4622,16 @@ void pixelate(Image& img, const std::vector<Color>& palette) {
             }
             if (at(x, y - 1).a == 0) {  // the light catching a top edge
                 out[y * w + x] = shade(c, 1.32f);
+                continue;
+            }
+            // A part's top edge under a darker one (two pixels of it, not a
+            // seam), the part going on below: it catches the light.
+            const Color up = at(x, y - 1);
+            const Color up2 = at(x, y - 2);
+            const Color below = at(x, y + 1);
+            if (up.a && up2.a && below.a && lum(c) - lum(up) > 34.0f && lum(c) - lum(up2) > 34.0f &&
+                std::fabs(lum(below) - lum(c)) < 14.0f) {
+                out[y * w + x] = shade(c, 1.18f);
                 continue;
             }
             const Color r = at(x + 1, y);
