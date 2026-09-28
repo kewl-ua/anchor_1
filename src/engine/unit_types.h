@@ -163,6 +163,33 @@ struct AbilityDef {
 
 const AbilityDef& ability_def(AbilityId id);
 
+// Which real tank a tank is: its look, drawn by the renderer. The axes'
+// own lines: the Democratic axis (NATO with Ukraine, Japan, Korea, Israel),
+// the Authoritarian one (BRICS with Iran). Standard: not a tank.
+enum class TankModel : uint8_t {
+    Standard,
+    T64BV,       // Ukraine
+    T64BM,       // Ukraine: Bulat
+    Leopard1A5,  // Germany
+    Leopard2A6,  // Germany
+    M1A1,        // USA
+    Type10,      // Japan
+    K2,          // Korea: Black Panther
+    Merkava4,    // Israel
+    T62M,        // Russia
+    T72B3,       // Russia
+    T80BVM,      // Russia
+    T90M,        // Russia: Proryv
+    Type99A,     // China
+    Karrar,      // Iran
+    Count,
+};
+
+// The two sides: the first player is always the Democratic axis, the second
+// the Authoritarian one. Each has its own tanks.
+enum class Axis : uint8_t { Democratic, Authoritarian };
+inline Axis axis_of(PlayerId player) { return player % 2 == 0 ? Axis::Democratic : Axis::Authoritarian; }
+
 struct UnitTypeDef {
     const char* name;
     const char* short_name;  // for compact UI
@@ -213,28 +240,19 @@ struct UnitTypeDef {
     bool aircraft = false;
     // Air defence radar, set up and on the air: sees enemy aircraft this far off.
     Fixed radar_range{};
-};
-
-// Which real tank a tank is drawn as: the alliances' own lines (NATO with
-// Ukraine, Japan, Korea and Israel; BRICS with Iran). Cosmetic for now, until
-// the lines become units of their own; Standard is its side's usual tank.
-enum class TankModel : uint8_t {
-    Standard,
-    T64BV,       // Ukraine
-    T64BM,       // Ukraine: Bulat
-    Leopard1A5,  // Germany
-    Leopard2A6,  // Germany
-    M1A1,        // USA
-    Type10,      // Japan
-    K2,          // Korea: Black Panther
-    Merkava4,    // Israel
-    T62M,        // Russia
-    T72B3,       // Russia
-    T80BVM,      // Russia
-    T90M,        // Russia: Proryv
-    Type99A,     // China
-    Karrar,      // Iran
-    Count,
+    // Tanks, each a real one. What sets them apart besides speed, gun, price
+    // and fuel: of an anti-tank hit from the front, what the armor there lets
+    // through (percent); on soft ground (plough, crops, bog, craters, a dry
+    // riverbed) how much of the speed lost there it loses (percent: under 100
+    // it copes better); the chance its crew gets out when it's knocked out
+    // (the men come back); how far along the reactive armor line it can go
+    // (0: none bolted on); how it's drawn.
+    bool tank = false;
+    int32_t front_percent = 100;
+    int32_t soft_ground_percent = 100;
+    int32_t crew_survives_percent = 0;
+    int32_t era_max = 0;
+    TankModel model = TankModel::Standard;
 };
 
 enum class UnitTypeId : uint8_t {
@@ -262,6 +280,20 @@ enum class UnitTypeId : uint8_t {
     Manpads,     // MANPADS crew (Igla): missiles at aircraft, nothing else
     Shilka,      // ZSU-23-4 self-propelled AA guns: aircraft first, infantry too
     AirRadar,    // air defence radar: sees enemy aircraft far out
+    // The tanks of the axes (Tank above is the T-72B3).
+    T64BV,
+    T64BM,
+    Leopard1A5,
+    Leopard2A6,
+    M1A1,
+    Type10,
+    K2,
+    Merkava4,
+    T62M,
+    T80BVM,
+    T90M,
+    Type99A,
+    Karrar,
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

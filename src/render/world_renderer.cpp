@@ -4143,7 +4143,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         hull_dir = l > 0.0f ? Vector2{hull_dir.x / l, hull_dir.y / l} : facing;
     }
     const UnitTypeId type = u.type;
-    const bool tracked = type == UnitTypeId::Tank || type == UnitTypeId::Ifv || type == UnitTypeId::Spg || type == UnitTypeId::Shilka;
+    const bool tracked = engine::unit_type(type).tank || type == UnitTypeId::Ifv || type == UnitTypeId::Spg || type == UnitTypeId::Shilka;
     const bool gun_leads = type == UnitTypeId::Howitzer;  // no hull apart from the gun
     const Frame fr = make_frame(map, ground, tracked || gun_leads ? hull_dir : facing);
     const Color team = theme::player_color(u.owner);
@@ -4160,7 +4160,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     };
 
-    if (type == UnitTypeId::Tank) {
+    if (engine::unit_type(type).tank) {
         const engine::TankModel model = model_of(u);
         const int variant = static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()];
         const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, variant, u.owner);
@@ -4173,7 +4173,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         }
     }
     if (tracked) {
-        const bool tank = type == UnitTypeId::Tank;
+        const bool tank = engine::unit_type(type).tank;
         const bool ifv = type == UnitTypeId::Ifv;
         const float track_h = ifv ? 4.5f : 5.0f;
         const int wheels = ifv ? 6 : type == UnitTypeId::Spg ? 7 : 6;
@@ -4580,12 +4580,8 @@ constexpr TankLook kTankLooks[] = {
 };
 static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::TankModel::Count));
 
-// The model a tank is drawn as: its own, or its side's usual one (NATO's
-// T-64BV for the first player, BRICS's T-72B3 for the second).
-engine::TankModel model_of(const engine::Unit& u) {
-    if (u.model != engine::TankModel::Standard) return u.model;
-    return u.owner % 2 == 0 ? engine::TankModel::T64BV : engine::TankModel::T72B3;
-}
+// The real tank a tank unit is.
+engine::TankModel model_of(const engine::Unit& u) { return engine::unit_type(u.type).model; }
 const TankLook& look_of(engine::TankModel m) { return kTankLooks[static_cast<size_t>(m)]; }
 float turret_ring_of(engine::TankModel m) { return look_of(m).turret_at; }
 
@@ -5062,7 +5058,7 @@ const char* dump_dir() {
 void WorldRenderer::bake_sprites(const engine::World& world) const {
     std::vector<engine::PlayerId> owners;
     for (const engine::Unit& u : world.units()) {
-        if (u.type != engine::UnitTypeId::Tank) continue;
+        if (!engine::unit_type(u.type).tank) continue;
         if (std::find(owners.begin(), owners.end(), u.owner) == owners.end()) owners.push_back(u.owner);
     }
     for (size_t p = 0; p < world_era_.size(); ++p) world_era_[p] = world.era_level(static_cast<engine::PlayerId>(p));
@@ -5073,7 +5069,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
     };
     std::vector<Wanted> wanted;
     for (const engine::Unit& u : world.units()) {
-        if (u.type != engine::UnitTypeId::Tank) continue;
+        if (!engine::unit_type(u.type).tank) continue;
         const Wanted w{u.owner, model_of(u), world_era_[u.owner % world_era_.size()]};
         if (dump_dir()) {  // every kind of armor, to look at
             for (int era = 0; era <= 3; ++era) wanted.push_back({w.owner, w.model, era});
@@ -5248,7 +5244,7 @@ void WorldRenderer::draw_shots(const engine::World& world, float alpha) const {
         const engine::UnitTypeDef& def = engine::unit_type(u.type);
         const Vector2 ground = unit_ground_pos(u, alpha);
         const Vector2 facing = unit_facing(u);
-        const float reach = def.vehicle ? (u.type == engine::UnitTypeId::Tank ? 0.75f : 0.5f) : 0.25f;
+        const float reach = def.vehicle ? (def.tank ? 0.75f : 0.5f) : 0.25f;
         const Vector2 muzzle = on_terrain(map, {ground.x + facing.x * reach, ground.y + facing.y * reach},
                                           def.vehicle ? 8.0f : 9.0f);
 

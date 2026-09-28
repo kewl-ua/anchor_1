@@ -238,9 +238,9 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         Vector2 sum{0, 0};
         for (const engine::Unit& u : world.units()) {
             if (u.owner != me) continue;
-            if (u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+            if (engine::unit_type(u.type).tank) tanks.push_back(u.id);
             if (u.type == engine::UnitTypeId::Ifv) ifvs.push_back(u.id);
-            if (u.type == engine::UnitTypeId::Tank || u.type == engine::UnitTypeId::Ifv) {
+            if (engine::unit_type(u.type).tank || u.type == engine::UnitTypeId::Ifv) {
                 sum.x += render::to_vector2(u.pos).x;
                 sum.y += render::to_vector2(u.pos).y;
             }
@@ -333,7 +333,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                     v->fuel = engine::Fixed::from_int(2);
                     if (u.type == engine::UnitTypeId::Ifv) v->rounds = 0;
                 }
-                if (u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;
+                if (engine::unit_type(u.type).tank && tank == 0) tank = u.id;
                 if (u.type == engine::UnitTypeId::Ifv && ifv == 0) ifv = u.id;
                 army.x += render::to_vector2(u.pos).x;
                 army.y += render::to_vector2(u.pos).y;
@@ -374,7 +374,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         game.submit({.type = engine::CommandType::AttackGround, .units = {spg}, .target = ahead(22.0f, -4.0f)});
         engine::EntityId tank = 0;
         for (const engine::Unit& u : world.units()) {
-            if (u.owner == me && u.type == engine::UnitTypeId::Tank && tank == 0) tank = u.id;
+            if (u.owner == me && engine::unit_type(u.type).tank && tank == 0) tank = u.id;
         }
         game.submit({.type = engine::CommandType::Observe, .units = {scout}, .target = ahead(25.0f, 0.0f)});
         game.submit({.type = engine::CommandType::AttackGround, .units = {howitzer}, .target = ahead(24.0f, 2.0f)});
@@ -401,8 +401,8 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     }
 
     if (options.scene == "tanks" && options.mode == Options::Mode::Offline) {
-        // Offline: every tank of both alliances ahead of the base, three-quarters
-        // on: NATO's in the front row, BRICS's behind.
+        // Offline: every tank of both axes ahead of the base, three-quarters on:
+        // the Democratic axis's in the front row, the Authoritarian one's behind.
         const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
         const float fwd = me == 0 ? 1.0f : -1.0f;
         const Vector2 b = render::to_vector2(base);
@@ -410,23 +410,21 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
         };
         engine::World& w = game.world_for_setup();
-        using engine::TankModel;
-        const TankModel nato[] = {TankModel::T64BV, TankModel::T64BM, TankModel::Leopard1A5, TankModel::Leopard2A6,
-                                  TankModel::M1A1, TankModel::Type10, TankModel::K2, TankModel::Merkava4};
-        const TankModel brics[] = {TankModel::T62M, TankModel::T72B3, TankModel::T80BVM, TankModel::T90M, TankModel::Type99A,
-                                   TankModel::Karrar};
-        auto row = [&](std::span<const TankModel> models, float d) {
-            for (size_t i = 0; i < models.size(); ++i) {
-                const engine::EntityId id =
-                    w.spawn_unit(me, engine::UnitTypeId::Tank, ahead(d, -7.0f + 2.0f * static_cast<float>(i)));
+        using engine::UnitTypeId;
+        const UnitTypeId democratic[] = {UnitTypeId::T64BV, UnitTypeId::T64BM, UnitTypeId::Leopard1A5, UnitTypeId::Leopard2A6,
+                                         UnitTypeId::M1A1,  UnitTypeId::Type10, UnitTypeId::K2,        UnitTypeId::Merkava4};
+        const UnitTypeId authoritarian[] = {UnitTypeId::T62M, UnitTypeId::Tank, UnitTypeId::T80BVM, UnitTypeId::T90M,
+                                            UnitTypeId::Type99A, UnitTypeId::Karrar};
+        auto row = [&](std::span<const UnitTypeId> types, float d) {
+            for (size_t i = 0; i < types.size(); ++i) {
+                const engine::EntityId id = w.spawn_unit(me, types[i], ahead(d, -7.0f + 2.0f * static_cast<float>(i)));
                 engine::Unit* u = w.unit_for_setup(id);
-                u->model = models[i];
                 u->facing = render::to_fixed_vec2({0.0f, -fwd});  // three-quarters on to the camera
                 u->hull = u->facing;
             }
         };
-        row(nato, 10.0f);
-        row(brics, 13.0f);
+        row(democratic, 10.0f);
+        row(authoritarian, 13.0f);
         return render::to_vector2(ahead(11.5f, 0.0f));
     }
 
@@ -560,7 +558,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         w.spawn_unit(enemy, engine::UnitTypeId::Tank, ahead(21.0f, 3.0f));
         std::vector<engine::EntityId> tanks;
         for (const engine::Unit& u : world.units()) {
-            if (u.owner == me && u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+            if (u.owner == me && engine::unit_type(u.type).tank) tanks.push_back(u.id);
         }
         if (tanks.empty()) return std::nullopt;
         game.submit({.type = engine::CommandType::Ability, .units = tanks,
@@ -621,7 +619,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         std::vector<engine::EntityId> riflemen;
         for (const engine::Unit& u : world.units()) {
             if (u.owner != me) continue;
-            if (u.type == engine::UnitTypeId::Tank) tanks.push_back(u.id);
+            if (engine::unit_type(u.type).tank) tanks.push_back(u.id);
             if (u.type == engine::UnitTypeId::Rifleman && riflemen.size() < 4) riflemen.push_back(u.id);
         }
         for (size_t i = 0; i < tanks.size(); ++i) {
@@ -647,6 +645,16 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
                              .unit_type = static_cast<uint8_t>(engine::UnitTypeId::Worker)});
             }
         }
+        return render::to_vector2(base);
+    }
+
+    if (options.scene == "armory" || options.scene == "armory_tanks") {
+        // An armor barracks by the headquarters, its card on the command
+        // panel: the axis's tanks in their section, the upgrades.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const engine::TilePos b = engine::tile_of(base);
+        const int32_t fwd = me == 0 ? 1 : -1;
+        game.world_for_setup().place_structure(engine::StructureType::ArmorBarracks, me, {b.x + 5 * fwd, b.y - 7 * fwd}, 3, 3);
         return render::to_vector2(base);
     }
 
@@ -698,7 +706,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
     engine::Command shell{.type = engine::CommandType::AttackGround, .target = houses[1]->center};
     for (const engine::Unit& u : world.units()) {
         if (u.owner != me) continue;
-        if (u.type == engine::UnitTypeId::Tank) {
+        if (engine::unit_type(u.type).tank) {
             shell.units.push_back(u.id);
         } else if (!engine::unit_type(u.type).vehicle && !engine::unit_type(u.type).worker) {
             move_in.units.push_back(u.id);
@@ -859,15 +867,17 @@ int main(int argc, char** argv) {
             }
             game->update(GetFrameTime());
             if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally" ||
-                          options->scene == "rear")) {
+                          options->scene == "rear" || options->scene == "armory" || options->scene == "armory_tanks")) {
                 // Show the barracks', the station's, the headquarters' or the hospital's card on the command panel.
                 const engine::StructureType shown = options->scene == "build"       ? engine::StructureType::InfantryBarracks
                                                     : options->scene == "logistics" ? engine::StructureType::Station
                                                     : options->scene == "rear"      ? engine::StructureType::Hospital
+                                                    : options->scene.starts_with("armory") ? engine::StructureType::ArmorBarracks
                                                                                     : engine::StructureType::Headquarters;
                 for (const engine::Structure& s : game->world().structures()) {
                     if (s.type == shown && s.owner == game->local_player()) game->select_structure(s.id);
                 }
+                if (options->scene == "armory_tanks") game->open_section();
             }
             if (smoke && smoke_look) {
                 if (options->zoom) game->set_camera_zoom(*options->zoom);

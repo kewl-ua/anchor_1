@@ -358,7 +358,8 @@ void spawn_army(World& world, PlayerId owner, int32_t cx, int32_t cy) {
     spawn_squad(world, owner, cx, cy, UnitTypeId::Rifleman, 6);
     spawn_squad(world, owner, cx, cy, UnitTypeId::MachineGunner, 2);
     spawn_squad(world, owner, cx, cy, UnitTypeId::Grenadier, 2);
-    spawn_squad(world, owner, cx, cy, UnitTypeId::Tank, 2);
+    // Each axis's usual tank: the Democratic one's T-64BVs, the Authoritarian one's T-72B3s.
+    spawn_squad(world, owner, cx, cy, axis_of(owner) == Axis::Democratic ? UnitTypeId::T64BV : UnitTypeId::Tank, 2);
     spawn_squad(world, owner, cx, cy, UnitTypeId::Ifv, 1);
     spawn_squad(world, owner, cx, cy, UnitTypeId::Scout, 2);
 }

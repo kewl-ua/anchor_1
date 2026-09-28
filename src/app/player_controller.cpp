@@ -1,6 +1,7 @@
 #include "app/player_controller.h"
 
 #include <algorithm>
+#include <span>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -38,6 +39,7 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         placing_.reset();
         build_menu_ = false;
         convert_menu_ = false;
+        section_ = 0;
     }
     if (selection_.empty()) targeting_ = Targeting::None;
     if (!has_workers(world)) {
@@ -313,7 +315,20 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Rifleman: return "Rifleman";
         case engine::UnitTypeId::MachineGunner: return "MG crew";
         case engine::UnitTypeId::Grenadier: return "RPG";
-        case engine::UnitTypeId::Tank: return "Tank";
+        case engine::UnitTypeId::Tank: return "T-72B3";
+        case engine::UnitTypeId::T64BV: return "T-64BV";
+        case engine::UnitTypeId::T64BM: return "Bulat";
+        case engine::UnitTypeId::Leopard1A5: return "Leo 1A5";
+        case engine::UnitTypeId::Leopard2A6: return "Leo 2A6";
+        case engine::UnitTypeId::M1A1: return "Abrams";
+        case engine::UnitTypeId::Type10: return "Type 10";
+        case engine::UnitTypeId::K2: return "K2";
+        case engine::UnitTypeId::Merkava4: return "Merkava";
+        case engine::UnitTypeId::T62M: return "T-62M";
+        case engine::UnitTypeId::T80BVM: return "T-80BVM";
+        case engine::UnitTypeId::T90M: return "T-90M";
+        case engine::UnitTypeId::Type99A: return "Type 99A";
+        case engine::UnitTypeId::Karrar: return "Karrar";
         case engine::UnitTypeId::Ifv: return "IFV";
         case engine::UnitTypeId::Worker: return "Rear troop";
         case engine::UnitTypeId::Truck: return "Truck";
@@ -394,7 +409,26 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             !s->garrison.empty()) {
             put(0, Action::Unload, 0, "Leave", "Everyone out");
         }
-        // Research: the bottom row, then the middle one, whatever this building can research.
+        // What it hires along the top row, what it researches along the bottom
+        // row, then the middle one. What doesn't fit is nested in sections:
+        // the tanks of the axis (the armor barracks) behind a "Tanks" button,
+        // on a page of their own with a way back.
+        const std::span<const engine::UnitTypeId> roster = engine::roster_of(s->type, engine::axis_of(player_));
+        const auto tanks = std::count_if(roster.begin(), roster.end(), [](engine::UnitTypeId t) { return engine::unit_type(t).tank; });
+        const bool tank_section = tanks > 1;
+        auto hire = [&](size_t slot, engine::UnitTypeId type) {
+            const engine::UnitTypeDef& unit = engine::unit_type(type);
+            put(slot, Action::Hire, static_cast<uint8_t>(type), unit_label(type), unit.name, unit.cost).enabled =
+                s->queue.size() < engine::kMaxQueue;
+        };
+        if (tank_section && section_ == s->id) {
+            size_t slot = 0;
+            for (const engine::UnitTypeId type : roster) {
+                if (engine::unit_type(type).tank && slot < 14) hire(slot++, type);
+            }
+            put(14, Action::Back, 0, "Back", "Back to the barracks");
+            return;
+        }
         static constexpr size_t kResearchSlots[] = {10, 11, 12, 13, 14, 5, 6, 7, 8, 9};
         size_t research = 0;
         for (size_t i = 0; i < engine::kUpgradeCount && research < std::size(kResearchSlots); ++i) {
@@ -418,11 +452,10 @@ void PlayerController::rebuild_grid(const engine::World& world) {
                 b.cooldown = 1.0f - static_cast<float>(s->research_progress) / static_cast<float>(up.time);
             }
         }
-        const engine::StructureDef& def = engine::structure_type(s->type);
-        for (uint8_t i = 0; i < def.roster_size; ++i) {
-            const engine::UnitTypeDef& unit = engine::unit_type(def.roster[i]);
-            put(i, Action::Hire, static_cast<uint8_t>(def.roster[i]), unit_label(def.roster[i]), unit.name, unit.cost)
-                .enabled = s->queue.size() < engine::kMaxQueue;
+        size_t slot = 0;
+        if (tank_section) put(slot++, Action::Section, 0, "Tanks >", "The axis's tanks: pick one to hire");
+        for (const engine::UnitTypeId type : roster) {
+            if ((!tank_section || !engine::unit_type(type).tank) && slot < 5) hire(slot++, type);
         }
         return;
     }
@@ -631,10 +664,12 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Retrain: order_retrain(lockstep); break;
         case Action::BuildMenu: build_menu_ = true; break;
         case Action::ConvertMenu: convert_menu_ = true; break;
+        case Action::Section: section_ = selected_structure_; break;
         case Action::Gather: targeting_ = Targeting::Gather; break;
         case Action::Back:
             build_menu_ = false;
             convert_menu_ = false;
+            section_ = 0;
             if (targeting_ == Targeting::Convert) targeting_ = Targeting::None;
             break;
         case Action::Convert:
@@ -945,7 +980,7 @@ void PlayerController::order_retrain(net::Lockstep& lockstep) {
 
 void PlayerController::order_train(net::Lockstep& lockstep, const engine::World& world, engine::UnitTypeId type) {
     const engine::Structure* s = world.find_structure(selected_structure_);
-    if (!s || s->owner != player_ || !engine::can_train(s->type, type)) return;
+    if (!s || s->owner != player_ || !engine::can_train(s->type, type, engine::axis_of(player_))) return;
     engine::Command cmd;
     cmd.type = engine::CommandType::Train;
     cmd.target_unit = s->id;

@@ -105,6 +105,7 @@ struct EraLevel {
 };
 inline constexpr EraLevel kEraLevels[] = {{65, 100}, {55, 75}, {45, 60}};  // Kontakt-1, Kontakt-5, Relikt
 inline constexpr int32_t kReactiveArmorPercent = kEraLevels[0].shaped_percent;
+inline constexpr int32_t kMinSoftGroundPercent = 5;  // a heavy tank in a bog still crawls
 inline constexpr int32_t kFireControlFarPercent = 65;  // a tank's aim at its full range
 inline constexpr Fixed kAtgmTargetReach = Fixed::from_ratio(3, 2);  // an aim point this close to a vehicle means it
 inline constexpr int32_t kDrilledCrewsPercent = 50;    // of the time to set up or pack up a gun
@@ -413,7 +414,6 @@ struct Unit {
     FixedVec2 ranging_point{};
     uint8_t ranging_shots = 0;
     bool camouflaged = false;  // under nets: hidden like in a forest until it moves
-    TankModel model = TankModel::Standard;  // how a tank is drawn: cosmetic, not in the checksum
     bool perfect_burst = false;  // this AGS burst lands in a perfect row
 
     // A supply truck's assignment: the freight it hauls (Count: whatever

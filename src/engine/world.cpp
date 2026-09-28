@@ -108,7 +108,7 @@ EntityId World::spawn_unit(PlayerId owner, UnitTypeId type, FixedVec2 pos) {
 }
 
 Tick World::reload_ticks(const Unit& u, const WeaponDef& weapon) const {
-    if ((u.type == UnitTypeId::Tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::FastReload)) {
+    if ((def_of(u).tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::FastReload)) {
         return weapon.reload * kFastReloadPercent / 100;
     }
     return weapon.reload;
@@ -887,11 +887,16 @@ World::Step World::step_towards(Unit& u, FixedVec2 point, bool formation) {
     Fixed speed = def.speed;
     if (formation && u.speed_cap.raw > 0) speed = min(speed, u.speed_cap);
     if (hungry(u.owner)) speed = speed * kHungrySpeedPercent / 100;
-    if ((u.type == UnitTypeId::Tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::TankEngine)) {
+    if ((def.tank || u.type == UnitTypeId::Ifv) && has_upgrade(u.owner, UpgradeId::TankEngine)) {
         speed = speed * kEnginePercent / 100;
     }
-    // Terrain slows down (forest for infantry, villages for vehicles...).
-    const int32_t terrain_pct = map_.speed_percent(tile_of(u.pos), move_class(def));
+    // Terrain slows down (forest for infantry, villages for vehicles...);
+    // on soft ground a light tank loses less of its speed, a heavy one more.
+    const TilePos under = map_.clamp_tile(tile_of(u.pos));
+    int32_t terrain_pct = map_.speed_percent(under, move_class(def));
+    if (def.soft_ground_percent != 100 && terrain_pct > 0 && terrain_pct < 100 && is_soft_ground(map_.terrain(under))) {
+        terrain_pct = std::max(kMinSoftGroundPercent, 100 - (100 - terrain_pct) * def.soft_ground_percent / 100);
+    }
     if (terrain_pct > 0) speed = speed * terrain_pct / 100;
 
     u.facing = to_point;
@@ -1371,8 +1376,9 @@ void World::maybe_crater(const Projectile& p, FixedVec2 at, const WeaponDef& wea
         case UnitTypeId::Su25: kind = CraterKind::Rocket; break;
         case UnitTypeId::Howitzer:
         case UnitTypeId::Spg: kind = CraterKind::Shell; break;
-        case UnitTypeId::Tank: kind = weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small; break;
-        default: break;
+        default:
+            if (unit_type(p.shooter_type).tank) kind = weapon.splash_radius >= kHeavyBurst ? CraterKind::Shell : CraterKind::Small;
+            break;
     }
     if (ground == Terrain::Crater && crater_cover(map_.crater_kind(t.x, t.y)) >= crater_cover(kind)) return;
     map_.set_terrain(t.x, t.y, Terrain::Crater);  // passable for all: no route goes stale
@@ -1423,10 +1429,15 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         from_flank(victim, shot.from)) {
         amount = amount * kFlankHitPercent / 100;  // into the side or the rear
     }
+    // A tank's armor in front: what it lets through of an anti-tank hit there.
+    const bool vd_tank = def_of(victim).tank;
+    if (vd_tank && weapon.damage_type == DamageType::AntiTank && !shot.blast && !from_flank(victim, shot.from)) {
+        amount = amount * def_of(victim).front_percent / 100;
+    }
     // What our upgrades take off it.
     const UnitTypeDef& vd = def_of(victim);
-    if (victim.type == UnitTypeId::Tank && weapon.damage_type == DamageType::AntiTank && !shot.blast) {
-        const int level = era_level(victim.owner);
+    if (vd_tank && weapon.damage_type == DamageType::AntiTank && !shot.blast) {
+        const int level = std::min(era_level(victim.owner), def_of(victim).era_max);
         if (level > 0) {
             const EraLevel& era = kEraLevels[level - 1];
             amount = amount * (weapon.kinetic ? era.kinetic_percent : era.shaped_percent) / 100;
@@ -1437,7 +1448,7 @@ void World::hurt(const Unit& victim, const WeaponDef& weapon, const Shot& shot) 
         amount = amount * kBodyArmorPercent / 100;
     }
     if (vd.aircraft && has_upgrade(victim.owner, UpgradeId::CockpitArmor)) amount = amount * kCockpitArmorPercent / 100;
-    if ((victim.type == UnitTypeId::Tank || victim.type == UnitTypeId::Ifv) &&
+    if ((vd.tank || victim.type == UnitTypeId::Ifv) &&
         weapon.damage_type != DamageType::AntiTank && has_upgrade(victim.owner, UpgradeId::AddOnArmor)) {
         amount = amount * kAddOnArmorPercent / 100;
     }
@@ -1497,6 +1508,13 @@ void World::apply_damage_and_remove_dead() {
                                                 .projectile_speed = Fixed{}, .splash_radius = Fixed::from_int(1),
                                                 .accuracy = 100, .miss_spread = Fixed{}};
         burst_into_flames(u.pos, u.owner, def_of(u).supplies == Resource::Fuel ? kTankerFire : kAmmoCookOff);
+    }
+    // A tank knocked out: its crew may get out (the men come back to the pool).
+    for (const Unit& u : units_) {
+        if (u.hp > 0 || !def_of(u).tank || u.owner >= kMaxPlayers) continue;
+        if (static_cast<int32_t>(rng_.next_below(100)) < def_of(u).crew_survives_percent) {
+            stock_[u.owner][static_cast<size_t>(Resource::Personnel)] += def_of(u).cost[static_cast<size_t>(Resource::Personnel)];
+        }
     }
     std::erase_if(units_, [](const Unit& u) { return u.hp <= 0; });
     for (Structure& s : structures_) {

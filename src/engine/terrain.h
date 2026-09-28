@@ -150,6 +150,12 @@ inline uint8_t octant(FixedVec2 d) {
     return y >= 0 ? 3 : 5;
 }
 
+// Soft ground, where a heavy tank bogs down more than a light one.
+inline bool is_soft_ground(Terrain t) {
+    return t == Terrain::Plowed || t == Terrain::Crops || t == Terrain::Wheat || t == Terrain::Garden || t == Terrain::Swamp ||
+           t == Terrain::Crater || t == Terrain::Riverbed;
+}
+
 // The battlefield: a grid of square tiles, each with a terrain type and an
 // elevation level. Units move freely in continuous tile coordinates, where
 // 1.0 is one tile. How it looks (isometric or not) is the renderer's business.

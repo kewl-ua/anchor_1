@@ -1,5 +1,7 @@
 #include "engine/unit_types.h"
 
+#include <span>
+
 #include "engine/structures.h"
 
 #include <iterator>
@@ -28,6 +30,97 @@ constexpr Fixed kNoSplash{};
 //   scout         makes out men in cover from farther away, hard to spot himself; as an
 //                 observation post watches a sector far out
 // Costs are {Personnel, Food, Materials, Ammo, Fuel}. Men are the scarce one.
+// The T-72B3: the tank the others are measured against.
+constexpr UnitTypeDef kT72B3 = {
+        .name = "T-72B3",
+        .short_name = "T72",
+        .max_hp = 360,
+        .armor = {40, 20, 20},
+        .speed = tiles_per_second(11, 10),
+        .radius = tiles(9, 20),
+        .sight = tiles(12),
+        .mass = 30,
+        .vehicle = true,
+        // Ten times a rifleman's reach; far out it's less sure (see effective_range),
+        // and it takes someone seeing that far.
+        .weapon = {.name = "125mm HE shell", .damage = 75, .damage_type = DamageType::Explosive,
+                   .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
+                   .splash_radius = tiles(1, 2), .accuracy = 80, .miss_spread = tiles(1),
+                   .effective_range = tiles(15)},
+        .cost = {3, 0, 150, 100, 100},
+        .train_time = seconds(40),
+        .fuel_capacity = tiles(150),
+        .rounds_capacity = 40,
+        // Armor-piercing: a fast, hard-hitting round without a burst.
+        .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
+                       .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
+                       .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1),
+                       .effective_range = tiles(15), .kinetic = true},
+        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
+                      AbilityId::RadioSilence, AbilityId::CallSupply},
+        .ability_count = 6,
+        .emitter = true,
+        .tank = true,
+        .crew_survives_percent = 15,  // the rounds in the carousel under the turret go up
+        .era_max = 3,
+        .model = TankModel::T72B3,
+    };
+
+// A real tank, from the T-72B3 (= 100): its speed, its armor in front,
+// its aim far out (how far the gun keeps it), its thirst, how its crew
+// fares, its price, how it copes with soft ground, its AP round, how far
+// along the reactive armor line it can go.
+struct TankSpec {
+    const char* name;
+    const char* short_name;
+    TankModel model;
+    int32_t speed;
+    int32_t front;      // armor in front: 150 lets through two thirds of what the T-72B3's does
+    int32_t far_aim;    // fire control: the effective range, percent
+    int32_t thirst;     // fuel used a tile, percent: the tank goes that much less far
+    int32_t crew;       // percent that get out
+    int32_t price;
+    int32_t soft;       // passability on soft ground: 130 loses a third less there
+    int32_t ap_damage;  // its AP round
+    int32_t era_max;
+};
+
+constexpr UnitTypeDef tank_def(const TankSpec& t) {
+    UnitTypeDef d = kT72B3;
+    d.name = t.name;
+    d.short_name = t.short_name;
+    d.model = t.model;
+    d.speed = Fixed::from_raw(kT72B3.speed.raw * t.speed / 100);
+    d.front_percent = 100 * 100 / t.front;
+    d.weapon.effective_range = Fixed::from_raw(kT72B3.weapon.effective_range.raw * t.far_aim / 100);
+    d.alt_weapon.effective_range = d.weapon.effective_range;
+    d.alt_weapon.damage = t.ap_damage;
+    d.fuel_capacity = Fixed::from_raw(kT72B3.fuel_capacity.raw * 100 / t.thirst);
+    d.crew_survives_percent = t.crew;
+    for (size_t r = static_cast<size_t>(Resource::Materials); r < kResourceCount; ++r) d.cost[r] = kT72B3.cost[r] * t.price / 100;
+    d.train_time = kT72B3.train_time * (50 + t.price / 2) / 100;
+    d.soft_ground_percent = 100 * 100 / t.soft;
+    d.era_max = t.era_max;
+    return d;
+}
+
+//                  name            short   model                  speed front aim thirst crew price soft  AP  ERA
+constexpr TankSpec kTankSpecs[] = {
+    {"T-64BV",        "T64", TankModel::T64BV,      100,   90,  90, 100, 40,  80, 130, 125, 1},
+    {"T-64BM Bulat",  "BLT", TankModel::T64BM,       95,  110, 110, 100, 40, 110, 120, 130, 3},
+    {"Leopard 1A5",   "LEO1", TankModel::Leopard1A5, 110,  60, 120,  90, 25,  70, 120, 115, 0},
+    {"Leopard 2A6",   "LEO2", TankModel::Leopard2A6, 105, 140, 150, 120, 45, 170,  85, 140, 0},
+    {"M1A1 Abrams",   "M1",  TankModel::M1A1,       105,  150, 140, 200, 60, 190,  75, 135, 2},
+    {"Type 10",       "T10", TankModel::Type10,     110,  120, 150, 100, 40, 150, 125, 135, 0},
+    {"K2 Black Panther", "K2", TankModel::K2,       110,  135, 160, 110, 45, 180, 100, 140, 0},
+    {"Merkava Mk4",   "MRK", TankModel::Merkava4,    90,  150, 140, 110, 70, 180,  80, 135, 0},
+    {"T-62M",         "T62", TankModel::T62M,        95,   60,  60, 100, 10,  50, 100, 110, 1},
+    {"T-80BVM",       "T80", TankModel::T80BVM,     120,  110, 110, 200, 15, 130, 115, 130, 3},
+    {"T-90M Proryv",  "T90", TankModel::T90M,       100,  140, 140, 110, 25, 170, 100, 135, 3},
+    {"Type 99A",      "99A", TankModel::Type99A,    100,  140, 150, 120, 25, 180,  90, 135, 3},
+    {"Karrar",        "KRR", TankModel::Karrar,     100,  110, 115, 100, 15, 110, 100, 130, 3},
+};
+
 constexpr UnitTypeDef kUnitTypes[] = {
     {
         .name = "Rifleman",
@@ -86,36 +179,7 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .train_time = seconds(15),
         .rounds_capacity = 6,
     },
-    {
-        .name = "Tank",
-        .short_name = "TNK",
-        .max_hp = 360,
-        .armor = {40, 20, 20},
-        .speed = tiles_per_second(11, 10),
-        .radius = tiles(9, 20),
-        .sight = tiles(12),
-        .mass = 30,
-        .vehicle = true,
-        // Ten times a rifleman's reach; far out it's less sure (see effective_range),
-        // and it takes someone seeing that far.
-        .weapon = {.name = "125mm HE shell", .damage = 75, .damage_type = DamageType::Explosive,
-                   .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(14),
-                   .splash_radius = tiles(1, 2), .accuracy = 80, .miss_spread = tiles(1),
-                   .effective_range = tiles(15)},
-        .cost = {3, 0, 150, 100, 100},
-        .train_time = seconds(40),
-        .fuel_capacity = tiles(150),
-        .rounds_capacity = 40,
-        // Armor-piercing: a fast, hard-hitting round without a burst.
-        .alt_weapon = {.name = "125mm AP round", .damage = 130, .damage_type = DamageType::AntiTank,
-                       .range = tiles(50), .reload = seconds(4), .projectile_speed = tiles_per_second(24),
-                       .splash_radius = kNoSplash, .accuracy = 85, .miss_spread = tiles(1),
-                       .effective_range = tiles(15), .kinetic = true},
-        .abilities = {AbilityId::AreaShot, AbilityId::SwitchAmmo, AbilityId::IndirectFire, AbilityId::Smoke,
-                      AbilityId::RadioSilence, AbilityId::CallSupply},
-        .ability_count = 6,
-        .emitter = true,
-    },
+    kT72B3,
     {
         .name = "IFV",
         .short_name = "IFV",
@@ -561,6 +625,19 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .emitter = true,
         .radar_range = tiles(45),
     },
+    tank_def(kTankSpecs[0]),
+    tank_def(kTankSpecs[1]),
+    tank_def(kTankSpecs[2]),
+    tank_def(kTankSpecs[3]),
+    tank_def(kTankSpecs[4]),
+    tank_def(kTankSpecs[5]),
+    tank_def(kTankSpecs[6]),
+    tank_def(kTankSpecs[7]),
+    tank_def(kTankSpecs[8]),
+    tank_def(kTankSpecs[9]),
+    tank_def(kTankSpecs[10]),
+    tank_def(kTankSpecs[11]),
+    tank_def(kTankSpecs[12]),
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -677,7 +754,7 @@ constexpr StructureDef kStructureTypes[] = {
      .roster_size = 4},
     {.name = "Armor barracks", .max_hp = 2200, .armor = {0, 15, 70},
      .buildable = true, .width = 4, .height = 4, .cost = {0, 0, 250, 0, 50}, .build_time = seconds(45),
-     .roster = {UnitTypeId::Tank, UnitTypeId::Ifv}, .roster_size = 2},
+     .roster = {UnitTypeId::Tank, UnitTypeId::Ifv}, .roster_size = 2},  // see roster_of: each axis its own tanks
     // Put one next to a woodline or a quarry to cut the walk, like an AoE II lumber camp.
     {.name = "Warehouse", .max_hp = 800, .armor = {0, 5, 40},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 75, 0, 0}, .build_time = seconds(20)},
@@ -744,6 +821,21 @@ static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::C
 }  // namespace
 
 const StructureDef& structure_type(StructureType type) { return kStructureTypes[static_cast<size_t>(type)]; }
+
+std::span<const UnitTypeId> roster_of(StructureType building, Axis axis) {
+    // The armor barracks: each axis's own tanks, and the IFV.
+    static constexpr UnitTypeId kDemocratic[] = {UnitTypeId::T64BV,      UnitTypeId::T64BM, UnitTypeId::Leopard1A5,
+                                                 UnitTypeId::Leopard2A6, UnitTypeId::M1A1,  UnitTypeId::Type10,
+                                                 UnitTypeId::K2,         UnitTypeId::Merkava4, UnitTypeId::Ifv};
+    static constexpr UnitTypeId kAuthoritarian[] = {UnitTypeId::T62M, UnitTypeId::Tank,    UnitTypeId::T80BVM,
+                                                    UnitTypeId::T90M, UnitTypeId::Type99A, UnitTypeId::Karrar,
+                                                    UnitTypeId::Ifv};
+    if (building == StructureType::ArmorBarracks) {
+        return axis == Axis::Democratic ? std::span<const UnitTypeId>(kDemocratic) : std::span<const UnitTypeId>(kAuthoritarian);
+    }
+    const StructureDef& def = structure_type(building);
+    return {def.roster.data(), def.roster_size};
+}
 
 namespace {
 

@@ -190,7 +190,7 @@ void World::apply_train(const Command& cmd) {
     Structure* s = find_structure_mut(cmd.target_unit);
     if (!s || !s->built || s->owner != cmd.player || cmd.unit_type >= kUnitTypeCount) return;
     const auto type = static_cast<UnitTypeId>(cmd.unit_type);
-    if (!can_train(s->type, type) || s->queue.size() >= kMaxQueue) return;
+    if (!can_train(s->type, type, axis_of(cmd.player)) || s->queue.size() >= kMaxQueue) return;
     Stock& stock = stock_[cmd.player % kMaxPlayers];
     if (!can_afford(stock, unit_type(type).cost)) return;
     pay(stock, unit_type(type).cost);

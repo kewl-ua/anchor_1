@@ -4547,6 +4547,143 @@ void test_reactive_armor_line() {
     CHECK(sim.world().era_level(0) == 3);
 }
 
+// The axes' tanks. The first player is the Democratic axis, the second the
+// Authoritarian one: each hires only its own tanks in the armor barracks, and
+// starts with its usual one (the T-64BV, the T-72B3).
+void test_axes_hire_their_own_tanks() {
+    CHECK(axis_of(0) == Axis::Democratic && axis_of(1) == Axis::Authoritarian);
+    for (const UnitTypeId t : {UnitTypeId::T64BV, UnitTypeId::T64BM, UnitTypeId::Leopard1A5, UnitTypeId::Leopard2A6,
+                               UnitTypeId::M1A1, UnitTypeId::Type10, UnitTypeId::K2, UnitTypeId::Merkava4}) {
+        CHECK(unit_type(t).tank);
+        CHECK(can_train(StructureType::ArmorBarracks, t, Axis::Democratic));
+        CHECK(!can_train(StructureType::ArmorBarracks, t, Axis::Authoritarian));
+    }
+    for (const UnitTypeId t : {UnitTypeId::T62M, UnitTypeId::Tank, UnitTypeId::T80BVM, UnitTypeId::T90M, UnitTypeId::Type99A,
+                               UnitTypeId::Karrar}) {
+        CHECK(unit_type(t).tank);
+        CHECK(can_train(StructureType::ArmorBarracks, t, Axis::Authoritarian));
+        CHECK(!can_train(StructureType::ArmorBarracks, t, Axis::Democratic));
+    }
+    CHECK(can_train(StructureType::ArmorBarracks, UnitTypeId::Ifv, Axis::Democratic) &&
+          can_train(StructureType::ArmorBarracks, UnitTypeId::Ifv, Axis::Authoritarian));
+
+    // A hire of the other axis's tank does nothing.
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {20, 0, 5000, 5000, 5000});
+    const EntityId barracks = w.place_structure(StructureType::ArmorBarracks, 0, {20, 5}, 3, 3);
+    auto hire = [&](UnitTypeId t) {
+        issue(sim, Command{.type = CommandType::Train, .player = 0, .target_unit = barracks, .unit_type = static_cast<uint8_t>(t)});
+        for (int i = 0; i < 3; ++i) sim.step();
+        return sim.world().find_structure(barracks)->queue.size();
+    };
+    CHECK(hire(UnitTypeId::Tank) == 0);
+    CHECK(hire(UnitTypeId::T64BV) == 1);
+
+    Simulation demo(1, make_demo_map());
+    setup_demo_scenario(demo.world_for_setup());
+    int ours = 0;
+    int theirs = 0;
+    for (const Unit& u : demo.world().units()) {
+        ours += u.owner == 0 && u.type == UnitTypeId::T64BV ? 1 : 0;
+        theirs += u.owner == 1 && u.type == UnitTypeId::Tank ? 1 : 0;
+    }
+    CHECK(ours == 2 && theirs == 2);
+}
+
+// Real tanks, not newer = better. Armor in front: of an RPG in the face, a
+// Leopard 2A6 takes less than a T-72B3, a T-62M more. On soft ground the
+// light T-64BV gets on better than the heavy Abrams, though the Abrams is the
+// faster on firm ground. A Merkava's crew gets out far oftener than a
+// T-62M's. The reactive armor a tank carries goes only as far as it can
+// (a T-64BV Kontakt-1, a Leopard 2A6 none). The Abrams' turbine drinks.
+void test_real_tanks() {
+    auto rpg_in_face = [](UnitTypeId type, bool side = false) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId rpg = w.spawn_unit(0, UnitTypeId::Grenadier, at(10, 10));
+        const EntityId scout = w.spawn_unit(0, UnitTypeId::Scout, at(13, 12));  // to see it
+        w.unit_for_setup(scout)->rounds = 0;
+        const EntityId tank = w.spawn_unit(1, type, at(17, 10));
+        w.unit_for_setup(tank)->rounds = 0;
+        w.unit_for_setup(tank)->hull = side ? FixedVec2{Fixed{}, Fixed::from_int(-1)} : FixedVec2{Fixed::from_int(-1), Fixed{}};
+        issue(sim, attack_order(0, {rpg}, tank));
+        for (int i = 0; i < 2000; ++i) {
+            sim.step();
+            if (hp_of(sim, tank) < unit_type(type).max_hp) return unit_type(type).max_hp - hp_of(sim, tank);
+        }
+        return 0;
+    };
+    const int32_t t72 = rpg_in_face(UnitTypeId::Tank);
+    CHECK(t72 > 0);
+    CHECK(rpg_in_face(UnitTypeId::Leopard2A6) == t72 * unit_type(UnitTypeId::Leopard2A6).front_percent / 100);
+    CHECK(rpg_in_face(UnitTypeId::Leopard2A6) < t72 && rpg_in_face(UnitTypeId::T62M) > t72);
+    CHECK(rpg_in_face(UnitTypeId::Leopard2A6, true) == rpg_in_face(UnitTypeId::Tank, true));  // the armor in front, not in the side
+
+    auto distance = [](UnitTypeId type, Terrain ground) {
+        TileMap map(60, 10);
+        for (int y = 0; y < 10; ++y) {
+            for (int x = 0; x < 60; ++x) map.set_terrain(x, y, ground);
+        }
+        Simulation sim(1, map);
+        const EntityId tank = sim.world_for_setup().spawn_unit(0, type, at(3, 5));
+        issue(sim, make_move(0, {tank}, 55, 5));
+        const Fixed start = sim.world().find_unit(tank)->pos.x;
+        for (int i = 0; i < 200; ++i) sim.step();
+        return (sim.world().find_unit(tank)->pos.x - start).raw;
+    };
+    CHECK(distance(UnitTypeId::M1A1, Terrain::Grass) > distance(UnitTypeId::T64BV, Terrain::Grass));
+    CHECK(distance(UnitTypeId::T64BV, Terrain::Plowed) > distance(UnitTypeId::M1A1, Terrain::Plowed));
+    CHECK(distance(UnitTypeId::T64BV, Terrain::Swamp) > distance(UnitTypeId::M1A1, Terrain::Swamp) * 2);
+
+    auto crews_back = [](UnitTypeId type) {
+        int back = 0;
+        for (uint64_t seed = 1; seed <= 30; ++seed) {
+            Simulation sim(seed, TileMap(30, 10));
+            World& w = sim.world_for_setup();
+            w.set_stock(1, {});
+            const EntityId tank = w.spawn_unit(1, type, at(15, 5));
+            w.unit_for_setup(tank)->hp = 1;
+            w.unit_for_setup(tank)->rounds = 0;
+            const EntityId rifle = w.spawn_unit(0, UnitTypeId::Rifleman, at(12, 5));
+            issue(sim, attack_order(0, {rifle}, tank));
+            for (int i = 0; i < 300 && sim.world().find_unit(tank); ++i) sim.step();
+            back += sim.world().stock(1)[static_cast<size_t>(Resource::Personnel)] > 0 ? 1 : 0;
+        }
+        return back;
+    };
+    const int merkava = crews_back(UnitTypeId::Merkava4);
+    const int t62 = crews_back(UnitTypeId::T62M);
+    CHECK(merkava >= 14 && t62 <= 8 && merkava > t62);
+
+    auto ap_hit = [](UnitTypeId type) {
+        Simulation sim(1, TileMap(40, 20));
+        World& w = sim.world_for_setup();
+        const EntityId gun = w.spawn_unit(0, UnitTypeId::Tank, at(10, 10));
+        w.unit_for_setup(gun)->round_type = 1;
+        const EntityId target = w.spawn_unit(1, type, at(18, 10));
+        w.unit_for_setup(target)->rounds = 0;
+        w.unit_for_setup(target)->hull = {Fixed::from_int(-1), Fixed{}};
+        for (const UpgradeId u : {UpgradeId::ReactiveArmor, UpgradeId::Kontakt5, UpgradeId::Relikt}) w.upgrade_for_setup(1, u);
+        issue(sim, attack_order(0, {gun}, target));
+        for (int i = 0; i < 3000; ++i) {
+            sim.step();
+            if (hp_of(sim, target) < unit_type(type).max_hp) return unit_type(type).max_hp - hp_of(sim, target);
+        }
+        return 0;
+    };
+    // Relikt researched: the T-72B3 carries it; the T-64BV only Kontakt-1 (no help against AP); the Leopard nothing.
+    const int32_t bare = unit_type(UnitTypeId::Tank).alt_weapon.damage - unit_type(UnitTypeId::Tank).armor[static_cast<size_t>(DamageType::AntiTank)];
+    CHECK(ap_hit(UnitTypeId::Tank) == bare * kEraLevels[2].kinetic_percent / 100);
+    CHECK(ap_hit(UnitTypeId::T64BV) == bare * unit_type(UnitTypeId::T64BV).front_percent / 100);
+    CHECK(ap_hit(UnitTypeId::Leopard2A6) == bare * unit_type(UnitTypeId::Leopard2A6).front_percent / 100);
+
+    CHECK(unit_type(UnitTypeId::M1A1).fuel_capacity * 2 == unit_type(UnitTypeId::Tank).fuel_capacity);
+    CHECK(unit_type(UnitTypeId::Leopard2A6).weapon.effective_range > unit_type(UnitTypeId::Tank).weapon.effective_range);
+    CHECK(unit_type(UnitTypeId::T62M).cost[static_cast<size_t>(Resource::Materials)] <
+          unit_type(UnitTypeId::Tank).cost[static_cast<size_t>(Resource::Materials)]);
+}
+
 // ATGM launchers: an IFV fires a guided missile at an enemy tank 20 tiles
 // off, which drives away across: the missile flies after it and hits. Not
 // researched, the skill does nothing. An ammunition truck brings a new one.
@@ -5289,6 +5426,8 @@ int main() {
     test_air_upgrades();
     test_upgrade_buildings();
     test_reactive_armor_line();
+    test_axes_hire_their_own_tanks();
+    test_real_tanks();
     test_donbas_landmarks();
     test_farmland();
     test_dig_in_the_fields();

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "engine/command.h"
@@ -210,11 +211,16 @@ inline uint64_t distance_sq_to(const Structure& s, FixedVec2 p) {
     return best;
 }
 
-// What each building can train.
+// What each building trains for an axis, in button order.
+std::span<const UnitTypeId> roster_of(StructureType building, Axis axis);
+
+// What each building can train for a player (for either axis, without one).
+inline bool can_train(StructureType building, UnitTypeId unit, Axis axis) {
+    const std::span<const UnitTypeId> r = roster_of(building, axis);
+    return std::find(r.begin(), r.end(), unit) != r.end();
+}
 inline bool can_train(StructureType building, UnitTypeId unit) {
-    const StructureDef& def = structure_type(building);
-    return std::find(def.roster.begin(), def.roster.begin() + def.roster_size, unit) !=
-           def.roster.begin() + def.roster_size;
+    return can_train(building, unit, Axis::Democratic) || can_train(building, unit, Axis::Authoritarian);
 }
 
 }  // namespace engine
