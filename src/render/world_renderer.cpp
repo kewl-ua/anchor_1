@@ -355,6 +355,9 @@ void WorldRenderer::remember(const engine::World& world) {
 Vector2 tank_muzzle(engine::TankModel m);
 Vector2 tank_engine(engine::TankModel m);
 int wear_of(int32_t hp, int32_t max_hp);
+float tank_track_half(engine::UnitTypeId type);  // how far each track runs from the middle, tiles
+Vector2 tank_size(engine::TankModel m);           // its hull's length and half its width, tiles
+int tank_variant(engine::TankModel model, int era, int wear, int sink);
 constexpr float kTankWreckLifetime = 150.0f;  // a burnt-out tank stays a while on the field
 
 float WorldRenderer::fx_random() {
@@ -664,8 +667,10 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (alive.contains(id) || world.find_unit(id)) continue;
         remains_.push_back(last);
         if (last.vehicle) {
-            blasts_.push_back({last.ground, 0.0f, 0.7f});
-            spawn_burst(world, last.ground, 0.8f);
+            const engine::Terrain under =
+                map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(last.ground.x)), static_cast<int32_t>(std::floor(last.ground.y))}));
+            if (under != engine::Terrain::Water) blasts_.push_back({last.ground, 0.0f, 0.7f});
+            spawn_burst(world, last.ground, 0.8f);  // (off the water: spray)
         }
     }
     units_seen_ = std::move(alive);
@@ -692,10 +697,40 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     }
     for (const Remains& r : remains_) {  // burnt-out tanks smoulder, burning for the first half minute
         if (!engine::unit_type(r.type).tank || r.age > 100.0f) continue;
+        if (map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))})) ==
+            engine::Terrain::Water) {
+            continue;  // drowned
+        }
         const Vector2 e = tank_engine(engine::unit_type(r.type).model);
         const float ease = r.age < 30.0f ? 1.0f : 0.4f;
         if (fx_random() < ease) spawn_fire({r.ground.x + r.hull.x * e.x, r.ground.y + r.hull.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
     }
+    // Tracked vehicles leave their tracks in the ground as they go (not on
+    // concrete, a bridge or the water); they fade over two minutes.
+    for (const engine::Unit& u : world.units()) {
+        const engine::UnitTypeDef& def = engine::unit_type(u.type);
+        const bool tracked = def.tank || u.type == engine::UnitTypeId::Ifv || u.type == engine::UnitTypeId::Spg ||
+                             u.type == engine::UnitTypeId::Shilka;
+        if (!tracked || u.inside || !shows(world, u)) continue;
+        const Vector2 p = to_vector2(u.pos);
+        const auto it = track_last_.find(u.id);
+        if (it == track_last_.end()) {
+            track_last_[u.id] = p;
+            continue;
+        }
+        const float len = std::hypot(p.x - it->second.x, p.y - it->second.y);
+        if (len < 0.2f) continue;
+        const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(p.x)), static_cast<int32_t>(std::floor(p.y))}));
+        const bool firm = t == engine::Terrain::Road || t == engine::Terrain::Bridge || t == engine::Terrain::Water ||
+                          t == engine::Terrain::Airstrip || t == engine::Terrain::Rail;
+        if (len < 1.5f && !firm) track_marks_.push_back({it->second, p, tank_track_half(u.type), 0.0f});
+        it->second = p;
+    }
+    for (TrackMark& m : track_marks_) m.age += dt;
+    std::erase_if(track_marks_, [](const TrackMark& m) { return m.age >= 120.0f; });
+    if (track_marks_.size() > 6000) track_marks_.erase(track_marks_.begin(), track_marks_.begin() + static_cast<long>(track_marks_.size() - 6000));
+    std::erase_if(track_last_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
+
     // The particles fly, fall, spread and fade.
     for (Particle& p : particles_) {
         p.age += dt;
@@ -2941,6 +2976,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     BeginShaderMode(grain_);
 
     draw_terrain(world, view);
+    draw_track_marks(world, view);
     draw_remains(map);
 
     // Mines we know of: ours, and the enemy's our sappers found. Charges ticking.
@@ -4472,13 +4508,19 @@ struct Frame {
     Vector2 f;  // ahead, on the ground
     Vector2 s;  // to its left, on the ground
     float k = 1.0f;  // drawn this much bigger than life
-    Vector2 at(float a, float c, float z = 0.0f) const { return {o.x + F.x * a + S.x * c, o.y + F.y * a + S.y * c - z * k}; }
+    // Sunk this many pixels into a bog or the water: what's below that is
+    // hidden, the rest drawn that much lower, on the surface.
+    float sink = 0.0f;
+    Vector2 at(float a, float c, float z = 0.0f) const {
+        const float zz = sink > 0.0f ? std::max(z - sink, 0.0f) : z;
+        return {o.x + F.x * a + S.x * c, o.y + F.y * a + S.y * c - zz * k};
+    }
     // Turned to `dir` about the point (a, c) of this frame: a turret on its hull.
     Frame turned(Vector2 dir, float a, float c) const {
         const Vector2 left{-dir.y, dir.x};
         const Vector2 F2 = iso_offset(dir);
         const Vector2 S2 = iso_offset(left);
-        return {at(a, c), {F2.x * k, F2.y * k}, {S2.x * k, S2.y * k}, dir, left, k};
+        return {at(a, c), {F2.x * k, F2.y * k}, {S2.x * k, S2.y * k}, dir, left, k, sink};
     }
     // Whether a side facing `n` (along, across) is turned towards the viewer, and how it's lit.
     Vector2 ground_of(float na, float nc) const { return {f.x * na + s.x * nc, f.y * na + s.y * nc}; }
@@ -4494,6 +4536,7 @@ Frame make_frame(const engine::TileMap& map, Vector2 ground, Vector2 f) {
 // rounded turret). Its sides turned towards the viewer are drawn, each shaded
 // by the way it faces (lit on the right, as the houses are), then its top.
 void solid(const Frame& fr, const Vector2* base, const Vector2* top, int n, float z0, float z1, Color color) {
+    if (fr.sink > 0.0f && z1 <= fr.sink + 0.2f) return;  // sunk out of sight
     Vector2 mid{0.0f, 0.0f};
     for (int i = 0; i < n; ++i) mid = {mid.x + base[i].x / static_cast<float>(n), mid.y + base[i].y / static_cast<float>(n)};
     for (int i = 0; i < n; ++i) {
@@ -4593,6 +4636,7 @@ void track(const Frame& fr, float a0, float a1, float c_in, float c_out, float h
 // A gun barrel from `from` along the frame's front: a round tube, the lit
 // line along its top, bands, a muzzle; drawn a little up when elevated.
 void barrel(const Frame& fr, float a0, float a1, float c, float z, float rise, float width, Color color, bool brake = false) {
+    if (fr.sink > 0.0f && std::max(z, z + rise) <= fr.sink) return;  // under the water
     const Vector2 p0 = fr.at(a0, c, z);
     const Vector2 p1 = fr.at(a1, c, z + rise);
     DrawLineEx(p0, p1, width, lit(color));
@@ -4641,10 +4685,24 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     if (engine::unit_type(type).tank) {
         const engine::TankModel model = model_of(u);
         const int wear = wear_of(u.hp, engine::unit_type(type).max_hp);
-        const int variant = (static_cast<int>(model) * 4 + world_era_[u.owner % world_era_.size()]) * 6 + wear;
-        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, variant, u.owner);
-        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, variant, u.owner);
+        // In a bog it sinks to its fenders (drawn from a sunk sprite once baked).
+        const engine::TilePos under = map.clamp_tile({static_cast<int32_t>(std::floor(ground.x)), static_cast<int32_t>(std::floor(ground.y))});
+        const bool bog = map.terrain(under) == engine::Terrain::Swamp;
+        const int era = world_era_[u.owner % world_era_.size()];
+        const SpriteSheet* hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, bog ? 1 : 0), u.owner);
+        const SpriteSheet* turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, bog ? 1 : 0), u.owner);
+        if (bog && (!hull_sheet || !turret_sheet)) {
+            hull_sheet = sheet(SpritePart::TankHull, tank_variant(model, era, wear, 0), u.owner);
+            turret_sheet = sheet(SpritePart::TankTurret, tank_variant(model, era, wear, 0), u.owner);
+        }
         if (hull_sheet && turret_sheet) {
+            if (bog) {  // the mud churned up round it
+                const Vector2 size = tank_size(model);
+                const Frame mud = make_frame(map, ground, fr.f);
+                patch(mud, 0.0f, 0.0f, size.x * 0.62f * kVehicleScale, (size.y + 0.12f) * kVehicleScale, 0.0f, {58, 60, 44, 255},
+                      static_cast<uint32_t>(u.id));
+                patch(mud, -size.x * 0.3f * kVehicleScale, 0.0f, 0.25f, 0.2f, 0.0f, {84, 96, 70, 255}, static_cast<uint32_t>(u.id) * 7u);
+            }
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
             draw_sprite(*hull_sheet, fr.o, fr.f, frame);
             draw_sprite(*turret_sheet, fr.at(turret_ring_of(model) * kVehicleScale, 0.0f), facing, 0);
@@ -4901,6 +4959,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
 // A road wheel standing along the hull at (a, c), `r` pixels high (`up` off the ground: a return roller): the
 // rubber tyre, the dished face in shadow at its rim, the hub lit, its cap.
 void road_wheel(const Frame& fr, float a, float c, float r, Color face, float up = 0.0f) {
+    if (fr.sink > 0.0f && r + up <= fr.sink) return;  // sunk out of sight
     constexpr int kPoints = 14;
     const float ra = r / 32.0f;
     const Vector2 mid = fr.at(a, c, r + up);
@@ -5063,6 +5122,13 @@ static_assert(std::size(kTankLooks) == static_cast<size_t>(engine::TankModel::Co
 engine::TankModel model_of(const engine::Unit& u) { return engine::unit_type(u.type).model; }
 const TankLook& look_of(engine::TankModel m) { return kTankLooks[static_cast<size_t>(m)]; }
 float turret_ring_of(engine::TankModel m) { return look_of(m).turret_at; }
+float tank_track_half(engine::UnitTypeId type) {
+    const engine::UnitTypeDef& def = engine::unit_type(type);
+    return def.tank ? (look_of(def.model).width - 0.05f) * kVehicleScale : 0.24f * kVehicleScale;
+}
+Vector2 tank_size(engine::TankModel m) { return {look_of(m).length, look_of(m).width}; }
+// A tank's sprite sheets by its reactive armor, wear and how far it's sunk.
+int tank_variant(engine::TankModel model, int era, int wear, int sink) { return ((static_cast<int>(model) * 4 + era) * 6 + wear) * 3 + sink; }
 Vector2 tank_muzzle(engine::TankModel m) {
     const TankLook& t = look_of(m);
     return {(t.turret_at + t.gun) * kVehicleScale, (t.deck + t.turret_h * 0.66f) * kVehicleScale};
@@ -5362,6 +5428,7 @@ void draw_tank_turret(const Frame& tf, const TankLook& look, Color team, int era
     const bool western = look.turret == TurretShape::Wedge || look.turret == TurretShape::Flat ||
                          look.turret == TurretShape::Modular || look.turret == TurretShape::Leo1;
     auto gun = [&] {
+        if (tf.sink > 0.0f && gun_z <= tf.sink) return;  // under the water
         const float g0 = r * 0.8f;
         const Color tube = shade(paint, 0.6f);
         const float sag = wear >= 4 ? -(gun_z - 1.5f) : 0.0f;  // a burnt-out wreck's gun hanging down to the ground
@@ -5669,7 +5736,12 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         engine::PlayerId owner;
         engine::TankModel model;
         int era;   // reactive armor
-        int wear;  // 0 whole .. 3 barely going, 4 a wreck
+        int wear;  // 0 whole .. 3 barely going, 4 a wreck, 5 a rusted one
+        int sink;  // 0 on firm ground, 1 in a bog, 2 under water
+    };
+    const engine::TileMap& map = world.map();
+    auto terrain_under = [&](Vector2 g) {
+        return map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))}));
     };
     std::vector<Wanted> wanted;
     for (const engine::Unit& u : world.units()) {
@@ -5677,19 +5749,29 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         if (!def.tank) continue;
         const int era = world_era_[u.owner % world_era_.size()];
         // Every wear up front (cheap: a row of directions at once), so a hit never waits for a bake.
-        for (int wear = 0; wear <= 5; ++wear) wanted.push_back({u.owner, def.model, wear >= 4 ? 0 : era, wear});  // 5: rusted
+        for (int wear = 0; wear <= 5; ++wear) wanted.push_back({u.owner, def.model, wear >= 4 ? 0 : era, wear, 0});  // 5: rusted
+        if (terrain_under(to_vector2(u.pos)) == engine::Terrain::Swamp) {  // in a bog: its sunk look, as it gets worse
+            const int now = wear_of(u.hp, def.max_hp);
+            for (int wear = now; wear <= std::min(now + 1, 3); ++wear) wanted.push_back({u.owner, def.model, era, wear, 1});
+        }
         if (dump_dir()) {  // every kind of armor, to look at
-            for (int e = 0; e <= 3; ++e) wanted.push_back({u.owner, def.model, e, 0});
+            for (int e = 0; e <= 3; ++e) wanted.push_back({u.owner, def.model, e, 0, 0});
         }
     }
     for (const Remains& r : remains_) {
-        if (engine::unit_type(r.type).tank) {
-            wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 4});
-            wanted.push_back({r.owner, engine::unit_type(r.type).model, 0, 5});
+        if (!engine::unit_type(r.type).tank) continue;
+        const engine::TankModel model = engine::unit_type(r.type).model;
+        const engine::Terrain t = terrain_under(r.ground);
+        if (t == engine::Terrain::Water) {  // drowned: not burnt, under water
+            wanted.push_back({r.owner, model, world_era_[r.owner % world_era_.size()], 1, 2});
+            continue;
         }
+        const int sink = t == engine::Terrain::Swamp ? 1 : 0;
+        wanted.push_back({r.owner, model, 0, 4, sink});
+        wanted.push_back({r.owner, model, 0, 5, sink});
     }
-    for (const auto& [owner, model, era, wear] : wanted) {
-        const int variant = (static_cast<int>(model) * 4 + era) * 6 + wear;
+    for (const auto& [owner, model, era, wear, sink] : wanted) {
+        const int variant = tank_variant(model, era, wear, sink);
         if (sheets_.count({{static_cast<int>(SpritePart::TankHull), variant}, owner})) continue;
         const TankLook& look_base = look_of(model);
         TankLook look = look_base;
@@ -5742,8 +5824,9 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                     constexpr float kScale = kVehicleScale;
                     const Vector2 F = iso_offset(f);
                     const Vector2 S = iso_offset({-f.y, f.x});
-                    const Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
-                                   {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
+                    Frame fr{{origin.x + static_cast<float>(d * kW), origin.y}, {F.x * kScale, F.y * kScale},
+                             {S.x * kScale, S.y * kScale}, f, {-f.y, f.x}, kScale};
+                    fr.sink = sink == 1 ? 5.0f : sink == 2 ? look.deck + look.turret_h * 0.75f : 0.0f;
                     if (part == SpritePart::TankHull) {
                         draw_tank_hull(fr, look, frame, era, team, std::min(wear, 4));
                     } else {
@@ -5757,7 +5840,7 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                 ImageFlipVertical(&img);
                 ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
                 pixelate(img, palette);
-                if (part == SpritePart::TankTurret && wear < 3) {
+                if (part == SpritePart::TankTurret && (wear < 3 || sink == 2)) {
                     for (const Vector2 foot : aerials) {  // the whip aerial: a pixel thin, no outline, short (shot away when battered)
                         const int x = static_cast<int>(std::lround(foot.x));
                         const int y = static_cast<int>(std::lround(foot.y));
@@ -5769,8 +5852,8 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
                 UnloadImage(img);
             }
             if (const char* dump = dump_dir()) {  // to look at them, for development
-                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era, wear,
-                                              static_cast<int>(owner)));
+                ExportImage(atlas, TextFormat("%s/sheet_%d_%d_%d_%d_%d_%d.png", dump, static_cast<int>(part), static_cast<int>(model), era, wear,
+                                              sink, static_cast<int>(owner)));
             }
             SpriteSheet sheet;
             sheet.atlas = LoadTextureFromImage(atlas);
@@ -5920,16 +6003,45 @@ void WorldRenderer::draw_particles(const engine::TileMap& map) const {
 // a black hole where it sat.
 void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) const {
     const engine::UnitTypeDef& def = engine::unit_type(r.type);
-    const int base = (static_cast<int>(def.model) * 4) * 6;
-    const SpriteSheet* hull = sheet(SpritePart::TankHull, base + 4, r.owner);
-    const SpriteSheet* turret = sheet(SpritePart::TankTurret, base + 4, r.owner);
-    const SpriteSheet* rust_hull = sheet(SpritePart::TankHull, base + 5, r.owner);
-    const SpriteSheet* rust_turret = sheet(SpritePart::TankTurret, base + 5, r.owner);
-    if (!hull || !turret) return;
     auto unit = [](Vector2 v) {
         const float l = std::hypot(v.x, v.y);
         return l > 0.0f ? Vector2{v.x / l, v.y / l} : Vector2{1.0f, 0.0f};
     };
+    const engine::Terrain under =
+        map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))}));
+    if (under == engine::Terrain::Water) {
+        // Drowned with the bridge under it: the water over it, only the top
+        // of its turret and its aerial showing, rings on the water round them.
+        const int v = tank_variant(def.model, world_era_[r.owner % world_era_.size()], 1, 2);
+        const SpriteSheet* turret = sheet(SpritePart::TankTurret, v, r.owner);
+        if (!turret) return;
+        const Frame fr = make_frame(map, r.ground, unit(r.hull));
+        const Vector2 ring = fr.at(turret_ring_of(def.model) * kVehicleScale, 0.0f);
+        const float t = static_cast<float>(GetTime());
+        for (int k = 0; k < 2; ++k) {
+            const float grow = std::fmod(t * 0.4f + static_cast<float>(k) * 0.5f, 1.0f);
+            DrawEllipseLines(static_cast<int>(ring.x), static_cast<int>(ring.y), 12.0f + 10.0f * grow, 5.0f + 4.0f * grow,
+                             ColorAlpha({190, 214, 226, 255}, 0.55f * (1.0f - grow)));
+        }
+        // Its hull a dark shape under the water, the gun along it.
+        const Vector2 size = tank_size(def.model);
+        const float k = kVehicleScale;
+        const float a = size.x * 0.5f * k;
+        const float c = size.y * k;
+        fill_quad(fr.at(a, -c), fr.at(a, c), fr.at(-a, c), fr.at(-a, -c), {24, 46, 60, 120});
+        const Vector2 f = unit(r.facing);
+        const Vector2 g0 = ring;
+        const Vector2 g1{ring.x + iso_offset(f).x * 0.8f * k, ring.y + iso_offset(f).y * 0.8f * k};
+        DrawLineEx(g0, g1, 2.0f, {24, 46, 60, 110});
+        draw_sprite(*turret, ring, unit(r.facing), 0);
+        return;
+    }
+    const int sink = under == engine::Terrain::Swamp ? 1 : 0;
+    const SpriteSheet* hull = sheet(SpritePart::TankHull, tank_variant(def.model, 0, 4, sink), r.owner);
+    const SpriteSheet* turret = sheet(SpritePart::TankTurret, tank_variant(def.model, 0, 4, sink), r.owner);
+    const SpriteSheet* rust_hull = sheet(SpritePart::TankHull, tank_variant(def.model, 0, 5, sink), r.owner);
+    const SpriteSheet* rust_turret = sheet(SpritePart::TankTurret, tank_variant(def.model, 0, 5, sink), r.owner);
+    if (!hull || !turret) return;
     const Frame fr = make_frame(map, r.ground, unit(r.hull));
     const float fade = std::clamp((kTankWreckLifetime - r.age) / 3.0f, 0.0f, 1.0f);
     // Burnt black at first, then rusting over.
@@ -5945,7 +6057,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         const Color steel = mix({74, 76, 64, 255}, {112, 68, 44, 255}, rust);
         const Color outline{18, 18, 16, 255};
         const float side = (hw & 1u) ? 1.0f : -1.0f;
-        const int n = 2 + static_cast<int>((hw >> 1) % 2);
+        const int n = sink ? 0 : 2 + static_cast<int>((hw >> 1) % 2);
         for (int i = 0; i < n; ++i) {
             const uint32_t hi = tile_hash(static_cast<int>(hw >> 4) + i * 31, i * 7 + 3);
             const float along = (hash_unit(hi) - 0.5f) * look.length * k;
@@ -6021,6 +6133,38 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         DrawTexturePro(sh.atlas, src, {std::round(at.x), std::round(at.y), w, static_cast<float>(sh.h)}, sh.origin, tilt, tint);
     });
     g_light = light;
+}
+
+// Two ruts where a tracked vehicle went: dark earth pressed into the grass
+// or the field, the tread marks across them, fading.
+void WorldRenderer::draw_track_marks(const engine::World& world, Rectangle view) const {
+    const engine::TileMap& map = world.map();
+    const Rectangle near{view.x - 40.0f, view.y - 40.0f, view.width + 80.0f, view.height + 80.0f};
+    for (const TrackMark& m : track_marks_) {
+        const Vector2 sa = on_terrain(map, m.a);
+        if (!CheckCollisionPointRec(sa, near)) continue;
+        if (fog(world, static_cast<int>(std::floor(m.a.x)), static_cast<int>(std::floor(m.a.y))) == kUnexplored) continue;
+        const float fade = 1.0f - m.age / 120.0f;
+        const Vector2 d{m.b.x - m.a.x, m.b.y - m.a.y};
+        const float len = std::hypot(d.x, d.y);
+        if (len <= 0.0f) continue;
+        const Vector2 dir{d.x / len, d.y / len};
+        const Vector2 side{-dir.y, dir.x};
+        constexpr float kRut = 0.06f;  // half a rut's width
+        for (const float s : {-1.0f, 1.0f}) {
+            const Vector2 o{side.x * m.half * s, side.y * m.half * s};
+            auto pt = [&](Vector2 p, float across) { return on_terrain(map, {p.x + o.x + side.x * across, p.y + o.y + side.y * across}); };
+            const Vector2 a0 = pt(m.a, -kRut);
+            const Vector2 a1 = pt(m.a, kRut);
+            const Vector2 b1 = pt(m.b, kRut);
+            const Vector2 b0 = pt(m.b, -kRut);
+            fill_quad(a0, a1, b1, b0, ColorAlpha({52, 42, 30, 255}, 0.42f * fade));
+            // The tread marks across it.
+            for (float t = 0.25f; t < 1.0f; t += 0.5f) {
+                DrawLineV(lerp(a0, b0, t), lerp(a1, b1, t), ColorAlpha(lit({34, 28, 20, 255}), 0.5f * fade));
+            }
+        }
+    }
 }
 
 void WorldRenderer::draw_blasts(const engine::TileMap& map) const {

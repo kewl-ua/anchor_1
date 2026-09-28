@@ -92,6 +92,17 @@ private:
         float age = 0.0f;
     };
     std::vector<Particle> particles_;
+    // Tracks left in the ground by tracked vehicles: two ruts from `a` to `b`,
+    // `half` either side of the middle, fading with their age.
+    struct TrackMark {
+        Vector2 a;
+        Vector2 b;
+        float half;
+        float age;
+    };
+    std::vector<TrackMark> track_marks_;
+    std::unordered_map<engine::EntityId, Vector2> track_last_;  // where each left its last mark
+    void draw_track_marks(const engine::World& world, Rectangle view) const;
     std::unordered_map<engine::EntityId, engine::Tick> shots_seen_;  // each unit's last shot we've made smoke for
     uint32_t fx_rng_ = 0x2545F491u;
     float fx_random();  // 0..1

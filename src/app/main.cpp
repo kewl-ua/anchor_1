@@ -402,6 +402,62 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(15.0f, 0.0f));
     }
 
+    if ((options.scene == "bog" || options.scene == "drowned") && options.mode == Options::Mode::Offline) {
+        // Offline. "bog": three tanks driving across the field into the bog by
+        // the pond, leaving their tracks. "drowned": a tank on a side bridge
+        // as it goes down, drowned in the river.
+        engine::World& w = game.world_for_setup();
+        const engine::TileMap& map = w.map();
+        const int size = map.width();
+        if (options.scene == "bog") {
+            engine::TilePos bog{-1, -1};
+            for (int y = size - 1; y >= 0 && bog.x < 0; --y) {
+                for (int x = 0; x < size / 2; ++x) {
+                    if (map.terrain(x, y) == engine::Terrain::Swamp) {
+                        bog = {x, y};
+                        break;
+                    }
+                }
+            }
+            if (bog.x < 0) return std::nullopt;
+            // Into the middle of that bog.
+            int sx = 0;
+            int sy = 0;
+            int n = 0;
+            for (int y = bog.y - 6; y <= bog.y + 1; ++y) {
+                for (int x = bog.x - 4; x <= bog.x + 6; ++x) {
+                    if (!map.contains_tile(x, y) || map.terrain(x, y) != engine::Terrain::Swamp) continue;
+                    sx += x;
+                    sy += y;
+                    ++n;
+                }
+            }
+            bog = {sx / n, sy / n};
+            const engine::UnitTypeId types[] = {engine::UnitTypeId::T64BV, engine::UnitTypeId::Leopard2A6, engine::UnitTypeId::M1A1};
+            std::vector<engine::EntityId> tanks;
+            for (int i = 0; i < 3; ++i) {
+                tanks.push_back(w.spawn_unit(me, types[i], engine::tile_center({bog.x - 9 + 2 * i, bog.y + 7})));
+            }
+            game.submit({.type = engine::CommandType::Move, .units = tanks, .target = engine::tile_center(bog)});
+            return render::to_vector2(engine::tile_center({bog.x - 3, bog.y + 3}));
+        }
+        engine::EntityId bridge = 0;
+        engine::TilePos on{};
+        for (const engine::Structure& st : w.structures()) {
+            if (st.type != engine::StructureType::Bridge || st.tiles.empty()) continue;
+            const engine::TilePos t = st.tiles[st.tiles.size() / 2];
+            if (std::abs(t.x + t.y + 1 - size) <= 2) continue;  // not the highway's
+            bridge = st.id;
+            on = t;
+            break;
+        }
+        if (bridge == 0) return std::nullopt;
+        const engine::EntityId tank = w.spawn_unit(me, engine::UnitTypeId::T64BV, engine::tile_center(on));
+        w.unit_for_setup(tank)->rounds = 0;
+        w.structure_for_setup(bridge)->hp = 0;  // it goes down on the first tick
+        return render::to_vector2(engine::tile_center(on));
+    }
+
     if (options.scene == "shelled_wood" && options.mode == Options::Mode::Offline) {
         // Offline: the woods near the base cut up more and more across the
         // view, whole on the left to snapped off on the right; the howitzer
