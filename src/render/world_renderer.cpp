@@ -5233,9 +5233,32 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
     // The near track: the links along the ground run, the sprocket at the
     // back, the idler at the front, the road wheels, the return rollers.
     const float c = near * w;
-    side_block(near, a0 - 0.01f, a1 - 0.03f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
-    for (float a = a0 + 0.03f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.06f) {
-        DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.4f), lit({58, 58, 52, 255}));
+    const bool slipped = wear >= 4;
+    if (!slipped) {
+        side_block(near, a0 - 0.01f, a1 - 0.03f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
+        for (float a = a0 + 0.03f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.06f) {
+            DrawLineV(fr.at(a, c + near * 0.005f, 0.2f), fr.at(a, c + near * 0.005f, 1.4f), lit({58, 58, 52, 255}));
+        }
+    } else {
+        // Slipped off its wheels: still wrapped round the sprocket at the back,
+        // then sagging off it and lying flat along the ground beside the wheels,
+        // its links showing, the loose end at the front twisted outward.
+        side_block(near, a0 - 0.01f, a0 + 0.14f, hw - 0.02f, w, 0.0f, 5.5f, rubber, 0.03f);
+        const float out0 = w + 0.005f;
+        const float out1 = w + 0.1f;
+        side_block(near, a0 + 0.12f, a1 - 0.12f, out0, out1, 0.0f, 1.2f, rubber);
+        const Vector2 sag_q[4] = {fr.at(a0 + 0.12f, near * hw, 5.0f), fr.at(a0 + 0.12f, near * w, 5.0f),
+                                  fr.at(a0 + 0.26f, near * out1, 1.2f), fr.at(a0 + 0.26f, near * out0, 1.2f)};
+        fill_quad(sag_q[0], sag_q[1], sag_q[2], sag_q[3], shade(rubber, 1.1f));  // sagging off the sprocket
+        for (float a = a0 + 0.16f; a < a1 - 0.14f; a += 0.05f) {
+            DrawLineV(fr.at(a, near * out0, 1.2f), fr.at(a, near * out1, 1.2f), lit({62, 62, 56, 255}));
+        }
+        const Vector2 end0 = fr.at(a1 - 0.12f, near * out0, 0.6f);
+        const Vector2 end1 = fr.at(a1 - 0.12f, near * out1, 0.6f);
+        const Vector2 tip0 = fr.at(a1 + 0.02f, near * (out1 + 0.05f), 0.3f);
+        const Vector2 tip1 = fr.at(a1 + 0.0f, near * (out1 + 0.14f), 0.3f);
+        fill_quad(end0, end1, tip1, tip0, shade(rubber, 0.9f));  // the loose end
+        DrawLineV(lerp(end0, tip0, 0.5f), lerp(end1, tip1, 0.5f), lit({62, 62, 56, 255}));
     }
     road_wheel(fr, a0 + 0.05f, c + near * 0.004f, 2.4f, steel);
     road_wheel(fr, a1 - 0.07f, c + near * 0.004f, 2.2f, steel);
@@ -5256,7 +5279,7 @@ void draw_tank_hull(const Frame& fr, const TankLook& look, int frame, int era, C
             road_wheel(fr, a1 - 0.25f - (span - 0.2f) * static_cast<float>(i) / 2.0f, c + near * 0.004f, 1.0f, steel, 3.6f);
         }
     }
-    for (float a = a0 + 0.04f * static_cast<float>(frame); a < a1 - 0.04f; a += 0.08f) {
+    for (float a = a0 + 0.04f * static_cast<float>(frame); a < (slipped ? a0 + 0.12f : a1 - 0.04f); a += 0.08f) {
         DrawLineV(fr.at(a, near * (hw - 0.02f), 5.5f), fr.at(a, near * w, 5.5f), lit({26, 26, 24, 255}));
     }
 
@@ -5914,40 +5937,45 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     const float light = g_light;
     g_light = light * (0.4f + 0.6f * fade);
     {
-        // Blown off it: road wheels lying flat on the ground beside it, a
-        // length of track trailing out behind, links and all.
+        // Blown off it: road wheels lying flat on the ground beside it, like
+        // cogs: the rim toothed, the dished disc with its holes, the hub.
         const TankLook& look = look_of(def.model);
         const float k = kVehicleScale;
         const uint32_t hw = tile_hash(static_cast<int>(r.seed & 0xFFFF), 53);
         const Color steel = mix({74, 76, 64, 255}, {112, 68, 44, 255}, rust);
-        const Color tyre = mix({30, 30, 27, 255}, {60, 44, 34, 255}, rust * 0.5f);
+        const Color outline{18, 18, 16, 255};
         const float side = (hw & 1u) ? 1.0f : -1.0f;
         const int n = 2 + static_cast<int>((hw >> 1) % 2);
         for (int i = 0; i < n; ++i) {
             const uint32_t hi = tile_hash(static_cast<int>(hw >> 4) + i * 31, i * 7 + 3);
             const float along = (hash_unit(hi) - 0.5f) * look.length * k;
-            const float out = (look.width + 0.18f + 0.3f * hash_unit(hi >> 8)) * k * (i == 2 ? -side : side);
+            const float out = (look.width + 0.2f + 0.3f * hash_unit(hi >> 8)) * k * (i == 2 ? -side : side);
             const Vector2 p = fr.at(along, out);
-            const float rx = look.wheel_r * k * 1.1f;
+            const float rx = look.wheel_r * k * 1.45f;
             const float ry = rx * (0.45f + 0.2f * hash_unit(hi >> 12));
-            DrawEllipse(static_cast<int>(p.x + 1.0f), static_cast<int>(p.y + 1.0f), rx + 1.0f, ry + 0.8f, lit({16, 14, 12, 90}));  // its shadow
-            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx + 0.8f, ry + 0.6f, lit({18, 18, 16, 255}));  // the outline
-            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx, ry, lit(tyre));
-            DrawEllipse(static_cast<int>(p.x - 0.3f), static_cast<int>(p.y - 0.3f), rx * 0.66f, ry * 0.66f, lit(steel));
-            DrawEllipse(static_cast<int>(p.x - 0.5f), static_cast<int>(p.y - 0.5f), rx * 0.3f, ry * 0.3f, lit(shade(steel, 1.4f)));
-        }
-        // The track, off its wheels: a band of links on the ground, running out from the back.
-        const float a0 = -look.length * 0.5f * k;
-        const float c0 = side * look.width * k;
-        const float bendk = (hash_unit(hw >> 9) - 0.5f) * 0.5f;
-        Vector2 prev = fr.at(a0 + 0.1f, c0);
-        for (int j = 1; j <= 6; ++j) {
-            const float t = static_cast<float>(j) / 6.0f;
-            const Vector2 g = fr.at(a0 + 0.1f - t * 0.55f * k, c0 + side * t * t * bendk * k);
-            DrawLineEx(prev, g, 3.6f, lit({18, 18, 16, 255}));
-            DrawLineEx(prev, g, 2.4f, lit(tyre));
-            DrawLineV({g.x - 1.0f, g.y - 1.0f}, {g.x + 1.0f, g.y + 1.0f}, lit(steel));  // a link's pin
-            prev = g;
+            const float turn = hash_unit(hi >> 20) * 6.2831853f;
+            DrawEllipse(static_cast<int>(p.x + 1.5f), static_cast<int>(p.y + 1.2f), rx + 1.5f, ry + 1.0f, lit({16, 14, 12, 90}));  // its shadow
+            // The toothed rim: a ring of teeth, outlined.
+            constexpr int kTeeth = 12;
+            auto ring = [&](float scale, float tooth, Color color) {
+                Vector2 pts[kTeeth * 2];
+                for (int j = 0; j < kTeeth * 2; ++j) {
+                    const float a = turn + static_cast<float>(j) * 3.14159265f / kTeeth;
+                    const float rr = (j % 2 == 0 ? 1.0f : 1.0f - tooth) * scale;
+                    pts[j] = {p.x + std::cos(a) * rx * rr, p.y + std::sin(a) * ry * rr};
+                }
+                for (int j = 0; j < kTeeth * 2; ++j) fill_triangle(p, pts[j], pts[(j + 1) % (kTeeth * 2)], color);
+            };
+            ring(1.12f, 0.2f, outline);
+            ring(1.0f, 0.2f, shade(steel, 0.8f));
+            DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), rx * 0.72f, ry * 0.72f, lit(shade(steel, 1.25f)));  // the disc
+            for (int j = 0; j < 5; ++j) {  // its holes
+                const float a = turn + static_cast<float>(j) * 6.2831853f / 5.0f;
+                DrawEllipse(static_cast<int>(p.x + std::cos(a) * rx * 0.45f), static_cast<int>(p.y + std::sin(a) * ry * 0.45f),
+                            std::max(1.0f, rx * 0.12f), std::max(0.6f, ry * 0.12f), lit(outline));
+            }
+            DrawEllipse(static_cast<int>(p.x - 0.4f), static_cast<int>(p.y - 0.4f), rx * 0.24f, ry * 0.24f, lit(shade(steel, 1.45f)));  // the hub
+            DrawPixelV({p.x - 0.4f, p.y - 0.4f}, lit(outline));
         }
     }
     auto both = [&](const SpriteSheet* burnt, const SpriteSheet* rusted, auto draw) {
