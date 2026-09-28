@@ -3997,6 +3997,47 @@ void fly_sortie(AirSetup& a) {
     CHECK(on_airfield(a.sim, a.plane, a.airfield) || a.sim.world().find_unit(a.plane) == nullptr);
 }
 
+// A bomb from the air (the Su-34's FAB-500) that hits a building brings
+// down a section of it (up to three: how it looks); a shell doesn't, not
+// even the heaviest. What's brought down leaves rubble that looks like
+// what stood there.
+void test_bombs_and_rubble() {
+    AirSetup a = air_setup();
+    Simulation& sim = a.sim;
+    World& w = sim.world_for_setup();
+    const EntityId block = w.place_structure(StructureType::Apartment, kNoOwner, {48, 18}, 4, 2);
+    const FixedVec2 at = sim.world().find_structure(block)->center;
+    // A mortar's bursts on it: no section down.
+    const EntityId mortar = w.spawn_unit(0, UnitTypeId::Mortar, {at.x - Fixed::from_int(12), at.y});
+    issue(sim, fire_at(0, {mortar}, at.x.to_int(), at.y.to_int()));
+    for (int i = 0; i < 400; ++i) sim.step();
+    const Structure* s = sim.world().find_structure(block);
+    CHECK(s && s->hp < structure_type(StructureType::Apartment).max_hp && s->bombed == 0);
+    issue(sim, {.type = CommandType::Stop, .player = 0, .units = {mortar}});
+    // A 2S7 Pion's 203 mm shells (heavier than a bomb, their burst as wide): no section down either.
+    const int32_t shelled = s ? s->hp : 0;
+    const EntityId pion = w.spawn_unit(0, UnitTypeId::Pion, {at.x - Fixed::from_int(20), at.y});
+    issue(sim, fire_at(0, {pion}, at.x.to_int(), at.y.to_int()));
+    for (int i = 0; i < 900; ++i) sim.step();
+    s = sim.world().find_structure(block);
+    CHECK(s && s->hp < shelled && s->bombed == 0);
+    issue(sim, {.type = CommandType::Stop, .player = 0, .units = {pion}});
+    // An Su-34's bombs on it.
+    const EntityId bomber = w.spawn_unit(0, UnitTypeId::Su34, tile_center({6, 19}));
+    issue(sim, fire_at(0, {bomber}, at.x.to_int(), at.y.to_int()));
+    bool bombed = false;
+    for (int i = 0; i < 800 && sim.world().find_structure(block); ++i) {
+        sim.step();
+        if (const Structure* b = sim.world().find_structure(block)) bombed = bombed || b->bombed > 0;
+    }
+    CHECK(bombed);
+    // Brought down (by hand, whatever's left of it): rubble of a block of flats.
+    if (Structure* b = w.structure_for_setup(block)) b->hp = 0;
+    sim.step();
+    CHECK(sim.world().map().terrain(49, 18) == Terrain::Ruins);
+    CHECK(sim.world().map().ruin(49, 18) == RuinKind::Apartment);
+}
+
 // Aircraft fly missions only: one mission a sortie. It takes off, makes its
 // rocket run along the target, flies home, lands and rearms from the stock.
 // In the air, new orders don't reach it.
@@ -6066,6 +6107,7 @@ int main() {
     test_research();
     test_smoke_screen();
     test_burning_wreck_smoke();
+    test_bombs_and_rubble();
     test_burst_dust();
     test_train_upgrades();
     test_upgrade_effects();

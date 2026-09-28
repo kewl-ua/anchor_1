@@ -564,7 +564,8 @@ constexpr UnitTypeDef su25_like(const char* name, const char* short_name, Vehicl
 constexpr UnitTypeDef kSu34 =
     su25_like("Su-34", "SU34", VehicleModel::Su34, 380, {5, 15, 15}, 130,
               {.name = "FAB-500 bombs", .damage = 220, .damage_type = DamageType::Explosive, .range = tiles(9), .reload = 0,
-               .projectile_speed = tiles_per_second(8), .splash_radius = tiles(12, 5), .accuracy = 100, .miss_spread = tiles(0)},
+               .projectile_speed = tiles_per_second(8), .splash_radius = tiles(12, 5), .accuracy = 100, .miss_spread = tiles(0),
+               .aerial_bomb = true},
               6, 170, 150, 50);
 constexpr UnitTypeDef kA10 =
     su25_like("A-10C Thunderbolt II", "A10", VehicleModel::A10, 420, {8, 20, 20}, 90,

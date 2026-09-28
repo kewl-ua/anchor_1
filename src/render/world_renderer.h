@@ -209,11 +209,20 @@ private:
         Vector2 at{};  // its top-left, world pixels
         uint32_t look = 0;
         uint64_t used = 0;  // the frame it was last drawn
+        // Where it's burning (flames and smoke) or smouldering (smoke), on the
+        // screen; and where it stands (a ground point, and that on the screen).
+        struct Burning {
+            Vector2 at;
+            bool flames;
+        };
+        std::vector<Burning> burning;
+        Vector2 ground{};
+        Vector2 anchor{};
     };
     struct BuildingBake {
         uint64_t key = 0;
         uint32_t look = 0;
-        int kind = 0;  // 0 a house on its tile; 1 a village building (a barn, a block of flats...); 2 a player's
+        int kind = 0;  // 0 a house on its tile; 1 a village building (a barn, a block of flats...); 2 a player's; 3 rubble on its tile
         engine::Structure s{};  // (a copy: as last seen)
         int tx = 0;
         int ty = 0;

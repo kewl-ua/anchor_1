@@ -53,6 +53,9 @@ struct WeaponDef {
     // round), not a shaped charge (an RPG, a missile): the older kinds of
     // explosive reactive armor don't stop it.
     bool kinetic = false;
+    // An aircraft's heavy bomb: a block of flats it hits has a section of it
+    // brought down (how it looks; see Structure::bombed).
+    bool aerial_bomb = false;
 };
 
 // Upgrades researched in buildings, as in AoE II's blacksmith and university.

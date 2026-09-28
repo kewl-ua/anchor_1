@@ -159,6 +159,11 @@ inline bool is_soft_ground(Terrain t) {
 // The battlefield: a grid of square tiles, each with a terrain type and an
 // elevation level. Units move freely in continuous tile coordinates, where
 // 1.0 is one tile. How it looks (isometric or not) is the renderer's business.
+// What a building brought down was: its rubble looks like it (a heap of
+// panels and a wall left standing, bricks and a chimney, the iron of a
+// works, silos' stumps...). The look only.
+enum class RuinKind : uint8_t { House, Apartment, Factory, Barn, Farm, Elevator, GasStation, Tower, Base, Hangar };
+
 class TileMap {
 public:
     static constexpr uint8_t kMaxElevation = 10;
@@ -170,7 +175,8 @@ public:
           terrain_(static_cast<size_t>(width * height), Terrain::Grass),
           resource_(static_cast<size_t>(width * height), 0),
           crater_(static_cast<size_t>(width * height), 0),
-          shred_(static_cast<size_t>(width * height), 0) {}
+          shred_(static_cast<size_t>(width * height), 0),
+          ruin_(static_cast<size_t>(width * height), RuinKind::House) {}
 
     int32_t width() const { return width_; }
     int32_t height() const { return height_; }
@@ -225,6 +231,10 @@ public:
         s = static_cast<uint8_t>(now);
         ++revision_;
     }
+
+    // What stood on a tile of rubble (how it looks, nothing else).
+    RuinKind ruin(int32_t tx, int32_t ty) const { return ruin_[index(tx, ty)]; }
+    void set_ruin(int32_t tx, int32_t ty, RuinKind kind) { ruin_[index(tx, ty)] = kind; }
 
     // Materials left on a tile (forest timber, rock stone).
     int32_t resource(TilePos t) const { return contains(t) ? resource_[index(t.x, t.y)] : 0; }
@@ -288,6 +298,7 @@ private:
     std::vector<int32_t> resource_;
     std::vector<uint8_t> crater_;  // kind | from << 4
     std::vector<uint8_t> shred_;   // see shred()
+    std::vector<RuinKind> ruin_;   // see ruin()
     uint32_t revision_ = 0;
     uint32_t blocking_revision_ = 0;
 };

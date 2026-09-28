@@ -390,6 +390,27 @@ void World::hurt_structure(const Structure& s, const WeaponDef& weapon) {
     const int32_t damage = weapon.structure_damage > 0 ? weapon.structure_damage : weapon.damage;
     const int32_t amount = damage - structure_type(s.type).armor[static_cast<size_t>(weapon.damage_type)];
     if (amount > 0) pending_damage_.push_back({s.id, amount});
+    if (weapon.aerial_bomb) {  // a bomb from the air: a section of it down
+        if (Structure* hit = find_structure_mut(s.id); hit && hit->bombed < 3) ++hit->bombed;
+    }
+}
+
+// What a building's rubble looks like (see RuinKind).
+RuinKind ruin_of(const Structure& s) {
+    switch (s.type) {
+        case StructureType::Apartment: return RuinKind::Apartment;
+        case StructureType::Elevator: return RuinKind::Elevator;
+        case StructureType::GasStation: return RuinKind::GasStation;
+        case StructureType::CellTower: return RuinKind::Tower;
+        case StructureType::ArmorBarracks:
+        case StructureType::Warehouse:
+        case StructureType::Workshop: return RuinKind::Hangar;
+        case StructureType::House:
+            if (s.look == HouseLook::Factory) return RuinKind::Factory;
+            if (s.look == HouseLook::Cowshed || s.look == HouseLook::Coop) return RuinKind::Farm;
+            return s.tiles.size() >= kSpaciousTiles ? RuinKind::Barn : RuinKind::House;
+        default: return RuinKind::Base;
+    }
 }
 
 // A house comes down on everyone inside; a bridge drops whoever is on it
@@ -426,6 +447,7 @@ void World::collapse(const Structure& s) {
             structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
             continue;
         }
+        if (rubble == Terrain::Ruins) map_.set_ruin(t.x, t.y, ruin_of(s));
         map_.set_terrain(t.x, t.y, rubble);
         structure_tiles_[static_cast<size_t>(t.y * map_.width() + t.x)] = 0;
     }
@@ -1794,6 +1816,7 @@ uint64_t World::checksum() const {
         mix(s.progress);
         mix(s.built ? 1 : 0);
         mix(s.build_progress);
+        mix(s.bombed);
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
         mix(s.parapet ? 1 : 0);
