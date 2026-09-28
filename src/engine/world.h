@@ -577,6 +577,7 @@ public:
     // Setup and tests: direct access to a unit (to hand it a nearly empty tank...).
     Unit* unit_for_setup(EntityId id) { return find_unit_mut(id); }
     Structure* structure_for_setup(EntityId id) { return find_structure_mut(id); }
+    std::vector<Fire>& fires_for_setup() { return fires_; }
 
     // Houses and bridges come from the map's House/Bridge tiles; player
     // buildings are placed with place_structure().

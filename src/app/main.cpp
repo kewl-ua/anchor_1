@@ -821,6 +821,15 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             g_doomed.push_back(logs);
             g_doomed.push_back(truck(UnitTypeId::Truck, Resource::Food, 20));
             g_doom_tick = 30;
+            // Behind them, hit and burning but running: an ammunition truck, empty and loaded, a supply truck, a tank.
+            for (const auto& [type, amount, d] : {std::tuple{UnitTypeId::AmmoTruck, 0, 14.0f}, std::tuple{UnitTypeId::AmmoTruck, 100, 16.5f},
+                                                  std::tuple{UnitTypeId::Truck, 0, 19.0f}, std::tuple{UnitTypeId::Tank, 0, 21.5f}}) {
+                const engine::EntityId id = w.spawn_unit(me, type, ahead(d, 3.0f));
+                engine::Unit* u = w.unit_for_setup(id);
+                u->hp = engine::unit_type(type).max_hp * 15 / 100;
+                u->carrying = amount;
+                u->facing = u->hull = render::to_fixed_vec2({0.0f, -fwd});
+            }
             return render::to_vector2(ahead(13.0f + gap * 2.5f, 0.5f));
         }
         truck(UnitTypeId::Truck, Resource::Food, 20);
@@ -834,6 +843,36 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         serving(truck(UnitTypeId::AmmoTruck, Resource::Ammo, 100), UnitTypeId::Tank);
         truck(UnitTypeId::FuelTanker, Resource::Fuel, 100);
         return render::to_vector2(ahead(13.0f + gap * 4.5f, 0.5f));
+    }
+
+    if (options.scene == "fire_line" && options.mode == Options::Mode::Offline) {
+        // Offline: an incendiary shell's fire in a tree line ahead of the
+        // base (its trees burning), with a foxhole's ammunition boxes in it;
+        // another on the open grass beside it.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(16.0f, 0.0f), 10);
+        const engine::TilePos line = engine::tile_of(ahead(16.0f, -2.0f));
+        for (int i = -4; i <= 4; ++i) {
+            w.map_for_setup().set_terrain(line.x + i, line.y, engine::Terrain::Forest);
+            w.map_for_setup().set_resource({line.x + i, line.y}, engine::kForestMaterials);
+        }
+        const engine::TilePos hole{line.x, line.y + 1};
+        const engine::EntityId pit = w.place_structure(engine::StructureType::Foxhole, me, hole, 1, 1);
+        w.map_for_setup().set_terrain(hole.x, hole.y, engine::Terrain::Foxhole);
+        if (engine::Structure* s = w.structure_for_setup(pit)) {
+            s->cache = 20;
+            s->cache_owner = me;
+        }
+        const engine::FixedVec2 in_line = engine::tile_center(line);
+        w.fires_for_setup().push_back({{in_line.x, in_line.y + engine::Fixed::from_ratio(1, 2)}, engine::Fixed::from_ratio(3, 2), 100000, me});
+        w.fires_for_setup().push_back({ahead(16.0f, 3.0f), engine::Fixed::from_ratio(3, 2), 100000, me});
+        return render::to_vector2(ahead(16.0f, 0.5f));
     }
 
     if (options.scene.starts_with("stages") && options.mode == Options::Mode::Offline) {

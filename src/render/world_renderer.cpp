@@ -416,6 +416,20 @@ int truck_variant(TruckModel model, int wear, int sink, int load);
 // ammunition in its boxes; shells; fuel in drums; a tanker's fuel (not seen).
 enum class Cargo : uint8_t { None, Sacks, Boards, Logs, Stone, Crates, Shells, Drums, Fuel, Count };
 Cargo cargo_of(const engine::World& world, const engine::Unit& u);
+// A spot a vehicle on fire burns at, the same all the while: along it and
+// across it (tiles), up (pixels), how big a flame (0..2).
+struct FlameSpot {
+    float along;
+    float across;
+    float z;
+    int size;
+    uint32_t seed;
+};
+// Where a vehicle burns: its engine, its cab, its load (a tank's engine
+// deck, its turret, its hatches). `wreck`: burnt out, `age` seconds ago
+// (burning its first half minute, dying down after); else still running,
+// burning low. A tanker's fuel burning in a pool round it.
+std::vector<FlameSpot> vehicle_flames(engine::UnitTypeId type, engine::PlayerId owner, bool wreck, bool blown, Cargo cargo, float age, uint32_t seed);
 int truck_load(Cargo c);  // the load its sprite shows (0: none)
 int wreck_load(Cargo c);  // what its wreck still shows of it
 bool truck_turns_top(TruckModel m);
@@ -874,9 +888,9 @@ void WorldRenderer::update_vehicles(const engine::World& world, float dt) {
 
 // A tank on fire: smoke off its engine deck, grey while it's battered, black
 // and thick with flames licking up when it's barely going or burnt out.
+// Smoke off a vehicle on fire (its flames are drawn at their spots, with it).
 void WorldRenderer::spawn_fire(Vector2 at, float height, int wear, float dt) {
     const float smoke_rate = wear >= 4 ? 3.0f : wear == 3 ? 7.0f : 3.0f;  // (a wreck's plume: the engine's smoke, drawn apart)
-    const float flame_rate = wear >= 3 ? 10.0f : 0.0f;
     // As many as the time since the last frame calls for.
     auto count = [&](float rate) {
         const float n = rate * dt;
@@ -894,19 +908,6 @@ void WorldRenderer::spawn_fire(Vector2 at, float height, int wear, float dt) {
         p.grow = 4.0f + 3.0f * fx_random();
         p.color = wear >= 3 ? Color{34, 32, 30, 200} : Color{112, 110, 106, 170};
         p.age = fx_random() * dt;  // spread over the frame
-        particles_.push_back(p);
-    }
-    for (int i = count(flame_rate); i > 0; --i) {
-        Particle p{};
-        p.kind = Particle::Kind::Flame;
-        p.ground = {at.x + (fx_random() - 0.5f) * 0.2f, at.y + (fx_random() - 0.5f) * 0.2f};
-        p.z = height - 1.0f;
-        p.vel = {};
-        p.vz = 16.0f + 12.0f * fx_random();
-        p.life = 0.35f + 0.25f * fx_random();
-        p.size = 2.0f + 1.5f * fx_random();
-        p.grow = -3.0f;
-        p.color = {255, 200, 80, 230};
         particles_.push_back(p);
     }
 }
@@ -1168,7 +1169,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             spawn_sparks(last.ground, 14.0f, 30, {255, 190, 90, 255}, 2.4f);
             for (int i = 0; i < 10; ++i) {  // burning bits of it flung up
                 Particle p{};
-                p.kind = Particle::Kind::Flame;
+                p.kind = Particle::Kind::Spark;
                 p.ground = {last.ground.x + (fx_random() - 0.5f) * 0.4f, last.ground.y + (fx_random() - 0.5f) * 0.4f};
                 p.z = 6.0f + 6.0f * fx_random();
                 p.vz = 40.0f + 50.0f * fx_random();
@@ -1203,7 +1204,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             blasts_.push_back({{last.ground.x - 0.1f, last.ground.y + 0.1f}, -0.3f, 1.1f * big, 30.0f});
             for (int i = 0; i < static_cast<int>(18.0f * big); ++i) {  // burning bits flung out
                 Particle p{};
-                p.kind = Particle::Kind::Flame;
+                p.kind = Particle::Kind::Spark;
                 const float a = fx_random() * 6.2831853f;
                 const float core = fx_random();
                 const float out = (0.3f + 0.9f * (1.0f - core)) * 0.9f * big;
@@ -1319,23 +1320,11 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
         const auto cargo = static_cast<Cargo>(r.cargo);
         if ((cargo == Cargo::Fuel || cargo == Cargo::Drums) && r.age < 45.0f) {
-            // The fuel burning: flames roaring up off the length of it, black smoke thick over it...
+            // The fuel burning (its flames drawn with it): black smoke thick over it.
             const float heat = (cargo == Cargo::Fuel ? 1.0f : 0.6f) * (r.age < 30.0f ? 1.0f : (45.0f - r.age) / 15.0f);
             for (const float t : {-0.35f, 0.0f, 0.3f}) {
                 if (fx_random() > heat) continue;
                 const Vector2 at{r.ground.x + r.facing.x * t, r.ground.y + r.facing.y * t};
-                if (fx_random() < dt * 14.0f) {
-                    Particle p{};
-                    p.kind = Particle::Kind::Flame;
-                    p.ground = {at.x + (fx_random() - 0.5f) * 0.2f, at.y + (fx_random() - 0.5f) * 0.2f};
-                    p.z = 8.0f + 3.0f * fx_random();
-                    p.vz = 22.0f + 16.0f * fx_random();
-                    p.life = 0.5f + 0.35f * fx_random();
-                    p.size = 3.0f + 2.5f * fx_random();
-                    p.grow = -2.0f;
-                    p.color = {255, 200, 80, 230};
-                    particles_.push_back(p);
-                }
                 if (fx_random() < dt * 4.0f) {
                     Particle p{};
                     p.kind = Particle::Kind::Smoke;
@@ -1349,21 +1338,6 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                     p.color = {26, 24, 22, 220};
                     particles_.push_back(p);
                 }
-            }
-            // ...and the fuel run out burning in a pool round it for a while.
-            if (r.age < 20.0f && fx_random() < dt * 18.0f * heat * (1.0f - r.age / 20.0f)) {
-                const float a = fx_random() * 6.2831853f;
-                const float d = std::sqrt(fx_random()) * 0.8f;
-                Particle p{};
-                p.kind = Particle::Kind::Flame;
-                p.ground = {r.ground.x + std::cos(a) * d, r.ground.y + std::sin(a) * d * 0.9f};
-                p.z = 0.5f;
-                p.vz = 10.0f + 8.0f * fx_random();
-                p.life = 0.45f + 0.3f * fx_random();
-                p.size = 2.0f + 2.0f * fx_random();
-                p.grow = -1.5f;
-                p.color = {255, 190, 70, 220};
-                particles_.push_back(p);
             }
         }
         if ((cargo == Cargo::Crates || cargo == Cargo::Shells) && r.age < 16.0f) {
@@ -1404,6 +1378,31 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         if (fx_random() < ease) spawn_fire({r.ground.x + along.x * e.x, r.ground.y + along.y * e.x}, e.y * 0.8f, r.age < 30.0f ? 4 : 2, dt);
     }
     update_vehicles(world, dt);
+    for (const engine::Fire& f : world.fires()) {
+        const Vector2 c = to_vector2(f.center);
+        if (!in_view(world, c)) continue;
+        const float r = to_float(f.radius);
+        for (int i = 0; i < 5; ++i) {
+            if (fx_random() > dt * 1.4f) continue;
+            const uint32_t h = tile_hash(static_cast<int>(c.x * 13.0f) + i * 31, static_cast<int>(c.y * 17.0f) + i * 7);
+            const float a = static_cast<float>(h & 0xFFFF) / 65536.0f * 6.2831853f;
+            const float d = r * 0.8f * std::sqrt(static_cast<float>((h >> 16) & 0xFFFF) / 65536.0f);
+            const Vector2 g{c.x + std::cos(a) * d, c.y + std::sin(a) * d};
+            const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))}));
+            const bool wooded = t == engine::Terrain::Forest || t == engine::Terrain::Orchard;
+            Particle p{};
+            p.kind = Particle::Kind::Smoke;
+            p.ground = g;
+            p.z = wooded ? 22.0f : 2.0f;
+            p.vel = {0.12f + (fx_random() - 0.5f) * 0.1f, -0.08f + (fx_random() - 0.5f) * 0.1f};
+            p.vz = 14.0f + 8.0f * fx_random();
+            p.life = 3.0f + fx_random();
+            p.size = 2.5f + 1.5f * fx_random();
+            p.grow = 5.0f;
+            p.color = wooded ? Color{40, 36, 32, 200} : Color{150, 146, 140, 130};
+            particles_.push_back(p);
+        }
+    }
     // Buildings burning (smoke black and thick out of the flames) and
     // smouldering (thinner, greyer): the ones drawn just now.
     for (const auto& [key, sprite] : building_sprites_) {
@@ -1578,7 +1577,7 @@ struct FxSheet {
     int frames = 0;
     Vector2 origin{};  // its foot (a blast's, a flame's) or its middle (a flash's)
 };
-enum class Fx : uint8_t { Blast0, Blast1, Blast2, Blast3, Flame0, Flame1, Flame2, Star0, Star1, Star2, Embers, Count };
+enum class Fx : uint8_t { Blast0, Blast1, Blast2, Blast3, Flame0, Flame1, Flame2, Star0, Star1, Star2, Embers, Scorch0, Scorch1, Scorch2, Count };
 constexpr int kFxVariants = 3;
 constexpr int kBlastFrames = 18;
 constexpr float kBlastSeconds[4] = {0.7f, 1.0f, 1.3f, 1.7f};  // how long a blast's sheet plays, by its size
@@ -1818,6 +1817,49 @@ FxSheet bake_embers(uint32_t seed) {
     });
 }
 
+// The ground burnt round a fire, `rx` pixels across its half: a ragged patch
+// of soot, black at the heart, burnt earth and singed grass at its edges,
+// ash grey in flecks, bits of it spattered out round it. Frames 0..3: embers
+// glowing in it, flickering (still burning); 4: cold.
+FxSheet bake_scorch(float rx, uint32_t seed) {
+    const float ry = rx * 0.5f;
+    const int w = static_cast<int>(rx * 2.5f) + 4;
+    const int h = static_cast<int>(ry * 2.5f) + 4;
+    const Vector2 o{static_cast<float>(w / 2), static_cast<float>(h / 2)};
+    const float p1 = rand01(seed, 1) * 6.28f;
+    const float p2 = rand01(seed, 2) * 6.28f;
+    return bake_fx(w, h, 5, o, [&](Canvas& c, int f) {
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float dx = (static_cast<float>(x) - o.x + 0.5f) / rx;
+                const float dy = (static_cast<float>(y) - o.y + 0.5f) / ry;
+                const float d = std::sqrt(dx * dx + dy * dy);
+                const float a = std::atan2(dy, dx);
+                const float lumpy = fx_noise(seed, x / 3, y / 2) - 0.5f;
+                const float edge = 0.86f + 0.1f * std::sin(3.0f * a + p1) + 0.06f * std::sin(7.0f * a + p2) + 0.1f * lumpy;
+                const float n = fx_noise(seed * 3u, x, y);
+                if (d > edge) {  // spattered round it
+                    if (d < edge + 0.3f && n < 0.08f * (1.0f - (d - edge) / 0.3f) * 2.0f) c.set(x, y, n < 0.05f ? Color{62, 50, 38, 255} : Color{92, 80, 52, 255});
+                    continue;
+                }
+                const float t = d / edge;
+                Color col = t < 0.5f ? (n < 0.5f ? Color{28, 24, 22, 255} : Color{36, 30, 26, 255})
+                          : t < 0.8f ? (n < 0.5f ? Color{46, 38, 32, 255} : Color{56, 46, 36, 255})
+                                     : (n < 0.55f ? Color{76, 60, 42, 255} : Color{98, 86, 54, 255});
+                if (fx_noise(seed * 7u, x, y) < 0.05f && t < 0.85f) col = Color{110, 106, 100, 255};  // ash
+                if (f < 4 && t < 0.72f) {  // embers
+                    const float e = fx_noise(seed * 11u, x, y);
+                    if (e < 0.045f) {
+                        const float glow = fx_noise(seed * 13u + static_cast<uint32_t>(f), x, y);
+                        col = glow > 0.66f ? kHeat[1] : glow > 0.3f ? kHeat[2] : kHeat[3];
+                    }
+                }
+                c.set(x, y, col);
+            }
+        }
+    });
+}
+
 // Every sheet, once there's a window to make textures in.
 void ensure_fx() {
     if (!g_fx.empty()) return;
@@ -1836,16 +1878,41 @@ void ensure_fx() {
         put(Fx::Star1, bake_star(8.0f, seed + 8u));
         put(Fx::Star2, bake_star(13.0f, seed + 9u));
         put(Fx::Embers, bake_embers(seed + 10u));
+        put(Fx::Scorch0, bake_scorch(34.0f, seed + 11u));
+        put(Fx::Scorch1, bake_scorch(48.0f, seed + 12u));
+        put(Fx::Scorch2, bake_scorch(68.0f, seed + 13u));
     }
 }
 
-// A frame of a sheet, its foot (or its middle) at `anchor`; fire lights itself.
-void draw_fx(const FxSheet& s, int frame, Vector2 anchor) {
+// A frame of a sheet, its foot (or its middle) at `anchor`; fire lights itself
+// (the ground's patches dimmed with the rest: `tint`).
+void draw_fx(const FxSheet& s, int frame, Vector2 anchor, Color tint = WHITE) {
     if (s.frames == 0) return;
     frame = std::clamp(frame, 0, s.frames - 1);
     DrawTexturePro(s.tex, {static_cast<float>(frame * s.w), 0.0f, static_cast<float>(s.w), static_cast<float>(s.h)},
                    {std::round(anchor.x - s.origin.x), std::round(anchor.y - s.origin.y), static_cast<float>(s.w), static_cast<float>(s.h)},
-                   {0.0f, 0.0f}, 0.0f, WHITE);
+                   {0.0f, 0.0f}, 0.0f, tint);
+}
+
+// Flames at their spots on a vehicle standing at `ground` facing `f`: the
+// far ones first; each flickering its own way.
+void draw_flames(const engine::TileMap& map, Vector2 ground, Vector2 f, std::vector<FlameSpot> spots) {
+    const Vector2 left{-f.y, f.x};
+    auto at = [&](const FlameSpot& sp) { return Vector2{ground.x + f.x * sp.along + left.x * sp.across, ground.y + f.y * sp.along + left.y * sp.across}; };
+    std::sort(spots.begin(), spots.end(), [&](const FlameSpot& a, const FlameSpot& b) { return at(a).x + at(a).y < at(b).x + at(b).y; });
+    const auto now = static_cast<float>(GetTime());
+    for (const FlameSpot& sp : spots) {
+        const Vector2 p = on_terrain(map, at(sp), sp.z);
+        const FxSheet& s = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Flame0) + std::clamp(sp.size, 0, 2)), static_cast<int>(sp.seed % 3u));
+        draw_fx(s, static_cast<int>(now * 11.0f + static_cast<float>(sp.seed % 97u) * 0.37f) % s.frames, {p.x, p.y + 1.0f});
+    }
+}
+
+// The ground burnt round a wreck: `size` 0..2; embers glowing while it's burning.
+void draw_scorch(Vector2 at, int size, bool hot, float alpha, uint32_t seed) {
+    const FxSheet& s = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Scorch0) + std::clamp(size, 0, 2)), static_cast<int>(seed % 3u));
+    const int frame = hot ? static_cast<int>(GetTime() * 5.0 + static_cast<double>(seed % 7u)) % 4 : 4;
+    draw_fx(s, frame, at, ColorAlpha(lit(WHITE), alpha));
 }
 
 // Trees of a forest tile, placed by a hash so they never move: pine stands,
@@ -2297,6 +2364,51 @@ void draw_tree_at(Vector2 b, const Tree& t, bool shadowed) {
 }
 
 void draw_tree(const engine::TileMap& map, const Tree& t) { draw_tree_at(on_terrain(map, t.ground), t, true); }
+
+// A tree on fire: its crown burning at a few spots (the snapped one's trunk),
+// a flame at its foot; `less` a size smaller as the fire dies down.
+void tree_flames(Vector2 base, const Tree& t, uint8_t shred, int less, uint32_t seed) {
+    const float s = t.size;
+    const float hh = t.height;
+    float crown = 0.0f;  // the crown's middle, up from the foot
+    float half = 8.0f * s;
+    float wide = 8.0f * s;
+    switch (t.kind) {
+        case TreeKind::Oak: crown = 10.0f * s * hh + 11.0f * s; wide = 11.0f * s; break;
+        case TreeKind::Beech: crown = 14.0f * s * hh + 10.0f * s; wide = 7.0f * s; half = 10.0f * s; break;
+        case TreeKind::Birch: crown = 12.0f * s * hh + 7.0f * s; wide = 6.5f * s; break;
+        case TreeKind::Pine: crown = (hh > 1.0f ? 11.0f : 4.0f) * s * hh + 9.0f * s; wide = 5.0f * s; break;
+        case TreeKind::Poplar: crown = 5.0f * s + 13.0f * s * hh; wide = 4.0f * s; half = 12.0f * s * hh; break;
+        case TreeKind::Apple: crown = 5.5f * s * hh + 5.0f * s; wide = 6.0f * s; half = 5.0f * s; break;
+        default: crown = 9.5f * s * hh + 9.0f * s; wide = 9.0f * s; break;
+    }
+    struct Spot {
+        float dx, up;
+        int size;
+    };
+    std::vector<Spot> spots;
+    if (t.stump) {
+        spots.push_back({0.0f, 1.0f, 0});
+    } else if (shred >= 7) {  // snapped: the trunk burning
+        spots.push_back({0.0f, crown * 0.45f, 1});
+        spots.push_back({0.5f * s, 1.0f, 0});
+    } else {
+        spots.push_back({-0.5f * wide, crown - 0.2f * half, 2});
+        spots.push_back({0.45f * wide, crown + 0.2f * half, 1});
+        spots.push_back({0.05f * wide, crown + 0.55f * half, 1});
+        if (t.kind == TreeKind::Poplar) spots.push_back({0.3f * wide, crown - 0.6f * half, 1});
+        spots.push_back({0.6f * s, 1.0f, 0});
+    }
+    const auto now = static_cast<float>(GetTime());
+    for (size_t i = 0; i < spots.size(); ++i) {
+        const Spot& sp = spots[i];
+        const int size = sp.size - less;
+        if (size < 0) continue;
+        const uint32_t k = seed + static_cast<uint32_t>(i) * 7919u;
+        const FxSheet& sheet = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Flame0) + size), static_cast<int>(k % 3u));
+        draw_fx(sheet, static_cast<int>(now * 11.0f + static_cast<float>(k % 97u) * 0.37f) % sheet.frames, {std::round(base.x + sp.dx), std::round(base.y - sp.up)});
+    }
+}
 
 // Trees in pixel art, baked like the tanks: for each kind and each stage of
 // being cut up (whole, thinned, half bare, bare, snapped off), a row of
@@ -6343,11 +6455,24 @@ void WorldRenderer::draw_structure_overlays(const engine::World& world, Rectangl
             const int32_t capacity = std::max(1, engine::structure_type(s.type).cache_capacity);
             const int boxes = 1 + static_cast<int>(2 * s.cache / capacity);
             const Vector2 g = on_terrain(map, {to_vector2(s.center).x + 0.25f, to_vector2(s.center).y + 0.25f});
+            const Vector2 ground{to_vector2(s.center).x + 0.25f, to_vector2(s.center).y + 0.25f};
+            bool afire = false;
+            for (const engine::Fire& f : world.fires()) {
+                const Vector2 fc = to_vector2(f.center);
+                const float r = to_float(f.radius);
+                afire = afire || (ground.x - fc.x) * (ground.x - fc.x) + (ground.y - fc.y) * (ground.y - fc.y) <= r * r;
+            }
             for (int i = 0; i < boxes; ++i) {
                 const Rectangle box{g.x - 6.0f + 4.0f * static_cast<float>(i), g.y - 4.0f - 2.0f * static_cast<float>(i % 2),
                                     6.0f, 4.0f};
-                DrawRectangleRec(box, {96, 104, 64, 255});
+                DrawRectangleRec(box, afire ? Color{58, 54, 40, 255} : Color{96, 104, 64, 255});
                 DrawRectangleLinesEx(box, 1.0f, {52, 58, 34, 255});
+            }
+            for (int i = 0; i < boxes && afire; ++i) {  // the boxes burning
+                const FxSheet& fl = fx_sheet(i == 0 ? Fx::Flame1 : Fx::Flame0, static_cast<int>((s.id + static_cast<uint32_t>(i)) % 3u));
+                const float x = g.x - 3.0f + 4.0f * static_cast<float>(i);
+                const float y = g.y - 3.0f - 2.0f * static_cast<float>(i % 2);
+                draw_fx(fl, static_cast<int>(GetTime() * 11.0 + static_cast<double>(i * 3 + static_cast<int>(s.id % 5u))) % fl.frames, {x, y});
             }
         }
         if (s.converted != engine::StructureType::Count) {
@@ -6860,11 +6985,39 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     }
     std::stable_sort(drawables.begin(), drawables.end(),
                      [](const Drawable& a, const Drawable& b) { return a.depth < b.depth; });
+    // The ground burning (an incendiary shell's): what stands in it burns, the trees; low as it dies down.
+    struct Burning {
+        Vector2 center;
+        float radius;
+        int less;  // flames a size smaller as it dies down
+    };
+    std::vector<Burning> burning;
+    for (const engine::Fire& f : world.fires()) {
+        const Vector2 c = to_vector2(f.center);
+        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
+        const engine::Tick left = f.until > world.tick() ? f.until - world.tick() : 0;
+        burning.push_back({c, to_float(f.radius), left < 3 * engine::kTicksPerSecond ? 1 : 0});
+    }
+    auto burning_at = [&](Vector2 g) {
+        for (const Burning& b : burning) {
+            if ((g.x - b.center.x) * (g.x - b.center.x) + (g.y - b.center.y) * (g.y - b.center.y) <= b.radius * b.radius) return b.less;
+        }
+        return -1;
+    };
     for (const Drawable& d : drawables) {
         g_light = d.light;
         set_grain(d.unit || d.projectile ? Grain{} : kObjectGrain);
         if (d.unit) {
             draw_unit(map, *d.unit, alpha);
+            const engine::Unit& u = *d.unit;
+            const engine::UnitTypeDef& def = engine::unit_type(u.type);
+            const std::optional<TruckModel> truck = truck_model(u.type, u.owner);
+            if ((truck || drawn_as_armor(def)) && wear_of(u.hp, def.max_hp) >= 3 && u.mired == 0) {  // burning
+                Vector2 f = to_vector2(truck ? u.facing : u.hull);
+                const float l = std::hypot(f.x, f.y);
+                f = l > 0.0f ? Vector2{f.x / l, f.y / l} : Vector2{1.0f, 0.0f};
+                draw_flames(map, unit_ground_pos(u, alpha), f, vehicle_flames(u.type, u.owner, false, false, Cargo::None, 0.0f, u.id * 2654435761u));
+            }
         } else if (d.projectile) {
             draw_projectile(*d.projectile, alpha);
         } else if (d.building) {
@@ -6883,6 +7036,13 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             draw_train_car(map, *d.car);
         } else if (d.wreck) {
             draw_wreck(map, *d.wreck);
+            const Remains& r = *d.wreck;
+            const engine::Terrain under = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(r.ground.x)), static_cast<int32_t>(std::floor(r.ground.y))}));
+            if (!r.sunk && under != engine::Terrain::Water && r.age < 45.0f) {
+                const bool truck = truck_model(r.type, r.owner).has_value();
+                draw_flames(map, r.ground, truck ? r.facing : r.hull,
+                            vehicle_flames(r.type, r.owner, true, r.blown, static_cast<Cargo>(r.cargo), r.age, r.seed));
+            }
         } else if (d.ruins) {
             auto rubble = [&](int dx, int dy) {
                 return map.contains_tile(d.house_x + dx, d.house_y + dy) && map.terrain(d.house_x + dx, d.house_y + dy) == engine::Terrain::Ruins ? 1u : 0u;
@@ -6912,6 +7072,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             const auto it = tree_sheets_.find(static_cast<int>(t.kind) * kTreeStages + tree_stage(t.shred));
             if (t.stump || it == tree_sheets_.end()) {
                 draw_tree(map, t);
+                if (const int less = burning.empty() ? -1 : burning_at(t.ground); less >= 0) tree_flames(on_terrain(map, t.ground), t, t.shred, less, t.seed);
             } else {
                 // Its shadow, then the sprite: the variant by its seed, a lone old oak the biggest.
                 const Vector2 b = on_terrain(map, t.ground);
@@ -6923,9 +7084,11 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                 DrawEllipse(static_cast<int>(b.x + 5.0f * sz), static_cast<int>(b.y + 1.5f * sz), 9.0f * sz * spread * (0.4f + 0.6f * leaf),
                             3.4f * sz, lit({16, 24, 12, 70}));
                 const SpriteSheet& sh = it->second;
+                const int less = burning.empty() ? -1 : burning_at(t.ground);
                 DrawTexturePro(sh.atlas, {static_cast<float>(v * sh.w), 0.0f, static_cast<float>(sh.w), static_cast<float>(sh.h)},
                                {std::round(b.x - sh.origin.x), std::round(b.y - sh.origin.y), static_cast<float>(sh.w), static_cast<float>(sh.h)},
-                               {0.0f, 0.0f}, 0.0f, lit(WHITE));
+                               {0.0f, 0.0f}, 0.0f, lit(less >= 0 ? Color{128, 104, 88, 255} : WHITE));  // (burning: charred)
+                if (less >= 0) tree_flames(b, tree_variant(t.kind, v, 0), t.shred, less, t.seed);
             }
             g_leaf = 1.0f;
             g_bare = 0.0f;
@@ -6936,23 +7099,6 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     draw_services(world, alpha);
     draw_radio_calls(world, alpha);
     draw_particles(map);
-
-    // Fires: flames flickering over the burning ground.
-    for (const engine::Fire& f : world.fires()) {
-        const Vector2 c = to_vector2(f.center);
-        if (!reveal_ && fog(world, static_cast<int>(c.x), static_cast<int>(c.y)) == kUnexplored) continue;
-        const float r = to_float(f.radius);
-        fill_ground_ellipse(on_terrain(map, c), r, ColorAlpha({40, 26, 18, 255}, 0.55f));  // scorched
-        const auto t = static_cast<float>(world.tick());
-        for (int i = 0; i < 9; ++i) {
-            const float a = static_cast<float>(i) * 2.4f;
-            const float d = r * (0.25f + 0.6f * static_cast<float>(i % 3) / 2.0f);
-            const Vector2 g{c.x + std::cos(a) * d, c.y + std::sin(a) * d};
-            const Vector2 base = on_terrain(map, g);
-            const FxSheet& s = fx_sheet(i % 3 == 0 ? Fx::Flame1 : Fx::Flame0, i);
-            draw_fx(s, static_cast<int>(t * 0.4f + static_cast<float>(i) * 3.0f) % s.frames, base);
-        }
-    }
 
     // Smoke screens, burning wrecks' plumes, bursts' dust: over whatever is in them.
     draw_smoke(world);
@@ -7776,8 +7922,7 @@ void WorldRenderer::draw_remains(const engine::TileMap& map) const {
         const float fade = std::clamp((lifetime - r.age) / 3.0f, 0.0f, 1.0f);  // fade out over the last 3 s
         const Vector2 p = on_terrain(map, r.ground);
         if (r.vehicle) {
-            fill_ground_ellipse(p, 0.5f, ColorAlpha({30, 28, 26, 255}, 0.85f * fade));
-            fill_ground_ellipse({p.x - 3, p.y - 4}, 0.3f, ColorAlpha({55, 50, 45, 255}, 0.9f * fade));
+            draw_scorch(p, 0, false, fade, r.seed);
         } else {
             fill_ground_ellipse(p, 0.15f, ColorAlpha({70, 40, 35, 255}, 0.7f * fade));
         }
@@ -10789,6 +10934,85 @@ Vector2 truck_engine(const TruckLook& l) {
     if (l.chassis == Chassis::Btr80) return {-h * 0.7f * kVehicleScale, 12.0f * kVehicleScale};
     return {(h - 0.12f) * kVehicleScale, (ch.bonnet > 0.0f ? ch.bonnet_z : ch.cab_z * 0.6f) * kVehicleScale};
 }
+// Where a truck burns: its engine (along, up), its cab (along, up), its bed
+// (the middle, half its length, its top).
+struct TruckSpots {
+    Vector2 engine;
+    Vector2 cab;
+    float bed_mid;
+    float bed_half;
+    float bed_z;
+};
+TruckSpots truck_spots(const TruckLook& l) {
+    const ChassisDims ch = chassis_of(l);
+    const float h = l.length * 0.5f;
+    const float k = kVehicleScale;
+    const float b0 = -h + 0.02f;
+    const float z = l.body == Body::Tank ? ch.floor + 6.2f : l.body == Body::Tarp ? ch.floor + 2.0f : ch.floor + 2.4f;
+    return {truck_engine(l), {(ch.cab0 + ch.cab1) * 0.5f * k, ch.cab_z * k}, (b0 + ch.bed1) * 0.5f * k, (ch.bed1 - b0) * 0.5f * k, z * k};
+}
+
+std::vector<FlameSpot> vehicle_flames(engine::UnitTypeId type, engine::PlayerId owner, bool wreck, bool blown, Cargo cargo, float age, uint32_t seed) {
+    std::vector<FlameSpot> spots;
+    int most = 2;  // a wreck: all ablaze its first 24 s, dying down to 45 s
+    if (wreck) {
+        if (age > 45.0f) return spots;
+        most = age > 34.0f ? 0 : age > 24.0f ? 1 : 2;
+    }
+    auto add = [&](float a, float c, float z, int size) {
+        spots.push_back({a, c, z, std::min(size, most), seed + static_cast<uint32_t>(spots.size()) * 7919u});
+    };
+    const engine::UnitTypeDef& def = engine::unit_type(type);
+    if (const std::optional<TruckModel> model = truck_model(type, owner)) {
+        const TruckLook& look = truck_look_of(*model);
+        if (look.chassis == Chassis::Btr80) {
+            const Vector2 e = truck_engine(look);
+            add(e.x, 0.04f, e.y, wreck ? 2 : 1);
+            return spots;
+        }
+        const TruckSpots t = truck_spots(look);
+        if (!wreck) {  // running, burning low: the engine, the tarpaulin
+            add(t.engine.x, 0.03f, t.engine.y, 1);
+            if (look.body == Body::Tarp) add(t.bed_mid + t.bed_half * 0.3f, -0.05f, t.bed_z + 4.0f, 0);
+            return spots;
+        }
+        add(t.engine.x, 0.0f, t.engine.y, 2);
+        add(t.cab.x, 0.05f, t.cab.y, 1);
+        if (cargo == Cargo::Fuel || cargo == Cargo::Drums) {  // the fuel: flames the length of it
+            for (const float k : {-0.6f, 0.0f, 0.55f}) add(t.bed_mid + t.bed_half * k, 0.02f * k, t.bed_z + 1.0f, 2);
+            if (age < 20.0f) {  // the pool of it burning round it, going out
+                const int pool = age < 8.0f ? 1 : 0;
+                for (int i = 0; i < 8; ++i) {
+                    const float a = static_cast<float>(i) * 0.785f + rand01(seed, i) * 0.5f;
+                    const float d = 0.5f + 0.35f * rand01(seed, i + 10);
+                    if (age > 12.0f && i % 2 == 1) continue;
+                    spots.push_back({std::cos(a) * d, std::sin(a) * d, 0.0f, pool, seed + 991u * static_cast<uint32_t>(i + 1)});
+                }
+            }
+        } else {
+            add(t.bed_mid + t.bed_half * 0.45f, -0.04f, t.bed_z - 1.0f, 1);
+            add(t.bed_mid - t.bed_half * 0.5f, 0.05f, t.bed_z - 1.0f, cargo == Cargo::None || cargo == Cargo::Stone ? 0 : 1);
+        }
+        return spots;
+    }
+    if (drawn_as_armor(def)) {
+        const Vector2 e = armor_engine(def.model);
+        const Dims d = dims_of(def.model);
+        const float k = kVehicleScale;
+        if (!wreck) {  // running, burning low: its engine deck
+            add(e.x, 0.05f, e.y, 1);
+            add(e.x + 0.08f, -0.07f, e.y, 0);
+            return spots;
+        }
+        add(e.x, 0.02f, e.y, 2);
+        add(e.x + 0.1f, -0.1f, e.y, 1);
+        add(d.ring.x * k, d.ring.y * k, (blown ? d.deck : d.turret_z + d.turret_h) * k, blown ? 2 : 1);  // the turret, or the hole it left
+        add(d.length * 0.3f * k, -0.06f, (d.deck + 0.5f) * k, 0);  // the driver's hatch
+        return spots;
+    }
+    if (wreck && gun_or_plane(def)) add(0.0f, 0.0f, 3.0f, 1);
+    return spots;
+}
 Vector2 truck_top_ring(const TruckLook& l) {
     const float h = l.length * 0.5f;
     return l.top == Top::Sentinel ? Vector2{-h - 0.22f, 0.0f} : Vector2{-h + 0.26f, 0.0f};
@@ -11207,15 +11431,34 @@ void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color te
                 const Color tarp = mix(paint, {128, 122, 86, 255}, 0.35f);
                 auto cover = [&] {
                     if (!burnt) {
-                        block(fr, split + 0.01f, b1 - 0.01f, -w + 0.015f, w - 0.015f, ch.floor + 1.4f, top, tarp, 0.01f, 0.01f, 0.05f);
+                        // Burning (at its worst, still running): the tarpaulin melting, sagging between its hoops, burnt through.
+                        const bool melted = wear == 3;
+                        const float sag = melted ? 2.4f : 0.0f;
+                        const Color cloth = melted ? mix(tarp, {58, 48, 36, 255}, 0.55f) : tarp;
+                        block(fr, split + 0.01f, b1 - 0.01f, -w + 0.015f, w - 0.015f, ch.floor + 1.4f, top - sag, cloth, 0.01f, 0.01f, melted ? 0.075f : 0.05f);
                         if (!under(fr, top)) {
-                            for (int k = 1; k < 5; ++k) {  // its hoops showing through
+                            for (int k = 1; k < 5; ++k) {  // its hoops showing through (standing up out of it, melted)
                                 const float a = split + (b1 - split) * static_cast<float>(k) / 5.0f;
+                                if (melted) {
+                                    DrawLineV(fr.at(a, -w + 0.07f, top), fr.at(a, w - 0.07f, top), lit({40, 36, 32, 255}));
+                                    for (const float side : {-1.0f, 1.0f}) DrawLineV(fr.at(a, side * (w - 0.05f), top - sag), fr.at(a, side * (w - 0.07f), top), lit({40, 36, 32, 255}));
+                                    continue;
+                                }
                                 DrawLineV(fr.at(a, -w + 0.07f, top), fr.at(a, w - 0.07f, top), lit(shade(tarp, 0.78f)));
                                 DrawLineV(fr.at(a, near * (w - 0.015f), ch.floor + 1.6f), fr.at(a, near * (w - 0.06f), top - 0.2f), lit(shade(tarp, 0.8f)));
                             }
-                            if (wear >= 3) {  // torn
-                                for (int k = 0; k < 3; ++k) patch(fr, split + 0.08f + (b1 - split - 0.16f) * 0.4f * static_cast<float>(k), 0.03f * static_cast<float>(k - 1), 0.04f, 0.035f, top, {30, 28, 24, 255}, seed + static_cast<uint32_t>(k));
+                            if (melted) {
+                                for (int k = 0; k < 4; ++k) {  // burnt through: black holes, charred round them
+                                    const float a = split + 0.06f + (b1 - split - 0.12f) * (0.1f + 0.27f * static_cast<float>(k));
+                                    const float c = (rand01(seed, 40 + k) - 0.5f) * (w - 0.1f);
+                                    patch(fr, a, c, 0.075f, 0.06f, top - sag, {50, 36, 26, 255}, seed + 50u + static_cast<uint32_t>(k));
+                                    patch(fr, a, c, 0.05f, 0.04f, top - sag, {20, 18, 16, 255}, seed + 60u + static_cast<uint32_t>(k));
+                                }
+                                for (int k = 0; k < 6; ++k) {  // run down its side
+                                    const float a = split + 0.03f + (b1 - split - 0.06f) * static_cast<float>(k) / 5.0f;
+                                    DrawLineV(fr.at(a, near * (w - 0.015f), top - sag - 0.3f), fr.at(a, near * (w - 0.015f), top - sag - 1.5f - 2.5f * rand01(seed, 70 + k)),
+                                              lit({36, 30, 24, 255}));
+                                }
                             }
                         }
                         if (open) block(fr, split - 0.03f, split + 0.02f, -w + 0.02f, w - 0.02f, top - 2.4f, top - 0.2f, shade(tarp, 0.9f), 0.008f, 0.008f, 0.0f);  // rolled up
@@ -12670,10 +12913,11 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
         g_light = light * (0.4f + 0.6f * fade);
         const Vector2 at = on_terrain(map, r.ground);
         Vector2 dir = unit(r.facing);
+        if (!plane) draw_scorch(at, 0, r.age < 30.0f, fade, r.seed);
         if (plane) {
             const float t = (hash_unit(tile_hash(static_cast<int>(r.seed & 0xFFFF), 71)) - 0.5f) * 1.6f;
             dir = {dir.x * std::cos(t) - dir.y * std::sin(t), dir.y * std::cos(t) + dir.x * std::sin(t)};
-            fill_ground_ellipse(at, 0.8f, ColorAlpha({26, 22, 18, 255}, 0.7f * fade));
+            draw_scorch(at, 1, r.age < 40.0f, fade, r.seed);
         }
         draw_sprite(*burnt, at, dir, 0);
         if (rusted && rust > 0.0f) draw_sprite(*rusted, at, dir, 0, ColorAlpha(WHITE, rust));
@@ -12737,6 +12981,7 @@ void WorldRenderer::draw_wreck(const engine::TileMap& map, const Remains& r) con
     const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
     const float light = g_light;
     g_light = light * (0.4f + 0.6f * fade);
+    if (!sink) draw_scorch(fr.o, r.blown ? 1 : 0, r.age < 40.0f, fade, r.seed);  // the ground burnt round it
     {
         // Blown off it: road wheels lying flat on the ground beside it, like
         // cogs: the rim toothed, the dished disc with its holes, the hub.
@@ -12882,6 +13127,9 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
     const float rust = std::clamp((r.age - 20.0f) / 90.0f, 0.0f, 0.9f);
     const float light = g_light;
     g_light = light * (0.4f + 0.6f * fade);
+    draw_scorch(fr.o, r.cargo == static_cast<uint8_t>(Cargo::Fuel) ? 2
+                      : r.cargo == static_cast<uint8_t>(Cargo::Drums) || r.cargo == static_cast<uint8_t>(Cargo::Crates) || r.cargo == static_cast<uint8_t>(Cargo::Shells) ? 1 : 0,
+                r.age < 40.0f, fade, r.seed);  // the ground burnt round it: wide where the fuel ran out burning, where the rounds went up
     {  // a burnt rim or two lying beside it
         const uint32_t hw = tile_hash(static_cast<int>(r.seed & 0xFFFF), 59);
         const Color steel = mix({74, 76, 64, 255}, {112, 68, 44, 255}, rust);
@@ -12901,12 +13149,7 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
     {
         const auto cargo = static_cast<Cargo>(r.cargo);
         const uint32_t hc = tile_hash(static_cast<int>(r.seed & 0xFFFF), 71);
-        if (cargo == Cargo::Fuel || cargo == Cargo::Drums) {  // where the fuel burned out on the ground
-            fill_ground_ellipse(fr.o, cargo == Cargo::Fuel ? 1.0f : 0.7f, {30, 26, 22, 170});
-            fill_ground_ellipse(fr.o, cargo == Cargo::Fuel ? 0.7f : 0.5f, {20, 18, 16, 200});
-        }
-        if (cargo == Cargo::Crates || cargo == Cargo::Shells) {  // thrown about: the boxes, the shells, black round it
-            fill_ground_ellipse(fr.o, 0.75f, {34, 30, 26, 150});
+        if (cargo == Cargo::Crates || cargo == Cargo::Shells) {  // thrown about: the boxes, the shells
             for (int i = 0; i < 12; ++i) {
                 const float a = hash_unit(tile_hash(static_cast<int>(hc >> 3) + i * 13, i * 7)) * 6.2831853f;
                 const float d = 0.5f + 0.9f * hash_unit(tile_hash(static_cast<int>(hc >> 9) + i * 5, i * 11));
@@ -12930,7 +13173,12 @@ void WorldRenderer::draw_truck_wreck(const engine::TileMap& map, const Remains& 
         }
         if (cargo == Cargo::Sacks) {  // burst sacks, the flour white on the ground
             const Vector2 p = fr.at(-look.length * k * 0.4f, look.width * k + 0.15f);
-            fill_ground_ellipse(p, 0.22f, {206, 202, 190, 200});
+            for (int i = 0; i < 40; ++i) {  // the flour spilt, in flecks
+                const float a = rand01(hc, 300 + i) * 6.2831853f;
+                const float d = std::sqrt(rand01(hc, 340 + i));
+                DrawRectangleRec({std::round(p.x + std::cos(a) * d * 9.0f), std::round(p.y + std::sin(a) * d * 4.5f), 1.0f + static_cast<float>(i % 2), 1.0f},
+                                 lit(i % 3 == 0 ? Color{176, 170, 156, 255} : Color{222, 218, 206, 255}));
+            }
             block(fr, -look.length * k * 0.45f, -look.length * k * 0.35f, look.width * k + 0.06f, look.width * k + 0.14f, 0.0f, 1.6f, {120, 108, 84, 255}, 0.01f, 0.01f, 0.015f);
         }
     }
@@ -12996,9 +13244,6 @@ void WorldRenderer::draw_blasts(const engine::TileMap& map) const {
         const int size = b.radius < 0.45f ? 0 : b.radius < 1.0f ? 1 : b.radius < 1.8f ? 2 : 3;
         if (b.age >= kBlastSeconds[size]) continue;
         const Vector2 p = on_terrain(map, b.ground);
-        if (b.age < 0.3f && b.z <= 0.0f) {  // the ground lit up under it
-            fill_ground_ellipse(p, b.radius * 0.7f, ColorAlpha({255, 170, 60, 255}, 0.35f * (1.0f - b.age / 0.3f)));
-        }
         const uint32_t v = tile_hash(static_cast<int>(b.ground.x * 17.0f), static_cast<int>(b.ground.y * 23.0f + b.z));
         const FxSheet& s = fx_sheet(static_cast<Fx>(static_cast<int>(Fx::Blast0) + size), static_cast<int>(v % 3u));
         draw_fx(s, static_cast<int>(b.age / kBlastSeconds[size] * static_cast<float>(s.frames)), {p.x, p.y - b.z});
