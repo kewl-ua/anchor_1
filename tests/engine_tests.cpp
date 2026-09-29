@@ -3991,6 +3991,30 @@ void test_pontoon_bridge() {
     CHECK(sim.world().pontoon_crossing({17, 3}, at_half(25, 7)).water.empty());  // (dry land: no crossing)
 }
 
+// The Siverskyi Donets battle's scenario: the river five tiles across at
+// the crossings, firm banks either side for the pontoon parks, the village's
+// houses, both sides' forces where the director expects them.
+void test_donets_scenario() {
+    Simulation sim(7, make_scenario_map(ScenarioId::Donets, kDonetsMapSize));
+    const ScenarioSetup setup = setup_scenario(ScenarioId::Donets, sim.world_for_setup());
+    for (const char* site : {"crossing", "crossing2"}) {
+        const World::Crossing c = sim.world().pontoon_crossing(tile_of(setup.points.at(site)), setup.points.at("bank"));
+        CHECK(c.water.size() == 5);
+    }
+    CHECK(setup.groups.at("parks").size() == 2 && setup.groups.at("parks2").size() == 1);
+    CHECK(setup.groups.at("m777").size() == 4 && setup.groups.at("houses").size() == 3);
+    CHECK(setup.groups.at("column_head").size() + setup.groups.at("column_tail").size() == 17);
+    for (const EntityId id : setup.groups.at("m777")) {
+        const Unit* g = sim.world().find_unit(id);
+        CHECK(g && g->owner == 0 && g->deployed);
+        // In range of the crossing and of the column on the road.
+        CHECK((setup.points.at("crossing") - g->pos).length_sq_raw() <= square_raw(unit_type(g->type).weapon.range));
+        CHECK((setup.points.at("road") - g->pos).length_sq_raw() <= square_raw(unit_type(g->type).weapon.range));
+    }
+    ScenarioId id{};
+    CHECK(scenario_by_name("donets", id) && id == ScenarioId::Donets && !scenario_by_name("nowhere", id));
+}
+
 // A mine goes off under the first enemy of its kind to come onto its tile;
 // the side that laid it walks over it safely.
 void test_mines() {
@@ -7071,6 +7095,7 @@ int main() {
     test_mines();
     test_sappers_find_and_clear_mines();
     test_directional_mine();
+    test_donets_scenario();
     test_line_charge_clears_a_lane();
     test_pontoon_bridge();
     test_wire_and_hedgehogs();

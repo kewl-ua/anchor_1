@@ -10,6 +10,7 @@
 
 #include "app/debug_log.h"
 #include "app/player_controller.h"
+#include "engine/scenario.h"
 #include "engine/simulation.h"
 #include "hud/hud.h"
 #include "net/lockstep.h"
@@ -25,8 +26,9 @@ namespace app {
 class Game {
 public:
     // `transport` may be null (offline); otherwise it must outlive the Game.
+    // `scenario`: the demo, or a battle played over (its own map and forces).
     Game(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count,
-         net::Transport* transport);
+         net::Transport* transport, engine::ScenarioId scenario = engine::ScenarioId::Demo);
     Game(const Game&) = delete;
     Game& operator=(const Game&) = delete;
 
@@ -58,6 +60,14 @@ public:
     engine::World& world_for_setup() { return sim_.world_for_setup(); }
     // `--replay`: the game played over from a --debug replay (offline, watching).
     void play_replay(const debug::Replay& replay);
+    // A battle's director: a command (any side's) put into the simulation
+    // on its tick (offline; dropped when a replay plays, which has it).
+    void script(engine::Tick tick, engine::Command cmd);
+    const engine::ScenarioSetup& scenario_setup() const { return setup_; }
+    // The ground point in the middle of the screen (tiles): has the player moved the camera?
+    Vector2 screen_center_ground() const;
+    // The panels, the bars (off: for filming).
+    void set_hud_visible(bool visible) { hud_visible_ = visible; }
 
 private:
     engine::Simulation sim_;
@@ -78,6 +88,8 @@ private:
     std::map<engine::Tick, uint64_t> replay_checksums_;  // --replay: how it went then
     bool replay_diverged_ = false;
     bool desync_logged_ = false;
+    engine::ScenarioSetup setup_;
+    bool hud_visible_ = true;
 };
 
 }  // namespace app

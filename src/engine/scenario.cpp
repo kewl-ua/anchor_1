@@ -828,6 +828,34 @@ void setup_demo_scenario(World& world) {
     }
 }
 
+const char* scenario_name(ScenarioId id) {
+    switch (id) {
+        case ScenarioId::Demo: return "demo";
+        case ScenarioId::Donets: return "donets";
+    }
+    return "demo";
+}
+
+bool scenario_by_name(std::string_view name, ScenarioId& out) {
+    for (const ScenarioId id : {ScenarioId::Demo, ScenarioId::Donets}) {
+        if (name == scenario_name(id)) {
+            out = id;
+            return true;
+        }
+    }
+    return false;
+}
+
+TileMap make_scenario_map(ScenarioId id, int32_t size) {
+    return id == ScenarioId::Donets ? make_donets_map(size) : make_demo_map(size);
+}
+
+ScenarioSetup setup_scenario(ScenarioId id, World& world) {
+    if (id == ScenarioId::Donets) return setup_donets(world);
+    setup_demo_scenario(world);
+    return {};
+}
+
 TilePos demo_station_origin(int32_t map_size, PlayerId player) {
     const FixedVec2 base = demo_base_position(map_size, 0);
     const TilePos first{base.x.to_int() - map_size * 7 / 100, base.y.to_int() - map_size * 5 / 100};

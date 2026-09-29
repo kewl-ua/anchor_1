@@ -25,7 +25,7 @@ bool logging();
 // A line in the log (printf-style); nothing without --debug.
 void logf(const char* fmt, ...);
 // The game's start: what a replay needs to set it up again.
-void session(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count);
+void session(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count, const char* scenario);
 // A tick about to run and the commands it applies (every player's).
 void step(const engine::World& world, const std::vector<engine::Command>& commands);
 // What the frame is doing now, for the crash report (a string literal).
@@ -38,6 +38,7 @@ struct Replay {
     int32_t map_size = 0;
     engine::PlayerId local_player = 0;
     int player_count = 1;
+    std::string scenario = "demo";  // engine::scenario_name()
     std::map<engine::Tick, std::vector<engine::Command>> commands;
     std::map<engine::Tick, uint64_t> checksums;  // as it went then: to see it goes the same
 };

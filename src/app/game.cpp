@@ -37,13 +37,13 @@ std::optional<Vector2> center_of(const engine::World& world, Pred pred) {
 }  // namespace
 
 Game::Game(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count,
-           net::Transport* transport)
-    : sim_(seed, engine::make_demo_map(map_size)),
+           net::Transport* transport, engine::ScenarioId scenario)
+    : sim_(seed, engine::make_scenario_map(scenario, map_size)),
       lockstep_(sim_, local_player, player_count, transport),
       controller_(local_player) {
-    engine::setup_demo_scenario(sim_.world_for_setup());
+    setup_ = engine::setup_scenario(scenario, sim_.world_for_setup());
     renderer_.set_viewer(local_player, reveal_);
-    debug::session(seed, map_size, local_player, player_count);
+    debug::session(seed, map_size, local_player, player_count, engine::scenario_name(scenario));
     lockstep_.observe_steps([this](engine::Tick tick, const std::vector<engine::Command>& commands) {
         debug::phase("the simulation's tick");
         debug::step(sim_.world(), commands);
@@ -75,6 +75,16 @@ void Game::play_replay(const debug::Replay& replay) {
     lockstep_.set_replay(replay.commands);
     replay_checksums_ = replay.checksums;
     debug::logf("replay: %zu ticks with commands", replay.commands.size());
+}
+
+void Game::script(engine::Tick tick, engine::Command cmd) {
+    if (lockstep_.replaying()) return;
+    sim_.schedule(tick, std::move(cmd));
+}
+
+Vector2 Game::screen_center_ground() const {
+    const Vector2 middle{static_cast<float>(GetScreenWidth()) * 0.5f, static_cast<float>(GetScreenHeight()) * 0.5f};
+    return render::iso::pick_ground(sim_.world().map(), camera_.screen_to_world(middle));
 }
 
 void Game::update(float dt) {
@@ -145,6 +155,7 @@ void Game::draw(hud::NetStatus net) const {
         return render::iso::pick_ground(sim_.world().map(), camera_.screen_to_world(screen));
     };
 
+    if (!hud_visible_) return;
     debug::phase("drawing the HUD");
     hud_.draw(sim_.world(), {
         .local_player = lockstep_.local_player(),

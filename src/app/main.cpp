@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 
 #include <raylib.h>
 
+#include "app/battles.h"
 #include "app/debug_log.h"
 #include "app/game.h"
 #include "engine/scenario.h"
@@ -46,6 +48,10 @@ struct Options {
     bool debug = false;
     // `--replay <file>`: a game recorded with --debug played over (offline, watching).
     std::string replay;
+    // `--battle <name>`: a battle of the war played over as a demonstration (offline): `donets`.
+    std::string battle;
+    // `--video <file.mp4>`: the battle filmed (by ffmpeg), 30 frames a second of game time, and then out.
+    std::string video;
     // `--ticks n`: take the smoke screenshot at this tick.
     std::optional<engine::Tick> smoke_ticks;
     // `--speed n`: the smoke test's game speed (default 50x; 1 to see smoke and particles as in play).
@@ -2194,6 +2200,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
             opt.debug = true;
         } else if (arg == "--replay" && has_next) {
             opt.replay = argv[++i];
+        } else if (arg == "--battle" && has_next) {
+            opt.battle = argv[++i];
+        } else if (arg == "--video" && has_next) {
+            opt.video = argv[++i];
         } else if (arg == "--scene" && has_next) {
             opt.scene = argv[++i];
         } else if (arg == "--ticks" && has_next) {
@@ -2225,8 +2235,41 @@ void print_usage() {
         "                   or a number of tiles %d..%d; when joining, the host's size is used\n"
         "  --reveal         no fog of war on screen (for development)\n"
         "  --debug          log the session and record a replay of it into logs/ beside the game\n"
-        "  --replay file    play over a game recorded with --debug (watching)\n",
+        "  --replay file    play over a game recorded with --debug (watching)\n"
+        "  --battle donets  a battle of the war played over: the Siverskyi Donets crossing, May 2022\n"
+        "  --video file.mp4 with --battle or --replay of one: film it (needs ffmpeg on the PATH)\n",
         static_cast<unsigned>(net::kDefaultPort), engine::kMinMapSize, engine::kMaxMapSize);
+}
+
+constexpr float kFilmFps = 30.0f;
+
+std::FILE* open_pipe(const char* cmd) {
+#ifdef _WIN32
+    return _popen(cmd, "wb");
+#else
+    return popen(cmd, "w");
+#endif
+}
+void close_pipe(std::FILE* f) {
+#ifdef _WIN32
+    _pclose(f);
+#else
+    pclose(f);
+#endif
+}
+
+// A battle's caption at the top of the screen, fading in and out.
+void draw_caption(const app::battles::Script& script, const Font& font, float seconds) {
+    for (const app::battles::Caption& c : script.captions) {
+        if (seconds < c.from || seconds >= c.to) continue;
+        const float fade = std::clamp(std::min(seconds - c.from, c.to - seconds) / 0.6f, 0.0f, 1.0f);
+        const float w = static_cast<float>(GetScreenWidth());
+        const bool two = c.text && c.text[0];
+        DrawRectangleRec({0.0f, 0.0f, w, two ? 84.0f : 54.0f}, Fade(BLACK, 0.55f * fade));
+        DrawTextEx(font, c.title, {28.0f, 12.0f}, 32.0f, 0.0f, Fade({244, 236, 214, 255}, fade));
+        if (two) DrawTextEx(font, c.text, {28.0f, 50.0f}, 24.0f, 0.0f, Fade({206, 200, 184, 255}, fade));
+        return;
+    }
 }
 
 uint64_t random_seed() {
@@ -2255,13 +2298,23 @@ int main(int argc, char** argv) {
         }
         seed = replay->seed;
     }
+    // A battle played over: its scenario, from the option or the replay.
+    engine::ScenarioId scenario = engine::ScenarioId::Demo;
+    if (!options->battle.empty() && !engine::scenario_by_name(options->battle, scenario)) {
+        std::fprintf(stderr, "no such battle: %s\n", options->battle.c_str());
+        return 1;
+    }
+    if (replay) engine::scenario_by_name(replay->scenario, scenario);
+    const bool battle = scenario != engine::ScenarioId::Demo;
+    if (battle && !replay) seed = kSmokeSeed;  // (a battle plays the same every time: live, filmed, recorded)
+    const bool filming = !options->video.empty() && battle;
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | (filming ? 0 : FLAG_VSYNC_HINT) | FLAG_MSAA_4X_HINT);
     InitWindow(1280, 720, "Anchor RTS");
     SetExitKey(KEY_F10);  // Esc is reserved for in-game cancel/menu
     HideCursor();         // ours is drawn instead: its shape tells what a click would do
     if (options->mouse) theme::g_fake_mouse = options->mouse;
-    const bool show_cursor = !smoke || options->mouse.has_value();
+    const bool show_cursor = (!smoke && !filming) || options->mouse.has_value();
 
     // The session must outlive the game, which uses it as its transport.
     std::unique_ptr<net::EnetSession> session;
@@ -2269,17 +2322,49 @@ int main(int argc, char** argv) {
     switch (options->mode) {
         case Options::Mode::Offline:
             if (replay) {  // (its player's view, everyone's commands played as they came)
-                game.emplace(seed, replay->map_size, replay->local_player, 1, nullptr);
+                game.emplace(seed, replay->map_size, replay->local_player, 1, nullptr, scenario);
                 game->play_replay(*replay);
             } else {
-                game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr);
+                game.emplace(seed, battle ? engine::kDonetsMapSize : options->map_size, engine::PlayerId{0}, 1, nullptr, scenario);
             }
-            game->set_reveal(options->reveal);
+            game->set_reveal(options->reveal || battle);
             game->set_show_cursor(show_cursor);
             break;
         case Options::Mode::Host: session = net::EnetSession::host(options->port, seed, options->map_size); break;
         case Options::Mode::Join: session = net::EnetSession::join(options->address, options->port); break;
     }
+
+    // A battle's director: its orders into the simulation on their ticks
+    // (a replay has them already), its camera and its captions.
+    std::optional<app::battles::Script> script;
+    if (game && battle) {
+        script = app::battles::donets(game->scenario_setup());
+        for (const auto& [tick, cmd] : script->orders) game->script(tick, cmd);
+        app::debug::logf("battle: %s, %zu orders", engine::scenario_name(scenario), script->orders.size());
+    }
+    bool follow = battle;  // the director's camera, till the player moves it
+    Vector2 followed{};
+    Font caption_font{};
+    bool caption_font_ok = false;
+    if (script) {  // (a font with Cyrillic from the system's, if there is one)
+        std::vector<int> codepoints;
+        for (int c = 32; c < 127; ++c) codepoints.push_back(c);
+        for (int c = 0x400; c < 0x460; ++c) codepoints.push_back(c);
+        for (const int c : {0x2013, 0x2014, 0xAB, 0xBB, 0x2116}) codepoints.push_back(c);
+        for (const char* path : {"C:/Windows/Fonts/bahnschrift.ttf", "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf"}) {
+            if (!FileExists(path)) continue;
+            caption_font = LoadFontEx(path, 32, codepoints.data(), static_cast<int>(codepoints.size()));
+            caption_font_ok = caption_font.texture.id != 0;
+            if (caption_font_ok) {
+                SetTextureFilter(caption_font.texture, TEXTURE_FILTER_BILINEAR);
+                break;
+            }
+        }
+    }
+    std::FILE* film = nullptr;  // ffmpeg's stdin
+    int film_frames = 0;
+    if (battle && game) game->set_hud_visible(false);  // (watching it: no panels)
+    if (filming) theme::g_fake_mouse = Vector2{-1000.0f, -1000.0f};  // (nothing lit up under a mouse on film)
 
     bool smoke_ordered = false;
     std::optional<Vector2> smoke_look;
@@ -2301,11 +2386,24 @@ int main(int argc, char** argv) {
             if (smoke && !smoke_ordered) {
                 game->set_tick_limit(options->smoke_frames > 0 ? smoke_ticks + 1000000 : smoke_ticks);
                 game->set_time_scale(options->smoke_speed.value_or(kSmokeTimeScale));
-                smoke_look = start_smoke_scene(*game, *options);
+                if (!battle) smoke_look = start_smoke_scene(*game, *options);
                 if (options->look) smoke_look = options->look;
                 smoke_ordered = true;
             }
-            game->update(GetFrameTime());
+            game->update(filming ? 1.0f / kFilmFps : GetFrameTime());
+            if (script && follow) {
+                // The player took the camera: it's his from now on.
+                const Vector2 here = game->screen_center_ground();
+                if (!smoke && !filming && game->world().tick() > 10 && std::hypot(here.x - followed.x, here.y - followed.y) > 0.4f) {
+                    follow = false;
+                } else {
+                    const app::battles::CameraKey key =
+                        app::battles::camera_at(*script, static_cast<float>(game->world().tick()) / engine::kTicksPerSecond);
+                    game->set_camera_zoom(key.zoom);
+                    game->center_camera_on(key.look);
+                    followed = game->screen_center_ground();
+                }
+            }
             if (smoke && !g_doomed.empty() && game->world().tick() >= g_doom_tick) {  // the scene's units hit now
                 for (const engine::EntityId id : g_doomed) {
                     if (engine::Unit* u = game->world_for_setup().unit_for_setup(id)) u->hp = 0;
@@ -2336,7 +2434,7 @@ int main(int argc, char** argv) {
             if (smoke && smoke_look) {
                 if (options->zoom) game->set_camera_zoom(*options->zoom);
                 game->center_camera_on(*smoke_look);
-            } else if (smoke) {
+            } else if (smoke && !battle) {
                 game->center_camera_on_selection();
             }
         }
@@ -2351,11 +2449,32 @@ int main(int argc, char** argv) {
                 if (session->state() != net::EnetSession::State::Ready) net.message = session->status();
             }
             game->draw(net);
+            if (script && caption_font_ok) draw_caption(*script, caption_font, static_cast<float>(game->world().tick()) / engine::kTicksPerSecond);
         } else {
             hud::draw_lobby_screen(session ? session->status() : std::string());
             if (show_cursor && IsCursorOnScreen()) hud::draw_cursor(hud::Cursor::Arrow, theme::mouse_position());
         }
         EndDrawing();
+
+        if (filming && game) {  // the frame to ffmpeg; the battle over, out
+            Image shot = LoadImageFromScreen();
+            if (!film) {
+                const std::string cmd = TextFormat(
+                    "ffmpeg -loglevel error -y -f rawvideo -pix_fmt rgba -s %dx%d -r %d -i - -c:v libx264 -preset medium -crf 20 "
+                    "-pix_fmt yuv420p -movflags +faststart \"%s\"",
+                    shot.width, shot.height, static_cast<int>(kFilmFps), options->video.c_str());
+                film = open_pipe(cmd.c_str());
+                if (!film) {
+                    std::fprintf(stderr, "video: can't start ffmpeg\n");
+                    UnloadImage(shot);
+                    break;
+                }
+            }
+            std::fwrite(shot.data, 1, static_cast<size_t>(shot.width) * static_cast<size_t>(shot.height) * 4, film);
+            UnloadImage(shot);
+            if (++film_frames % 300 == 0) std::printf("video: %d s\n", film_frames / static_cast<int>(kFilmFps));
+            if (script && game->world().tick() >= script->end) break;
+        }
 
         if (smoke && game && game->world().tick() >= smoke_ticks && options->smoke_frames > 0 && frames_shot < options->smoke_frames) {
             if (frame_step++ % 2 == 0) {
@@ -2392,6 +2511,8 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (film) close_pipe(film);
+    if (caption_font_ok) UnloadFont(caption_font);
     app::debug::logf("quit at tick %u", game ? game->world().tick() : 0u);
     game.reset();
     session.reset();

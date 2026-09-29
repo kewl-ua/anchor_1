@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string_view>
 
+#include "engine/unit_types.h"
 #include "net/protocol.h"
 
 // (after our own headers: windows.h's macros would get into them)
@@ -306,17 +307,30 @@ void logf(const char* fmt, ...) {
     write_line(g_log, text);
 }
 
-void session(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count) {
-    logf("session: seed %" PRIu64 ", map %d, we are player %d of %d", seed, map_size, local_player, player_count);
+void session(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int player_count, const char* scenario) {
+    logf("session: %s, seed %" PRIu64 ", map %d, we are player %d of %d", scenario, seed, map_size, local_player, player_count);
     if (!g_replay) return;
-    std::fprintf(g_replay, "anchor-replay 1\nprotocol %u\nseed %" PRIu64 "\nmap %d\nplayer %d\nplayers %d\n",
-                 static_cast<unsigned>(net::kProtocolVersion), seed, map_size, local_player, player_count);
+    std::fprintf(g_replay, "anchor-replay 1\nprotocol %u\nscenario %s\nseed %" PRIu64 "\nmap %d\nplayer %d\nplayers %d\n",
+                 static_cast<unsigned>(net::kProtocolVersion), scenario, seed, map_size, local_player, player_count);
     std::fflush(g_replay);
 }
 
 void step(const engine::World& world, const std::vector<engine::Command>& commands) {
     g_tick = world.tick();
     if (!g_log) return;
+    // Who fell since the last tick: gone from the world.
+    static std::map<engine::EntityId, std::string> alive;
+    std::map<engine::EntityId, std::string> now;
+    for (const engine::Unit& u : world.units()) {
+        char where[96];
+        std::snprintf(where, sizeof where, "P%d %s #%u at (%.1f,%.1f)", u.owner, engine::unit_type(u.type).name, u.id,
+                      tiles(u.pos.x), tiles(u.pos.y));
+        now[u.id] = where;
+    }
+    for (const auto& [id, who] : alive) {
+        if (!now.contains(id)) logf("gone: %s", who.c_str());
+    }
+    alive = std::move(now);
     for (const engine::Command& cmd : commands) {
         logf("P%d %s", cmd.player, describe(cmd).c_str());
         if (g_replay) {
@@ -386,6 +400,8 @@ std::optional<Replay> load_replay(const std::string& path) {
                 std::fprintf(stderr, "replay: made with protocol %u, this game is %u: it may play out differently\n", v,
                              static_cast<unsigned>(net::kProtocolVersion));
             }
+        } else if (key == "scenario") {
+            s >> r.scenario;
         } else if (key == "seed") {
             s >> r.seed;
         } else if (key == "map") {

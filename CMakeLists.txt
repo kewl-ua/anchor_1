@@ -88,6 +88,7 @@ add_library(engine STATIC
     src/engine/pathfinding.cpp
     src/engine/simulation.cpp
     src/engine/scenario.cpp
+    src/engine/scenario_donets.cpp
     src/engine/unit_types.cpp
 )
 target_include_directories(engine PUBLIC src)
@@ -131,6 +132,7 @@ anchor_target_defaults(hud)
 
 add_executable(anchor
     src/app/main.cpp
+    src/app/battles.cpp
     src/app/debug_log.cpp
     src/app/game.cpp
     src/app/player_controller.cpp
