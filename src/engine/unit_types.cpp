@@ -1021,6 +1021,60 @@ constexpr UnitTypeDef kUnitTypes[] = {
     gun_def(kD30, kGunSpecs[3]),
     kSu34,
     kA10,
+    {
+        // UR-77 Meteorit: an armored launcher on a tracked hull; its rocket
+        // drags a hose of explosive over a minefield, and it goes off along
+        // its length. A machine gun for itself.
+        .name = "UR-77 Meteorit",
+        .short_name = "UR77",
+        .max_hp = 200,
+        .armor = {8, 8, 5},
+        .speed = tiles_per_second(6, 5),
+        .radius = tiles(2, 5),
+        .sight = tiles(8),
+        .mass = 14,
+        .vehicle = true,
+        .weapon = {.name = "PKT machine gun", .damage = 3, .damage_type = DamageType::Bullet, .range = tiles(6),
+                   .reload = seconds(1, 4), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 55, .miss_spread = tiles(1)},
+        .cost = {2, 0, 120, 60, 60},
+        .train_time = seconds(30),
+        .breacher = true,
+        .fuel_capacity = tiles(180),
+        .rounds_capacity = 500,
+        .rounds_per_supply = 10,
+        .missile_capacity = 2,
+        .abilities = {AbilityId::LineCharge, AbilityId::RadioSilence, AbilityId::CallSupply},
+        .ability_count = 3,
+        .emitter = true,
+        .apc = true,  // (armor, if no troops aboard)
+        .floats = true,
+        .soft_ground_percent = 100 * 100 / 120,
+        .crew_survives_percent = 30,
+        .model = VehicleModel::Ur77,
+        .family = Family::Apc,
+    },
+    {
+        // PMP: the folded river sections on heavy trucks; unloaded into the
+        // water they open out and are pinned one to the next.
+        .name = "PMP pontoon park",
+        .short_name = "PMP",
+        .max_hp = 140,
+        .armor = {3, 0, 0},
+        .speed = tiles_per_second(8, 5),
+        .radius = tiles(7, 20),
+        .sight = tiles(6),
+        .mass = 12,
+        .vehicle = true,
+        .wheeled = true,
+        .weapon = {.name = "Unarmed", .damage = 0, .damage_type = DamageType::Bullet, .range = tiles(0),
+                   .reload = seconds(1), .projectile_speed = kInstantHit, .splash_radius = kNoSplash,
+                   .accuracy = 0, .miss_spread = tiles(0)},
+        .cost = {2, 0, 100, 0, 40},
+        .train_time = seconds(25),
+        .abilities = {AbilityId::LayPontoon},
+        .ability_count = 1,
+    },
 };
 static_assert(std::size(kUnitTypes) == kUnitTypeCount);
 
@@ -1116,6 +1170,13 @@ constexpr AbilityDef kAbilities[] = {
     // As the ground allows: up a tree in a wood, a hide in the crops or the rubble, else an artificial stump.
     {.name = "Observation post here, watching a direction: hidden in it (up a tree: sees farther)", .label = "Post",
      .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
+    // Out over the minefield: the lane it lies along cleared when it goes off.
+    {.name = "Line charge: a rocket drags a hose of explosive up to 8 tiles out; 2 s later it goes off along it: the mines, "
+             "the wire, the hedgehogs in a lane 2.5 tiles wide cleared, men by it hurt. 2 aboard, ammunition trucks bring more",
+     .label = "Line charge", .target = AbilityTarget::Point, .range = tiles(8), .cooldown = seconds(5)},
+    {.name = "Pontoon bridge: straight across the river from the nearer bank, a section a tile (3 s and 15 materials each; "
+             "more pontoon parks, faster)",
+     .label = "Pontoon", .target = AbilityTarget::Point, .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 
@@ -1169,7 +1230,7 @@ constexpr StructureDef kStructureTypes[] = {
     {.name = "Gun pit", .max_hp = 250, .armor = {0, 10, 60}, .cache_capacity = 80},
     {.name = "Engineer barracks", .max_hp = 1000, .armor = {0, 10, 60},
      .buildable = true, .width = 2, .height = 2, .cost = {0, 0, 120, 0, 0}, .build_time = seconds(25),
-     .roster = {UnitTypeId::Sapper}, .roster_size = 1},
+     .roster = {UnitTypeId::Sapper, UnitTypeId::Ur77, UnitTypeId::PontoonPark}, .roster_size = 3},
     // Obstacles: a shell or a tank's tracks make short work of wire.
     {.name = "Barbed wire", .max_hp = 60, .armor = {0, 0, 60}},
     {.name = "Hedgehogs", .max_hp = 400, .armor = {0, 30, 80}},
@@ -1205,6 +1266,8 @@ constexpr StructureDef kStructureTypes[] = {
      .buildable = true, .width = 2, .height = 2, .cost = {0, 50, 100, 0, 0}, .build_time = seconds(25)},
     // A scout's: branches, a hollow stump, a platform up a tree. Flimsy.
     {.name = "Observation post", .max_hp = 60, .armor = {0, 0, 40}},
+    // Steel on the water: shells and charges sink it, section by section.
+    {.name = "Pontoon bridge", .max_hp = 300, .armor = {0, 10, 30}},
 };
 static_assert(std::size(kStructureTypes) == static_cast<size_t>(StructureType::Count));
 

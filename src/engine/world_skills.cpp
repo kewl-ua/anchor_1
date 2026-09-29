@@ -386,6 +386,57 @@ void World::update_ability(Unit& u) {
             return finish_ability(u);
         }
 
+        case AbilityId::LineCharge: {
+            // In reach of the minefield, turned to it: the rocket off, its hose
+            // lying out to the point; it goes off a while after (update_line_charges).
+            if (u.missiles <= 0) return finish_ability(u);
+            const FixedVec2 out = u.order_point - u.pos;
+            if (out.length_sq_raw() > square_raw(kLineChargeReach + def.radius)) {
+                if (navigate(u, u.order_point, u.order_path, u.order_goal, false) == Step::Blocked) finish_ability(u);
+                return;
+            }
+            const Fixed l = out.length();
+            if (l <= def.radius) return finish_ability(u);
+            u.facing = out;
+            u.hull = out;
+            --u.missiles;
+            const FixedVec2 front = u.pos + out * ((def.radius + Fixed::from_ratio(1, 2)) / l);
+            line_charges_.push_back({u.owner, front, u.order_point, tick_, tick_ + kLineChargeFuse});
+            return finish_ability(u);
+        }
+
+        case AbilityId::LayPontoon: {
+            // Across the river from the bank nearer: at the bank, a section a
+            // tile floated out and pinned on to the last, paid as it goes in.
+            const Crossing c = pontoon_crossing(map_.clamp_tile(tile_of(u.order_point)), u.pos);
+            const auto next = std::find_if(c.water.begin(), c.water.end(), [&](TilePos t) { return map_.terrain(t) == Terrain::Water; });
+            if (next == c.water.end()) return finish_ability(u);  // across (or no crossing there)
+            // (It stands beside the way onto the bridge, not on it.)
+            TilePos spot = c.bank;
+            const TilePos across{c.water.front().y - c.bank.y, c.water.front().x - c.bank.x};
+            for (const int32_t k : {1, -1}) {
+                const TilePos t{c.bank.x + across.x * k, c.bank.y + across.y * k};
+                if (map_.contains(t) && map_.passable(t, move_class(def)) && structure_id_at(t) == 0) {
+                    spot = t;
+                    break;
+                }
+            }
+            const FixedVec2 stand = tile_center(spot);
+            if ((stand - u.pos).length_sq_raw() > square_raw(kPontoonReach)) {
+                if (navigate(u, stand, u.order_path, spot, false) == Step::Blocked) finish_ability(u);
+                return;
+            }
+            u.facing = tile_center(*next) - u.pos;
+            const int32_t index = next->y * map_.width() + next->x;
+            if (++dig_work_[index] < kPontoonWork) return;
+            dig_work_.erase(index);
+            Stock& stock = stock_[u.owner % kMaxPlayers];
+            if (!can_afford(stock, kPontoonCost)) return finish_ability(u);
+            pay(stock, kPontoonCost);
+            place_structure(StructureType::Pontoon, u.owner, *next, 1, 1);
+            return;
+        }
+
         case AbilityId::Camouflage:
             if (++u.work < kCamouflageWork) return;
             u.camouflaged = true;

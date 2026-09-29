@@ -443,7 +443,8 @@ uint8_t along_structure(const Structure& s, FixedVec2 at) {
 // (not earthworks, obstacles, a bridge, a runway, a scout's post).
 static bool has_walls(StructureType t) {
     return !is_fieldwork(t) && !is_obstacle(t) && t != StructureType::Dugout && t != StructureType::Pillbox &&
-           t != StructureType::Bridge && t != StructureType::Airfield && t != StructureType::ObservationPost;
+           t != StructureType::Bridge && t != StructureType::Airfield && t != StructureType::ObservationPost &&
+           t != StructureType::Pontoon;
 }
 
 void World::hurt_structure(const Structure& s, const WeaponDef& weapon, FixedVec2 at) {
@@ -488,7 +489,7 @@ void World::collapse(const Structure& s) {
                 u.hp = 0;
             }
         }
-    } else if (s.type != StructureType::Bridge) {
+    } else if (s.type != StructureType::Bridge && s.type != StructureType::Pontoon) {
         for (EntityId id : s.garrison) {
             if (Unit* u = find_unit_mut(id)) u->hp = 0;
         }
@@ -499,7 +500,7 @@ void World::collapse(const Structure& s) {
             if (std::find(s.tiles.begin(), s.tiles.end(), t) != s.tiles.end()) u.hp = 0;
         }
     }
-    Terrain rubble = s.type == StructureType::Bridge ? Terrain::Water : Terrain::Ruins;
+    Terrain rubble = s.type == StructureType::Bridge || s.type == StructureType::Pontoon ? Terrain::Water : Terrain::Ruins;
     if (is_fieldwork(s.type) || is_obstacle(s.type) || s.type == StructureType::Dugout ||
         s.type == StructureType::Pillbox || s.type == StructureType::Airfield) {
         rubble = Terrain::Grass;  // filled in, cut, torn down, cratered
@@ -784,6 +785,7 @@ void World::step() {
     }
     update_mines();
     update_charges();
+    update_line_charges();
     if (tick_ % kRearmInterval == 0) draw_from_caches();
 
     while (!recent_impacts_.empty() && recent_impacts_.front().tick + kImpactHistory < tick_) {
@@ -1518,7 +1520,8 @@ void World::burst_shell(const Projectile& p, FixedVec2 at) {
 // What burns: houses, blocks, buildings; not a bridge, not field works.
 static bool burns(StructureType type) {
     return type != StructureType::Bridge && !is_fieldwork(type) && !is_obstacle(type) &&
-           type != StructureType::Dugout && type != StructureType::Pillbox && type != StructureType::Airfield;
+           type != StructureType::Dugout && type != StructureType::Pillbox && type != StructureType::Airfield &&
+           type != StructureType::Pontoon;
 }
 
 // Fires burn out. While they burn, every second whoever is in one (a
@@ -2025,6 +2028,13 @@ uint64_t World::checksum() const {
         mix(c.owner);
         mix(c.target);
         mix_vec(c.pos);
+        mix(c.goes_off);
+    }
+    for (const LineCharge& c : line_charges_) {
+        mix(c.owner);
+        mix_vec(c.from);
+        mix_vec(c.to);
+        mix(c.fired);
         mix(c.goes_off);
     }
     for (const Structure& s : structures_) {

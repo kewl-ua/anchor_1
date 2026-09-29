@@ -488,6 +488,8 @@ const char* unit_label(engine::UnitTypeId type) {
         case engine::UnitTypeId::Manpads: return "MANPADS";
         case engine::UnitTypeId::Shilka: return "Shilka";
         case engine::UnitTypeId::AirRadar: return "AD radar";
+        case engine::UnitTypeId::Ur77: return "UR-77";
+        case engine::UnitTypeId::PontoonPark: return "PMP";
         case engine::UnitTypeId::Count: break;
     }
     return "?";

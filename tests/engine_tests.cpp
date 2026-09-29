@@ -525,7 +525,7 @@ void test_demo_map_is_fair() {
             const bool made = terrain == Terrain::Ruins || terrain == Terrain::Building || terrain == Terrain::Trench ||
                               terrain == Terrain::Foxhole || terrain == Terrain::Dugout || terrain == Terrain::GunPit ||
                               terrain == Terrain::Wire || terrain == Terrain::Hedgehogs || terrain == Terrain::Pillbox ||
-                              terrain == Terrain::Airstrip;
+                              terrain == Terrain::Airstrip || terrain == Terrain::Pontoon;
             if (!made) CHECK(counts[t] > 0);
         }
         CHECK(counts[static_cast<size_t>(Terrain::Ruins)] == 0);  // nothing destroyed yet
@@ -3933,6 +3933,64 @@ void lay_a_mine(Simulation& sim, PlayerId player, bool anti_tank, int32_t x, int
     sim.step();
 }
 
+// A UR-77's line charge: out over the enemy's minefield, it goes off along
+// its hose: the mines in the lane gone, one off to the side left; the wire
+// across it torn away; a man by it hurt; a charge fewer aboard.
+void test_line_charge_clears_a_lane() {
+    Simulation sim(1, TileMap(40, 20));
+    lay_a_mine(sim, 1, false, 12, 10);
+    lay_a_mine(sim, 1, true, 15, 10);
+    lay_a_mine(sim, 1, false, 14, 11);
+    lay_a_mine(sim, 1, false, 14, 14);  // (well off to the side)
+    World& w = sim.world_for_setup();
+    const EntityId wire = w.place_structure(StructureType::Wire, 1, {13, 10}, 1, 1);
+    const EntityId man = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(33, 21));
+    const EntityId ur77 = w.spawn_unit(0, UnitTypeId::Ur77, at_half(19, 21));  // (in reach)
+    CHECK(sim.world().find_unit(ur77)->missiles == 2);
+    issue(sim, use_ability_at(0, {ur77}, AbilityId::LineCharge, at_half(35, 21)));
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().line_charges().size() == 1);
+    CHECK(sim.world().find_unit(ur77)->missiles == 1);
+    for (Tick i = 0; i < kLineChargeFuse + 10; ++i) sim.step();
+    CHECK(sim.world().line_charges().empty());
+    CHECK(sim.world().mines().size() == 1);
+    CHECK((sim.world().mines().front().tile == TilePos{14, 14}));
+    CHECK(!sim.world().find_structure(wire));
+    CHECK(sim.world().map().terrain(13, 10) != Terrain::Wire);
+    CHECK(hp_of(sim, man) < unit_type(UnitTypeId::Rifleman).max_hp);
+}
+
+// A pontoon park bridges a river: from the bank nearer it straight across, a
+// section a tile, paid as it goes; men cross by it; a section sunk, it's the
+// river again there.
+void test_pontoon_bridge() {
+    TileMap map(40, 20);
+    for (int32_t y = 0; y < 20; ++y) {
+        for (int32_t x = 18; x <= 21; ++x) map.set_terrain(x, y, Terrain::Water);
+    }
+    Simulation sim(1, std::move(map));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {10, 0, 100, 0, 0});
+    const EntityId pmp = w.spawn_unit(0, UnitTypeId::PontoonPark, at_half(25, 21));
+    const World::Crossing c = sim.world().pontoon_crossing({19, 10}, at_half(25, 21));
+    CHECK((c.bank == TilePos{17, 10}) && c.water.size() == 4 && (c.water.front() == TilePos{18, 10}));
+    issue(sim, use_ability_at(0, {pmp}, AbilityId::LayPontoon, at_half(39, 21)));
+    for (Tick i = 0; i < 4 * kPontoonWork + 10 * kTicksPerSecond; ++i) sim.step();
+    for (int32_t x = 18; x <= 21; ++x) CHECK(sim.world().map().terrain(x, 10) == Terrain::Pontoon);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Materials)] == 100 - 4 * kPontoonCost[static_cast<size_t>(Resource::Materials)]);
+    CHECK(sim.world().find_unit(pmp)->order == Order::Idle);
+    const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(29, 21));
+    issue(sim, make_move(0, {man}, 26, 10));
+    for (Tick i = 0; i < 20 * kTicksPerSecond; ++i) sim.step();
+    CHECK(sim.world().find_unit(man)->pos.x > Fixed::from_int(24));
+    const Structure* section = sim.world().structure_at({20, 10});
+    CHECK(section && section->type == StructureType::Pontoon);
+    w.structure_for_setup(section->id)->hp = 0;
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().map().terrain(20, 10) == Terrain::Water);
+    CHECK(sim.world().pontoon_crossing({17, 3}, at_half(25, 7)).water.empty());  // (dry land: no crossing)
+}
+
 // A mine goes off under the first enemy of its kind to come onto its tile;
 // the side that laid it walks over it safely.
 void test_mines() {
@@ -6958,6 +7016,8 @@ int main() {
     test_upgrade_effects();
     test_mines();
     test_sappers_find_and_clear_mines();
+    test_line_charge_clears_a_lane();
+    test_pontoon_bridge();
     test_wire_and_hedgehogs();
     test_pillbox();
     test_demolition_charges();

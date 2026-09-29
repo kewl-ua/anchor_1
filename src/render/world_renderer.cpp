@@ -393,6 +393,7 @@ void WorldRenderer::remember(const engine::World& world) {
     for (const engine::Structure& s : world.structures()) {
         if (s.owner == viewer_ || s.type == engine::StructureType::House || s.type == engine::StructureType::Bridge) continue;
         if ((engine::is_fieldwork(s.type) || engine::is_obstacle(s.type)) && !s.parapet) continue;  // the ground shows it
+        if (s.type == engine::StructureType::Pontoon) continue;  // (with the water)
         if (reveal_ || world.sees(viewer_, s)) remembered_[s.id] = s;
     }
     // Gone, and we have seen the empty spot: forget it.
@@ -1836,7 +1837,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             const Vector2 a1 = lerp(it->second, p, static_cast<float>(k) / static_cast<float>(steps));
             const engine::Terrain t = map.terrain(map.clamp_tile({static_cast<int32_t>(std::floor(a1.x)), static_cast<int32_t>(std::floor(a1.y))}));
             const bool firm = t == engine::Terrain::Road || t == engine::Terrain::Bridge || t == engine::Terrain::Water ||
-                              t == engine::Terrain::Airstrip || t == engine::Terrain::Rail;
+                              t == engine::Terrain::Airstrip || t == engine::Terrain::Rail || t == engine::Terrain::Pontoon;
             if (!firm) track_marks_.push_back({a0, a1, track_half(u.type), 0.0f, def.wheeled});
             // Whatever grew under the hull there, flattened.
             for (int ty = static_cast<int>(std::floor(a1.y - 0.8f)); ty <= static_cast<int>(std::floor(a1.y + 0.8f)); ++ty) {
@@ -2042,6 +2043,25 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         r.age = 0.0f;  // (a wreck from now on)
         r.cargo = static_cast<uint8_t>(Cargo::Fuel);  // its fuel burning a while, black smoke over it
     }
+    // A line charge's rocket in flight: its smoke trail.
+    for (const engine::LineCharge& c : world.line_charges()) {
+        const float t = (static_cast<float>(world.tick() - c.fired) + 0.5f) / static_cast<float>(engine::kTicksPerSecond);
+        if (t > 0.8f || !in_view(world, to_vector2(c.from))) continue;
+        const float f = t / 0.8f;
+        const Vector2 at = lerp(to_vector2(c.from), to_vector2(c.to), f);
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = at;
+        p.z = 4.0f + 26.0f * std::sin(3.14159f * f);
+        p.vel = {(fx_random() - 0.5f) * 0.1f, (fx_random() - 0.5f) * 0.1f};
+        p.vz = 1.0f;
+        p.life = 1.6f + fx_random();
+        p.size = 2.0f + fx_random();
+        p.grow = 3.0f;
+        p.color = {200, 198, 190, 190};
+        particles_.push_back(p);
+    }
+
     // What's being dug or put up, and how far along (drawn as it goes).
     digging_.clear();
     {
@@ -2062,7 +2082,11 @@ void WorldRenderer::update(const engine::World& world, float dt) {
                 if (u.order_ability == engine::AbilityId::PlaceHedgehogs) kind = works::Kind::Hedgehogs;
                 facing = unit_facing(u);
             }
-            const engine::Tick needed = kind == works::Kind::Wire ? engine::kWireWork : kind == works::Kind::Hedgehogs ? engine::kHedgehogWork : engine::kTrenchWork;
+            if (map.terrain(tx, ty) == engine::Terrain::Water) kind = works::Kind::Pontoon;  // (a section being floated out)
+            const engine::Tick needed = kind == works::Kind::Wire        ? engine::kWireWork
+                                        : kind == works::Kind::Hedgehogs ? engine::kHedgehogWork
+                                        : kind == works::Kind::Pontoon   ? engine::kPontoonWork
+                                                                         : engine::kTrenchWork;
             digging_[index] = {kind, std::clamp(static_cast<float>(work) / static_cast<float>(needed), 0.0f, 1.0f), facing};
         }
         for (const engine::Unit& u : world.units()) {
@@ -8291,6 +8315,7 @@ std::optional<works::Spec> works_now(const engine::World& world, int tx, int ty,
             break;
         case engine::Terrain::Wire: spec.kind = works::Kind::Wire; break;
         case engine::Terrain::Hedgehogs: spec.kind = works::Kind::Hedgehogs; break;
+        case engine::Terrain::Pontoon: spec.kind = works::Kind::Pontoon; break;
         default:
             if (s && s->type == engine::StructureType::Parapet) {
                 spec.kind = works::Kind::Parapet;
@@ -8359,6 +8384,24 @@ std::optional<works::Spec> WorldRenderer::works_at(const engine::World& world, i
     const bool wire = spec->kind == works::Kind::Wire;
     const bool joins = spec->kind == works::Kind::Trench || spec->kind == works::Kind::Foxhole ||
                        spec->kind == works::Kind::Dugout || spec->kind == works::Kind::MortarPit;
+    if (spec->kind == works::Kind::Pontoon) {
+        // Along the crossing: the sections next to it (and one being floated
+        // out); where it meets the bank, the ramp (+16 each way).
+        static constexpr int kWays[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int bit = 0; bit < 4; ++bit) {
+            const int x = tx + kWays[bit][0];
+            const int y = ty + kWays[bit][1];
+            if (!map.contains_tile(x, y)) continue;
+            const engine::Terrain n = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
+            const auto nd = digging_.find(y * map.width() + x);
+            if (n == engine::Terrain::Pontoon || (nd != digging_.end() && nd->second.kind == works::Kind::Pontoon)) {
+                spec->links |= static_cast<uint8_t>(1u << bit);
+            } else if (n != engine::Terrain::Water && n != engine::Terrain::Bridge) {
+                spec->links |= static_cast<uint8_t>((1u << bit) | (16u << bit));
+            }
+        }
+        return spec;
+    }
     static constexpr int kSteps[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
     for (int bit = 0; bit < 4; ++bit) {
         const int x = tx + kSteps[bit][0];
@@ -8785,7 +8828,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
                !engine::is_fieldwork(s.type) && !engine::is_obstacle(s.type) && s.type != engine::StructureType::Dugout &&
                s.type != engine::StructureType::Airfield && s.type != engine::StructureType::Apartment &&
                s.type != engine::StructureType::CellTower && s.type != engine::StructureType::GasStation &&
-               s.type != engine::StructureType::Elevator &&  // drawn with the ground's tiles, like houses
+               s.type != engine::StructureType::Elevator && s.type != engine::StructureType::Pontoon &&  // drawn with the ground's tiles, like houses
                s.type != engine::StructureType::ObservationPost;  // (drawn apart)
     };
     for (const engine::Structure& s : world.structures()) {
@@ -9008,6 +9051,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     g_light = 1.0f;
     set_grain({});
     draw_services(world, alpha);
+    draw_line_charges(world, alpha);
     draw_radio_calls(world, alpha);
     draw_particles(map);
 
@@ -9156,7 +9200,7 @@ WorldRenderer::GroundAt WorldRenderer::ground_at(const engine::World& world, Vec
             // Nothing is known of an unexplored tile; a bridge is drawn as it is.
             if (!map.contains_tile(x, y) || fog(world, x, y) == kUnexplored) continue;
             const Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
-            if (t == Terrain::Bridge) continue;
+            if (t == Terrain::Bridge || t == Terrain::Pontoon) continue;
             const float w = (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay);
             total += w;
             if (t == Terrain::Water) water += w;
@@ -9212,7 +9256,7 @@ void WorldRenderer::paint_ground(const engine::World& world, int tx, int ty, eng
                 const float height = (corner_h[0] * (1 - lx) + corner_h[1] * lx) * (1 - ly) +
                                      (corner_h[2] * (1 - lx) + corner_h[3] * lx) * ly;
                 pos[j][i] = iso::project(p, height);
-                const GroundAt g = ground_at(world, p, terrain == Terrain::Bridge ? Terrain::Water : terrain);  // the river under a bridge
+                const GroundAt g = ground_at(world, p, terrain == Terrain::Bridge || terrain == Terrain::Pontoon ? Terrain::Water : terrain);  // the river under a bridge
                 Color c = ground_colour(g.terrain, p);
                 if (g.terrain == Terrain::Urban && village(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)))) {
                     // A village yard: grass, trodden bare along the paths and by the doors.
@@ -9515,6 +9559,42 @@ void ground_blob(const engine::TileMap& map, Vector2 c, float rx, float ry, Vect
 // break foaming. Or its middle gone: two stumps standing out from the banks,
 // their ends broken off ragged, the rods sticking out; what fell lies in the
 // river in slabs, one end up, the piers under it broken off at the water.
+// A line charge: the rocket out over the minefield on its arc, the hose
+// paying out behind it; landed, the hose lies along the ground in its
+// segments, till it goes off.
+void WorldRenderer::draw_line_charges(const engine::World& world, float alpha) const {
+    const engine::TileMap& map = world.map();
+    for (const engine::LineCharge& c : world.line_charges()) {
+        const Vector2 from = to_vector2(c.from);
+        const Vector2 to = to_vector2(c.to);
+        if (!reveal_ && !in_view(world, from) && !in_view(world, to)) continue;
+        const float t = (static_cast<float>(world.tick() - c.fired) + alpha) / static_cast<float>(engine::kTicksPerSecond);
+        const float f = std::clamp(t / 0.8f, 0.0f, 1.0f);
+        const Vector2 head = lerp(from, to, f);
+        const float lift = 4.0f + 26.0f * std::sin(3.14159f * f) * (f < 1.0f ? 1.0f : 0.0f);
+        // The hose: from the launcher up after the rocket while it flies, on the ground after.
+        constexpr int kBits = 24;
+        Vector2 prev = on_terrain(map, from, 5.0f);
+        for (int k = 1; k <= kBits; ++k) {
+            const float s = static_cast<float>(k) / kBits;
+            const Vector2 g = lerp(from, head, s);
+            const float z = f < 1.0f ? 5.0f * (1.0f - s) + lift * s * s : 1.0f;
+            const Vector2 p = on_terrain(map, g, z);
+            DrawLineEx(prev, p, 1.6f, {40, 42, 36, 255});
+            if (f >= 1.0f && k % 2 == 0) DrawCircleV(p, 1.3f, {66, 70, 58, 255});  // (its charges strung along it)
+            prev = p;
+        }
+        if (f < 1.0f) {  // the rocket, its flame
+            const Vector2 r = on_terrain(map, head, lift);
+            const Vector2 d = iso_offset({to.x - from.x, to.y - from.y});
+            const float l = std::max(0.001f, std::hypot(d.x, d.y));
+            const Vector2 u{d.x / l, d.y / l};
+            DrawLineEx({r.x - u.x * 4.0f, r.y - u.y * 4.0f}, {r.x + u.x * 3.0f, r.y + u.y * 3.0f}, 2.2f, {60, 64, 52, 255});
+            DrawCircleV({r.x - u.x * 5.5f, r.y - u.y * 5.5f}, 1.8f, {255, 206, 110, 255});
+        }
+    }
+}
+
 void WorldRenderer::draw_fallen_bridges(const engine::World& world) const {
     const engine::TileMap& map = world.map();
     for (const FallenBridge& f : fallen_bridges_) {
@@ -11560,6 +11640,7 @@ struct VehicleLook {
     Color paint;
     Color camo1;
     Color camo2;
+    bool line_charges = false;  // the UR-77's launcher box over the back of the hull
 };
 
 constexpr Color kOliveDrab{86, 94, 62, 255};
@@ -11759,11 +11840,17 @@ constexpr VehicleLook kVehicleLooks[] = {
      .turret_at = -0.06f, .turret_c = 0.0f, .turret_r = 0.17f, .turret_h = 5.0f, .gun = 0.44f, .gun_w = 1.3f,
      .launcher = Launcher::None, .engine_at = 0.24f, .doors = false, .camo = Camo::ThreeTone, .paint = {78, 90, 60, 255},
      .camo1 = {114, 96, 68, 255}, .camo2 = {40, 40, 34, 255}},
+    // UR-77 Meteorit: the long low tracked hull, the cab in front with its machine gun, the launcher's armored box over the back.
+    {.shape = HullShape::Mtlb, .length = 1.08f, .width = 0.25f, .deck = 7.4f, .nose = 0.16f, .nose_z = 4.2f, .cab = 2.8f,
+     .wheeled = false, .wheels = 7, .wheel_r = 2.7f, .rollers = false, .skirt = Skirt::None, .turret = TurretKind::Mini,
+     .turret_at = 0.24f, .turret_c = -0.1f, .turret_r = 0.055f, .turret_h = 2.6f, .gun = 0.22f, .gun_w = 1.0f,
+     .launcher = Launcher::None, .engine_at = 0.06f, .doors = false, .camo = Camo::None, .paint = {92, 98, 60, 255},
+     .camo1 = kRussianOlive, .camo2 = kRussianOlive, .line_charges = true},
 };
 static_assert(std::size(kVehicleLooks) ==
-              static_cast<size_t>(engine::VehicleModel::K30) + 1 - static_cast<size_t>(engine::VehicleModel::Bmp2));
+              static_cast<size_t>(engine::VehicleModel::Ur77) + 1 - static_cast<size_t>(engine::VehicleModel::Bmp2));
 
-bool has_vehicle_look(engine::VehicleModel m) { return m >= engine::VehicleModel::Bmp2 && m <= engine::VehicleModel::K30; }
+bool has_vehicle_look(engine::VehicleModel m) { return m >= engine::VehicleModel::Bmp2 && m <= engine::VehicleModel::Ur77; }
 // A self-propelled howitzer: its gun raised to fire when it's set up (its turret's second frame).
 bool raises_gun(engine::VehicleModel m) { return m >= engine::VehicleModel::Gvozdika && m <= engine::VehicleModel::K9; }
 const VehicleLook& vehicle_look_of(engine::VehicleModel m) {
@@ -12534,6 +12621,23 @@ void draw_vehicle_hull(const Frame& fr, const VehicleLook& look, int frame, int 
         case HullShape::Mtlb: {
             // The cab across the front, its two windows; two hatches over the men behind.
             const float c0 = roof1 - 0.3f;
+            if (look.line_charges) {
+                // The launcher: an armored box over the back half, its front sloped, the two
+                // rocket rails on top of it, the hoses' lids in its roof.
+                const float l0 = roof0 + 0.02f;
+                const float l1 = c0 - 0.04f;
+                block(fr, l0, l1, -tw + 0.01f, tw - 0.01f, look.deck, look.deck + 5.5f, shade(paint, 0.97f), 0.1f, 0.0f, 0.02f);
+                if (!under(fr, look.deck + 5.5f)) {
+                    for (const float c : {-tw * 0.45f, tw * 0.45f}) {  // the lids
+                        const float a = (l0 + l1) * 0.5f - 0.04f;
+                        fill_quad(fr.at(a - 0.14f, c - 0.07f, look.deck + 5.6f), fr.at(a + 0.1f, c - 0.07f, look.deck + 5.6f),
+                                  fr.at(a + 0.1f, c + 0.07f, look.deck + 5.6f), fr.at(a - 0.14f, c + 0.07f, look.deck + 5.6f), shade(paint, 0.82f));
+                    }
+                    for (const float c : {-0.035f, 0.035f}) {  // the rails, raked up to the front
+                        DrawLineEx(fr.at(l0 + 0.04f, c, look.deck + 6.0f), fr.at(l1 - 0.02f, c, look.deck + 8.2f), 1.2f, lit({50, 52, 46, 255}));
+                    }
+                }
+            }
             block(fr, c0, roof1 + 0.02f, -tw, tw, look.deck, look.deck + look.cab, shade(paint, 1.02f), 0.04f);
             if (facing(1.0f, 0.0f) && !under(fr, look.deck + look.cab)) {
                 for (const float c : {-tw * 0.55f, tw * 0.45f}) {
@@ -13151,6 +13255,8 @@ enum class TruckModel : uint8_t {
     Btr80Command,
     KamazZhitel,
     UralRadar,
+    KrazPontoon,   // PMP sections on a KrAZ (Ukraine's)
+    KamazPontoon,  // on a KamAZ
     Count,
 };
 enum class Chassis : uint8_t {
@@ -13171,6 +13277,7 @@ enum class Body : uint8_t {
     Shelter,   // a Humvee's shelter on its back
     Trailer,   // a Humvee towing the radar on its trailer
     Platform,  // a flat platform: a gun's (its spade at the back), a turret's
+    Pontoon,   // a folded river section of a pontoon bridge, its ends raked like a boat's
     None,      // (the BTR-80)
 };
 enum class Top : uint8_t {
@@ -13209,6 +13316,8 @@ constexpr TruckLook kTruckLooks[] = {
     {Chassis::Btr80, Body::None, Top::None, 1.1f, 0.23f, 3.0f, false, 4, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
     {Chassis::Kamaz, Body::Box, Top::None, 1.1f, 0.2f, 3.3f, true, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
     {Chassis::Ural, Body::Box, Top::Yagi, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
+    {Chassis::Kraz, Body::Pontoon, Top::None, 1.16f, 0.2f, 3.4f, false, 0, Camo::None, kUkrainianGreen, kUkrainianGreen, kUkrainianGreen},
+    {Chassis::Kamaz, Body::Pontoon, Top::None, 1.1f, 0.2f, 3.3f, false, 0, Camo::None, kRussianOlive, kRussianOlive, kRussianOlive},
 };
 static_assert(std::size(kTruckLooks) == static_cast<size_t>(TruckModel::Count));
 
@@ -13225,6 +13334,7 @@ std::optional<TruckModel> truck_model(engine::UnitTypeId type, engine::PlayerId 
         case engine::UnitTypeId::FieldHq: return ours ? TruckModel::HmmwvCommand : TruckModel::Btr80Command;
         case engine::UnitTypeId::DfStation: return ours ? TruckModel::HmmwvProphet : TruckModel::KamazZhitel;
         case engine::UnitTypeId::AirRadar: return ours ? TruckModel::HmmwvSentinel : TruckModel::UralRadar;
+        case engine::UnitTypeId::PontoonPark: return ours ? TruckModel::KrazPontoon : TruckModel::KamazPontoon;
         default: return std::nullopt;
     }
 }
@@ -13796,6 +13906,25 @@ void draw_truck_body(const Frame& fr, const TruckLook& look, int frame, Color te
                 }
                 if (load > 0 && !under(fr, ch.floor + 2.0f)) {  // the load (on a wreck, what's left of it)
                     draw_cargo(fr, static_cast<Cargo>(load), b0 + 0.04f, b1 - 0.04f, w - 0.05f, ch.floor - 0.4f, burnt, seed + static_cast<uint32_t>(load) * 13u);
+                }
+                break;
+            }
+            case Body::Pontoon: {
+                // The folded river section: a steel boat-box on the bed, wider than
+                // it, its ends raked, ribs down its sides, the two halves of its
+                // deck folded together on top, the seam between.
+                const float zt = ch.floor + 8.5f;
+                const Vector2 base[4] = {{b1 - 0.08f, w - 0.01f}, {b1 - 0.08f, -w + 0.01f}, {b0 + 0.06f, -w + 0.01f}, {b0 + 0.06f, w - 0.01f}};
+                const Vector2 top[4] = {{b1 + 0.02f, w + 0.03f}, {b1 + 0.02f, -w - 0.03f}, {b0 - 0.03f, -w - 0.03f}, {b0 - 0.03f, w + 0.03f}};
+                solid(fr, base, top, 4, ch.floor - 0.6f, zt, shade(paint, 0.9f));
+                if (!under(fr, zt)) {
+                    const float sc = near * (w + 0.02f);
+                    for (float a = b0 + 0.02f; a < b1; a += 0.07f) {  // the ribs
+                        DrawLineV(fr.at(a, sc, ch.floor + 0.4f), fr.at(a, sc, zt - 0.6f), lit(shade(paint, 0.7f)));
+                    }
+                    DrawLineV(fr.at(b0 - 0.02f, 0.0f, zt + 0.05f), fr.at(b1 + 0.01f, 0.0f, zt + 0.05f), lit(shade(paint, 0.6f)));  // the seam
+                    DrawLineV(fr.at(b0, sc, zt - 0.3f), fr.at(b1, sc, zt - 0.3f), lit(shade(paint, 1.25f)));  // its lit edge
+                    scorch(fr, b0 + 0.03f, b1 - 0.03f, -w + 0.05f, w - 0.05f, zt, wear, 0x31u + seed);
                 }
                 break;
             }
@@ -14716,8 +14845,10 @@ void WorldRenderer::bake_sprites(const engine::World& world) const {
         const bool apc = has_vehicle_look(model);
         TankLook look = look_of(apc ? engine::VehicleModel::Standard : model);
         VehicleLook carrier = vehicle_look_of(apc ? model : engine::VehicleModel::Bmp2);
-        if (model == engine::VehicleModel::Bmp2 && engine::axis_of(owner) == engine::Axis::Democratic) {
+        if ((model == engine::VehicleModel::Bmp2 || model == engine::VehicleModel::Ur77) && engine::axis_of(owner) == engine::Axis::Democratic) {
             carrier.paint = kUkrainianGreen;  // Ukraine's
+            carrier.camo1 = kUkrainianGreen;
+            carrier.camo2 = kUkrainianGreen;
         }
         worn(look, wear);
         worn(carrier, wear);

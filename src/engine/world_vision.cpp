@@ -34,7 +34,10 @@ int32_t structure_sight(const Structure& s) {
         role == StructureType::CellTower || role == StructureType::GasStation || role == StructureType::Elevator) {
         return 0;  // the garrison looks instead
     }
-    if (is_fieldwork(s.type) || s.type == StructureType::Dugout || s.type == StructureType::ObservationPost) return 0;  // holes in the ground; a post's man looks
+    if (is_fieldwork(s.type) || s.type == StructureType::Dugout || s.type == StructureType::ObservationPost ||
+        s.type == StructureType::Pontoon) {
+        return 0;  // (holes in the ground; a post's man looks; steel on the water)
+    }  // holes in the ground; a post's man looks
     if (!s.built) return kSiteSight;
     return s.type == StructureType::Headquarters ? kHeadquartersSight : kBuildingSight;
 }

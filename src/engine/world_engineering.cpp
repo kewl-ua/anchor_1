@@ -25,6 +25,13 @@ constexpr WeaponDef kCharge{.name = "Demolition charge", .damage = 900, .damage_
 constexpr WeaponDef kChargeBlast{.name = "Demolition charge", .damage = 80, .damage_type = DamageType::Explosive,
                                  .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
                                  .splash_radius = Fixed::from_ratio(3, 2), .accuracy = 100, .miss_spread = Fixed{}};
+// A line charge going off: the men along it, and the wire and hedgehogs it tears away.
+constexpr WeaponDef kLineChargeBlast{.name = "Line charge", .damage = 90, .damage_type = DamageType::Explosive,
+                                     .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
+                                     .splash_radius = Fixed::from_int(1), .accuracy = 100, .miss_spread = Fixed{}};
+constexpr WeaponDef kLineChargeRip{.name = "Line charge", .damage = 800, .damage_type = DamageType::AntiTank,
+                                   .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
+                                   .splash_radius = Fixed::from_int(1), .accuracy = 100, .miss_spread = Fixed{}};
 
 }  // namespace
 
@@ -177,7 +184,7 @@ void World::update_mines() {
 void World::find_mines() {
     for (Mine& m : mines_) {
         for (const Unit& u : units_) {
-            if (u.owner == m.owner || u.owner >= kMaxPlayers || u.inside || !unit_type(u.type).engineer) continue;
+            if (u.owner == m.owner || u.owner >= kMaxPlayers || u.inside || (!unit_type(u.type).engineer && !unit_type(u.type).breacher)) continue;
             if ((tile_center(m.tile) - u.pos).length_sq_raw() <= square_raw(kMineDetection)) {
                 m.found_by = static_cast<uint8_t>(m.found_by | (1u << u.owner));
             }
@@ -205,6 +212,51 @@ void World::update_charges() {
         }
     }
     charges_ = std::move(ticking);
+}
+
+// Line charges going off: along the hose the mines are set off, wire and
+// hedgehogs torn away, men by it hurt; its bursts all along it.
+void World::update_line_charges() {
+    std::vector<LineCharge> lying;
+    for (const LineCharge& c : line_charges_) {
+        if (tick_ < c.goes_off) {
+            lying.push_back(c);
+            continue;
+        }
+        const FixedVec2 d = c.to - c.from;
+        const Fixed l2 = d.x * d.x + d.y * d.y;
+        auto nearest = [&](FixedVec2 p) {  // the point of the hose nearest p
+            if (l2.raw <= 0) return c.from;
+            const Fixed t = clamp(((p.x - c.from.x) * d.x + (p.y - c.from.y) * d.y) / l2, Fixed{}, Fixed::from_int(1));
+            return c.from + d * t;
+        };
+        const uint64_t lane = square_raw(kLineChargeLane);
+        std::erase_if(mines_, [&](const Mine& m) {
+            const FixedVec2 at = tile_center(m.tile);
+            if ((at - nearest(at)).length_sq_raw() > lane) return false;
+            recent_impacts_.push_back({tick_, at, UnitTypeId::Sapper, Fixed::from_ratio(1, 2)});
+            return true;
+        });
+        std::vector<EntityId> torn;
+        for (const Structure& s : structures_) {
+            if (!is_obstacle(s.type) || s.tiles.empty()) continue;
+            const FixedVec2 at = tile_center(s.tiles.front());
+            if ((at - nearest(at)).length_sq_raw() <= lane) torn.push_back(s.id);
+        }
+        for (EntityId id : torn) {
+            if (const Structure* s = find_structure(id)) hurt_structure(*s, kLineChargeRip);
+        }
+        for (const Unit& u : units_) {
+            if (u.inside || u.airborne || u.hp <= 0) continue;
+            const FixedVec2 q = nearest(u.pos);
+            if ((u.pos - q).length_sq_raw() <= lane) hurt(u, kLineChargeBlast, {q, 0, true, true, 100});
+        }
+        const int32_t steps = std::max(1, (Fixed::from_int(2) * d.length()).to_int());
+        for (int32_t k = 0; k <= steps; ++k) {
+            recent_impacts_.push_back({tick_, c.from + d * Fixed::from_ratio(k, steps), UnitTypeId::Ur77, Fixed::from_int(1)});
+        }
+    }
+    line_charges_ = std::move(lying);
 }
 
 // Through the slit only: the nearest enemy in sight within the sector it faces.

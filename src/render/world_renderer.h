@@ -226,6 +226,8 @@ private:
     };
     std::vector<Service> services_;
     void draw_services(const engine::World& world, float alpha) const;
+    // Line charges: the rocket flying out, its hose dragged after it, lying there till it goes off.
+    void draw_line_charges(const engine::World& world, float alpha) const;
     void spawn_flash(Vector2 at, float z, float size, Color color);
     void spawn_sparks(Vector2 at, float z, int n, Color color, float speed);
     void fired(const engine::World& world, const engine::Unit& u);

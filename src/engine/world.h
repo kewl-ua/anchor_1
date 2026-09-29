@@ -286,6 +286,18 @@ inline constexpr int32_t kPillboxSectorDegrees = 120;
 inline constexpr Tick kPlantWork = 8 * kTicksPerSecond;
 inline constexpr Tick kFuseTicks = 5 * kTicksPerSecond;
 inline constexpr Fixed kSapperRetreat = Fixed::from_int(3);  // runs this far from the charge
+// A line charge (the UR-77's): out to this far; it lies there this long
+// before it goes off; it clears this far either side of it.
+inline constexpr Fixed kLineChargeReach = Fixed::from_int(8);
+inline constexpr Tick kLineChargeFuse = 2 * kTicksPerSecond;
+inline constexpr Fixed kLineChargeLane = Fixed::from_ratio(5, 4);
+// A pontoon bridge: a section a tile, this long for one pontoon park and this
+// much from the stock; across this many tiles of water at most. The park
+// lays them from this close to its bank.
+inline constexpr Tick kPontoonWork = 3 * kTicksPerSecond;
+inline constexpr Stock kPontoonCost = {0, 0, 15, 0, 0};
+inline constexpr int32_t kMaxPontoon = 12;
+inline constexpr Fixed kPontoonReach = Fixed::from_ratio(3, 2);
 
 // Upgrades' effects.
 inline constexpr Tick kTrainIntervalUpgraded = 45 * kTicksPerSecond;
@@ -478,6 +490,16 @@ struct Charge {
     PlayerId owner = 0;
     EntityId target = 0;
     FixedVec2 pos{};
+    Tick goes_off = 0;
+};
+
+// A line charge fired by a mine-clearing vehicle: the rocket drags its hose
+// out from `from` to `to` (fired then); it goes off along it at `goes_off`.
+struct LineCharge {
+    PlayerId owner = 0;
+    FixedVec2 from{};
+    FixedVec2 to{};
+    Tick fired = 0;
     Tick goes_off = 0;
 };
 
@@ -700,6 +722,7 @@ public:
     // Setup and tests: direct access to a unit (to hand it a nearly empty tank...).
     Unit* unit_for_setup(EntityId id) { return find_unit_mut(id); }
     Structure* structure_for_setup(EntityId id) { return find_structure_mut(id); }
+    void mine_for_setup(PlayerId owner, TilePos t, bool anti_tank) { mines_.push_back({next_mine_id_++, owner, t, anti_tank, 0}); }
     std::vector<Fire>& fires_for_setup() { return fires_; }
 
     // Houses and bridges come from the map's House/Bridge tiles; player
@@ -749,6 +772,16 @@ public:
         return m.owner == player || (player < kMaxPlayers && ((m.found_by >> player) & 1) != 0);
     }
     const std::vector<Charge>& charges() const { return charges_; }
+    const std::vector<LineCharge>& line_charges() const { return line_charges_; }
+    // A pontoon crossing over the water at `at`: straight across along x or
+    // y (the shorter), from the bank nearer `from`: that bank, and the water
+    // tiles from it to the other in turn. No water there, too wide, no firm
+    // bank either side: none (no water tiles).
+    struct Crossing {
+        TilePos bank{};
+        std::vector<TilePos> water;
+    };
+    Crossing pontoon_crossing(TilePos at, FixedVec2 from) const;
     const std::vector<Smoke>& smokes() const { return smokes_; }
     // Aircraft brought down: falling, and crashed the last few seconds.
     const std::vector<Crash>& crashes() const { return crashes_; }
@@ -1013,6 +1046,7 @@ private:
     void plant_charge(Unit& u);
     void update_mines();
     void update_charges();
+    void update_line_charges();
     void apply_research(const Command& cmd);
     void update_research();
     void update_smoke();
@@ -1125,6 +1159,7 @@ private:
     std::vector<Mine> mines_;
     uint32_t next_mine_id_ = 1;
     std::vector<Charge> charges_;
+    std::vector<LineCharge> line_charges_;
     std::array<uint32_t, kMaxPlayers> upgrades_{};  // bit per UpgradeId
     std::vector<Fire> fires_;
     std::vector<Smoke> smokes_;

@@ -351,6 +351,38 @@ void World::route_by_trench(Unit& u, TilePos goal) const {
     u.via_goal = goal;
 }
 
+World::Crossing World::pontoon_crossing(TilePos at, FixedVec2 from) const {
+    auto wet = [&](TilePos t) { return map_.contains(t) && (map_.terrain(t) == Terrain::Water || map_.terrain(t) == Terrain::Pontoon); };
+    Crossing best;
+    if (!wet(at)) return best;
+    int32_t best_n = kMaxPontoon + 1;
+    for (const TilePos d : {TilePos{1, 0}, TilePos{0, 1}}) {
+        TilePos a = at;
+        TilePos b = at;
+        int32_t n = 1;
+        while (n <= kMaxPontoon && wet({a.x - d.x, a.y - d.y})) {
+            a = {a.x - d.x, a.y - d.y};
+            ++n;
+        }
+        while (n <= kMaxPontoon && wet({b.x + d.x, b.y + d.y})) {
+            b = {b.x + d.x, b.y + d.y};
+            ++n;
+        }
+        const TilePos bank_a{a.x - d.x, a.y - d.y};
+        const TilePos bank_b{b.x + d.x, b.y + d.y};
+        if (n > kMaxPontoon || n >= best_n || !map_.contains(bank_a) || !map_.contains(bank_b)) continue;
+        if (!map_.passable(bank_a, MoveClass::Wheeled) || !map_.passable(bank_b, MoveClass::Wheeled)) continue;  // (firm ground both sides)
+        best_n = n;
+        const bool from_a = (tile_center(bank_a) - from).length_sq_raw() <= (tile_center(bank_b) - from).length_sq_raw();
+        best.bank = from_a ? bank_a : bank_b;
+        best.water.clear();
+        const TilePos step = from_a ? d : TilePos{-d.x, -d.y};
+        TilePos t = from_a ? a : b;
+        for (int32_t k = 0; k < n; ++k, t = {t.x + step.x, t.y + step.y}) best.water.push_back(t);
+    }
+    return best;
+}
+
 void World::face_front(Unit& u) const {
     if (def_of(u).vehicle) return;
     const Structure* s = structure_at(map_.clamp_tile(tile_of(u.pos)));

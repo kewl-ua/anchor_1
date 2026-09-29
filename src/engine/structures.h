@@ -51,6 +51,7 @@ enum class StructureType : uint8_t {
     Workshop,          // a motor pool: vehicles parked by it get repaired
     Hospital,          // a field hospital: the wounded are healed in its beds
     ObservationPost,   // a scout's, on one tile, watching `facing` (see PostKind)
+    Pontoon,           // a section of a pontoon bridge across the water, one tile (a pontoon park lays them)
     Count,
 };
 

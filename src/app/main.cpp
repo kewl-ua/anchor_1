@@ -564,6 +564,89 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene.starts_with("engineers") && options.mode == Options::Mode::Offline) {
+        // Offline: two pontoon parks bridge the river nearest the base, off
+        // to the side of its bridge; a UR-77 fires a line charge over the
+        // enemy's minefield and wire out in the field (`engineers_charge`:
+        // the camera on it).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const Vector2 b = render::to_vector2(base);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        engine::World& w = game.world_for_setup();
+        w.set_stock(me, {50, 500, 500, 500, 500});
+        // The water nearest the base a crossing 3 to 12 tiles long goes over, across a river.
+        const engine::TileMap& map = world.map();
+        std::optional<engine::TilePos> water;
+        float best = 1e9f;
+        for (int32_t y = 0; y < map.height(); ++y) {
+            for (int32_t x = 0; x < map.width(); ++x) {
+                if (map.terrain(x, y) != engine::Terrain::Water) continue;
+                const float d = std::hypot(static_cast<float>(x) + 0.5f - b.x, static_cast<float>(y) + 0.5f - b.y);
+                if (d >= best || d < 12.0f) continue;
+                const engine::World::Crossing c = world.pontoon_crossing({x, y}, base);
+                if (c.water.size() < 3 || c.water.size() > 12) continue;
+                // Across a river, not along its shore: water either side of the way over.
+                const engine::TilePos along{c.water.back().x - c.water.front().x, c.water.back().y - c.water.front().y};
+                const engine::TilePos side{along.y != 0 ? 1 : 0, along.x != 0 ? 1 : 0};
+                bool river = true;
+                for (const engine::TilePos& t : c.water) {
+                    for (const int32_t k : {-1, 1}) {
+                        const engine::TilePos n{t.x + side.x * k, t.y + side.y * k};
+                        river = river && map.contains_tile(n.x, n.y) && map.terrain(n.x, n.y) == engine::Terrain::Water;
+                    }
+                }
+                if (!river) continue;
+                bool bridge_near = false;  // (away from the bridges)
+                for (int32_t dy = -4; dy <= 4 && !bridge_near; ++dy) {
+                    for (int32_t dx = -4; dx <= 4; ++dx) bridge_near = bridge_near || (map.contains_tile(x + dx, y + dy) && map.terrain(x + dx, y + dy) == engine::Terrain::Bridge);
+                }
+                if (bridge_near) continue;
+                best = d;
+                water = engine::TilePos{x, y};
+            }
+        }
+        Vector2 look = b;
+        if (water) {
+            const engine::World::Crossing c = world.pontoon_crossing(*water, base);
+            const Vector2 bank = render::to_vector2(engine::tile_center(c.bank));
+            const Vector2 out{bank.x - render::to_vector2(engine::tile_center(c.water.front())).x, bank.y - render::to_vector2(engine::tile_center(c.water.front())).y};
+            std::vector<engine::EntityId> parks;
+            for (int i = 0; i < 2; ++i) {
+                parks.push_back(w.spawn_unit(me, engine::UnitTypeId::PontoonPark,
+                                             render::to_fixed_vec2({bank.x + out.x * (3.0f + 1.5f * static_cast<float>(i)), bank.y + out.y * (3.0f + 1.5f * static_cast<float>(i))})));
+            }
+            game.submit({.type = engine::CommandType::Ability, .units = parks, .target = engine::tile_center(*water),
+                         .ability = static_cast<uint8_t>(engine::AbilityId::LayPontoon)});
+            const Vector2 mid = render::to_vector2(engine::tile_center(c.water[c.water.size() / 2]));
+            look = mid;
+            game.select_units(parks);
+        }
+        // The minefield out in the field ahead, the wire across it; the UR-77 short of it.
+        auto ahead = [&](float d, float side) {
+            d += 20.0f;
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        flat_field(w, ahead(6.0f, 0.0f), 8);
+        const engine::PlayerId enemy = 1 - me;
+        for (int i = 0; i < 12; ++i) {
+            const engine::TilePos t = engine::tile_of(ahead(5.0f + static_cast<float>(i % 4) * 1.3f, -2.0f + static_cast<float>(i / 4) * 1.6f));
+            w.mine_for_setup(enemy, t, i % 3 == 0);
+        }
+        for (const engine::TilePos& t : engine::trench_line(engine::tile_of(ahead(8.0f, -3.0f)), engine::tile_of(ahead(8.0f, 3.0f)))) {
+            w.place_structure(engine::StructureType::Wire, enemy, t, 1, 1);
+        }
+        const engine::EntityId ur77 = w.spawn_unit(me, engine::UnitTypeId::Ur77, ahead(0.0f, 0.0f));
+        w.unit_for_setup(ur77)->hull = render::to_fixed_vec2({fwd, -fwd});
+        w.unit_for_setup(ur77)->facing = render::to_fixed_vec2({fwd, -fwd});
+        game.submit({.type = engine::CommandType::Ability, .units = {ur77}, .target = ahead(7.5f, 0.0f),
+                     .ability = static_cast<uint8_t>(engine::AbilityId::LineCharge)});
+        if (options.scene == "engineers_charge") {
+            game.select_units({ur77});
+            return render::to_vector2(ahead(4.0f, 0.0f));
+        }
+        return look;
+    }
+
     if (options.scene == "digging" && options.mode == Options::Mode::Offline) {
         // Offline, out in the field, everything dug at once, to see it go:
         // riflemen dig a trench line, two dig foxholes, one throws up a

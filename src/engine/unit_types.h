@@ -159,6 +159,8 @@ enum class AbilityId : uint8_t {
     Atgm,          // IFV: a guided anti-tank missile at an enemy vehicle (needs the launchers)
     MountAntenna,  // signaller: up a cell tower with a direction finder's aerial
     BuildPost,     // scout: an observation post where he stands, as the ground allows, watching a direction
+    LineCharge,    // mine-clearing vehicle: a rocket drags a hose of explosive over a minefield; it goes off along it
+    LayPontoon,    // pontoon park: a pontoon bridge straight across the river from the nearer bank
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);
@@ -239,6 +241,8 @@ enum class VehicleModel : uint8_t {
     Gepard,    // Germany
     Type87,    // Japan
     K30,       // Korea: Biho
+    // Engineers' armor.
+    Ur77,      // both: UR-77 Meteorit, the line-charge launcher on its tracked hull
     // Towed howitzers.
     D30,       // both
     MstaB,     // Russia: 2A65
@@ -278,6 +282,7 @@ struct UnitTypeDef {
     Tick train_time = 0;
     bool worker = false;  // rear troops: gather, build, unload
     bool engineer = false;  // sappers: mines, obstacles, firing points, demolition
+    bool breacher = false;  // a mine-clearing vehicle: its crew finds mines about it, as sappers do
     // Fuel and ammunition carried (0: doesn't run out). Fuel is in tiles of driving.
     Fixed fuel_capacity{};
     int32_t rounds_capacity = 0;
@@ -411,6 +416,9 @@ enum class UnitTypeId : uint8_t {
     // The attack aircraft (Su25 above, both sides').
     Su34,
     A10,
+    // The engineers' vehicles (both sides').
+    Ur77,         // mine clearing: line charges
+    PontoonPark,  // PMP: pontoon bridges across rivers
     Count,
 };
 inline constexpr size_t kUnitTypeCount = static_cast<size_t>(UnitTypeId::Count);

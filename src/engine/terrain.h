@@ -46,6 +46,7 @@ enum class Terrain : uint8_t {
     Wheat,       // a wheat field: golden and knee high, it hides nobody
     Orchard,     // an apple orchard: trees in rows; men hide under them, vehicles squeeze between
     Garden,      // kitchen gardens behind the village houses: vegetables in rows
+    Pontoon,     // a pontoon bridge's section on the water (a Pontoon structure)
     Count,
 };
 inline constexpr size_t kTerrainCount = static_cast<size_t>(Terrain::Count);
@@ -101,6 +102,7 @@ inline constexpr TerrainDef kTerrainDefs[] = {
     {"Wheat", {95, 95, 85}},
     {"Orchard", {85, 50, 40}},
     {"Kitchen garden", {85, 70, 55}},
+    {"Pontoon bridge", {90, 60, 60}},
 };
 static_assert(std::size(kTerrainDefs) == kTerrainCount);
 

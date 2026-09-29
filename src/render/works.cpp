@@ -317,6 +317,7 @@ Parts parts_of(const Spec& spec) {
             sc.margin = 0.65f;
             break;
         }
+        case Kind::Pontoon:
         case Kind::Wire:
         case Kind::Hedgehogs:
             sc.top = 16.0f;
@@ -998,6 +999,51 @@ void furnish(Canvas& cv) {
             cv.mark = 1;
             break;
         }
+        case Kind::Pontoon: {
+            // A river section of a pontoon bridge: its deck of ribbed steel plates
+            // with a kerb along each side, the floats under its edges, the water
+            // lapping along them; where it meets the bank, the ramp up onto it.
+            // Being floated out: as far as it's got.
+            Vector2 d{1, 0};
+            for (int bit = 0; bit < 4; ++bit) {
+                if (spec.links & (1u << bit)) {
+                    d = dir_of_link(bit);
+                    break;
+                }
+            }
+            const Vector2 across = perp(d);
+            constexpr Color kDeck{92, 100, 82, 255};
+            constexpr Color kFloat{62, 70, 60, 255};
+            constexpr Color kFoam{214, 226, 228, 255};
+            const float p = std::clamp(spec.progress, 0.0f, 1.0f);
+            const float a0 = -0.5f;
+            const float a1 = -0.5f + p;  // (floated out this far)
+            const Vector2 mid = add(c, mul(d, (a0 + a1) * 0.5f));
+            const float half = (a1 - a0) * 0.5f;
+            for (const float s : {-1.0f, 1.0f}) {  // the floats, down in the water
+                box(cv, at(add(mid, mul(across, 0.29f * s))), d, half, 0.06f, -2.0f, 0.6f, kFloat, false);
+            }
+            box(cv, at(mid), d, half, 0.33f, 0.2f, 1.4f, kDeck, false, 3.0f);  // the deck, its plates across it
+            for (const float s : {-1.0f, 1.0f}) {  // the kerbs
+                box(cv, at(add(mid, mul(across, 0.31f * s))), d, half, 0.02f, 1.4f, 2.6f, scaled(kDeck, 0.8f), false);
+            }
+            cv.mark = 2;
+            for (float t = a0; t <= a1; t += 0.02f) {  // the water lapping along the floats
+                for (const float s : {-1.0f, 1.0f}) put(cv, p3(at(add(add(c, mul(d, t)), mul(across, 0.37f * s))), 0.0f), kFoam, 1.0f, false);
+            }
+            cv.mark = 1;
+            // Onto the bank at an end with land (no section next to it): a ramp.
+            for (int bit = 0; bit < 4; ++bit) {
+                if (!(spec.links & (16u << bit))) continue;
+                const Vector2 e = dir_of_link(bit);
+                const Vector2 foot = add(c, mul(e, 0.5f));
+                for (float t = 0.0f; t <= 0.28f; t += 0.02f) {
+                    const float z = 1.4f + 2.2f * t / 0.28f;
+                    box(cv, at(add(foot, mul(e, t))), e, 0.012f, 0.3f, z - 0.8f, z, scaled(kDeck, 0.92f), false);
+                }
+            }
+            break;
+        }
         case Kind::Hedgehogs: {
             // Czech hedgehogs: three steel bars through one another, standing on three ends.
             for (int i = 0; i < (spec.progress < 0.5f ? 1 : 2); ++i) {
@@ -1055,7 +1101,7 @@ Sprite bake(const Area& area, int tx, int ty, const std::array<float, 4>& corner
     cv.thing.assign(n, 0);
     cv.kind.assign(n, 0);
 
-    const bool dug = spec.kind != Kind::Wire && spec.kind != Kind::Hedgehogs;
+    const bool dug = spec.kind != Kind::Wire && spec.kind != Kind::Hedgehogs && spec.kind != Kind::Pontoon;
     for (int j = 0; dug && j < hgt; ++j) {
         for (int i = 0; i < w; ++i) {
             const float X = x0 + static_cast<float>(i) + 0.5f;

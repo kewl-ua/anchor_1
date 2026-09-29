@@ -22,6 +22,7 @@ enum class Kind : uint8_t {
     Caponier,   // a self-propelled gun's: a pit its length, a ramp down into it
     Wire,       // a coil of barbed wire on stakes
     Hedgehogs,  // two steel hedgehogs
+    Pontoon,    // a pontoon bridge's section on the water: its deck, its floats, a ramp where it meets the bank
 };
 
 // What's built into a trench tile (as the engine's TrenchFit numbers them).

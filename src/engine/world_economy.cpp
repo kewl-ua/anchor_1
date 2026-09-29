@@ -67,6 +67,7 @@ EntityId World::place_structure(StructureType type, PlayerId owner, TilePos orig
                 case StructureType::Wire: map_.set_terrain(t.x, t.y, Terrain::Wire); break;
                 case StructureType::Hedgehogs: map_.set_terrain(t.x, t.y, Terrain::Hedgehogs); break;
                 case StructureType::Pillbox: map_.set_terrain(t.x, t.y, Terrain::Pillbox); break;
+                case StructureType::Pontoon: map_.set_terrain(t.x, t.y, Terrain::Pontoon); break;
                 case StructureType::Parapet:          // a mound on the ground it stands on
                 case StructureType::ObservationPost: break;  // a stump, branches, a platform up a tree
                 case StructureType::Airfield: map_.set_terrain(t.x, t.y, Terrain::Airstrip); break;
