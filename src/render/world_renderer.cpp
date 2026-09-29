@@ -10473,7 +10473,8 @@ soldiers::Kit kit_of(engine::UnitTypeId type) {
 const WorldRenderer::SpriteSheet& WorldRenderer::soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const {
     const std::pair<int, int> key{static_cast<int>(kit), static_cast<int>(owner)};
     if (const auto it = soldier_sheets_.find(key); it != soldier_sheets_.end()) return it->second;
-    Image img = soldiers::bake(kit, theme::player_color(owner));
+    Image img = soldiers::bake(kit, theme::player_color(owner),
+                               engine::axis_of(owner) == engine::Axis::Democratic ? soldiers::Uniform::Mm14 : soldiers::Uniform::Emr);
     if (const char* dump = dump_dir()) ExportImage(img, TextFormat("%s/soldier_%d_%d.png", dump, key.first, key.second));
     SpriteSheet s;
     s.atlas = LoadTextureFromImage(img);

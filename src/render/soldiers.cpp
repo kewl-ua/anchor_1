@@ -95,16 +95,16 @@ struct Arm {
 };
 Arm arm_of(Kit k) {
     switch (k) {
-        case Kit::Rifle: return {9.0f, 0.34f, 0.62f};
-        case Kit::MachineGun: return {11.0f, 0.3f, 0.5f};
-        case Kit::Rpg: return {12.5f, 0.42f, 0.56f};
-        case Kit::Sniper: return {12.0f, 0.3f, 0.55f};
-        case Kit::Assault: return {8.5f, 0.34f, 0.62f};
+        case Kit::Rifle: return {10.0f, 0.34f, 0.62f};
+        case Kit::MachineGun: return {12.0f, 0.3f, 0.5f};
+        case Kit::Rpg: return {13.5f, 0.42f, 0.56f};
+        case Kit::Sniper: return {13.0f, 0.3f, 0.55f};
+        case Kit::Assault: return {9.5f, 0.34f, 0.62f};
         case Kit::Sapper:
-        case Kit::Radio: return {7.0f, 0.38f, 0.66f};
-        case Kit::Igla: return {13.0f, 0.42f, 0.56f};
-        case Kit::Mortar: return {10.0f, 0.4f, 0.6f};
-        case Kit::Ags: return {7.0f, 0.4f, 0.6f};
+        case Kit::Radio: return {8.0f, 0.38f, 0.66f};
+        case Kit::Igla: return {14.0f, 0.42f, 0.56f};
+        case Kit::Mortar: return {10.5f, 0.4f, 0.6f};
+        case Kit::Ags: return {7.5f, 0.4f, 0.6f};
         default: return {0.0f, 0.0f, 0.0f};
     }
 }
@@ -116,41 +116,41 @@ bool unarmed(Kit k) { return k == Kit::Rear; }
 void upper(Body& b, V3 chest, V3 head) {
     b.chest = chest;
     b.head = head;
-    b.shoulder[0] = chest + V3{-0.1f, -2.25f, -0.25f};
-    b.shoulder[1] = chest + V3{-0.1f, 2.25f, -0.25f};
+    b.shoulder[0] = chest + V3{-0.1f, -2.05f, -0.3f};
+    b.shoulder[1] = chest + V3{-0.1f, 2.05f, -0.3f};
 }
 void hips(Body& b) {
-    b.hip[0] = b.pelvis + V3{0.0f, -1.2f, -0.3f};
-    b.hip[1] = b.pelvis + V3{0.0f, 1.2f, -0.3f};
+    b.hip[0] = b.pelvis + V3{0.0f, -1.05f, -0.3f};
+    b.hip[1] = b.pelvis + V3{0.0f, 1.05f, -0.3f};
 }
 void stand_legs(Body& b, float bend = 0.0f) {
     b.pelvis = {0.0f, 0.0f, 9.6f - bend};
     hips(b);
     for (int s = 0; s < 2; ++s) {
         const float side = s == 0 ? -1.0f : 1.0f;
-        b.foot[s] = {0.0f, side * 1.45f, 0.3f};
-        b.knee[s] = {0.35f + bend * 0.7f, side * 1.35f, 4.9f - bend * 0.5f};
+        b.foot[s] = {0.0f, side * 1.4f, 0.3f};
+        b.knee[s] = {0.35f + bend * 0.7f, side * 1.2f, 4.9f - bend * 0.5f};
     }
 }
 void stance_legs(Body& b) {  // feet apart, the right one back
     b.pelvis = {-0.1f, 0.0f, 9.2f};
     hips(b);
-    b.foot[0] = {-1.9f, -1.3f, 0.3f};
-    b.foot[1] = {1.9f, 1.35f, 0.3f};
-    b.knee[0] = {-0.8f, -1.3f, 4.9f};
-    b.knee[1] = {1.6f, 1.35f, 4.8f};
+    b.foot[0] = {-2.1f, -1.35f, 0.3f};
+    b.foot[1] = {2.1f, 1.35f, 0.3f};
+    b.knee[0] = {-0.9f, -1.2f, 4.9f};
+    b.knee[1] = {1.7f, 1.2f, 4.8f};
 }
 void kneel_legs(Body& b) {  // down on his right knee
     b.pelvis = {-0.6f, 0.0f, 5.3f};
     hips(b);
-    b.knee[0] = {0.8f, -1.3f, 0.6f};
-    b.foot[0] = {-3.6f, -1.3f, 0.5f};
-    b.knee[1] = {2.9f, 1.4f, 4.6f};
-    b.foot[1] = {3.0f, 1.4f, 0.3f};
+    b.knee[0] = {0.8f, -1.2f, 0.6f};
+    b.foot[0] = {-3.6f, -1.2f, 0.5f};
+    b.knee[1] = {2.9f, 1.25f, 4.6f};
+    b.foot[1] = {3.0f, 1.25f, 0.3f};
 }
 void hands_hanging(Body& b, float swing = 0.0f) {
-    b.hand[0] = {b.pelvis.f + 0.4f - swing, -2.6f, b.pelvis.z - 0.2f};
-    b.hand[1] = {b.pelvis.f + 0.4f + swing, 2.6f, b.pelvis.z - 0.2f};
+    b.hand[0] = {b.pelvis.f + 0.4f - swing, -2.45f, b.pelvis.z - 0.4f};
+    b.hand[1] = {b.pelvis.f + 0.4f + swing, 2.45f, b.pelvis.z - 0.4f};
 }
 
 // His weapon in his hands, from its butt along `dir`.
@@ -212,8 +212,8 @@ Body pose(Kit kit, Pose p, int i) {
             const float bob = 0.4f * sw * sw;
             b.pelvis = {0.15f, 0.0f, 9.5f - bob};
             hips(b);
-            b.foot[0] = {2.0f * sw, -1.3f, 0.3f + std::max(0.0f, cw) * 1.1f};
-            b.foot[1] = {-2.0f * sw, 1.3f, 0.3f + std::max(0.0f, -cw) * 1.1f};
+            b.foot[0] = {2.2f * sw, -1.15f, 0.3f + std::max(0.0f, cw) * 1.1f};
+            b.foot[1] = {-2.2f * sw, 1.15f, 0.3f + std::max(0.0f, -cw) * 1.1f};
             for (int k = 0; k < 2; ++k) {
                 const float lift = b.foot[k].z - 0.3f;
                 b.knee[k] = mix(b.hip[k], b.foot[k], 0.5f) + V3{0.9f + lift * 0.7f, 0.0f, lift * 0.2f};
@@ -283,8 +283,8 @@ Body pose(Kit kit, Pose p, int i) {
             const float bob = 0.35f * s * s;
             b.pelvis = {0.2f, 0.0f, 9.6f - bob};
             hips(b);
-            b.foot[0] = {2.5f * s, -1.3f, 0.3f + std::max(0.0f, c) * 1.3f};
-            b.foot[1] = {-2.5f * s, 1.3f, 0.3f + std::max(0.0f, -c) * 1.3f};
+            b.foot[0] = {2.9f * s, -1.15f, 0.3f + std::max(0.0f, c) * 1.4f};
+            b.foot[1] = {-2.9f * s, 1.15f, 0.3f + std::max(0.0f, -c) * 1.4f};
             for (int k = 0; k < 2; ++k) {
                 const float lift = b.foot[k].z - 0.3f;
                 b.knee[k] = mix(b.hip[k], b.foot[k], 0.5f) + V3{0.9f + lift * 0.7f, 0.0f, lift * 0.2f};
@@ -559,7 +559,7 @@ public:
         px_.fill({0, 0, 0, 0});
         stamp_.fill(0);
     }
-    Vector2 at(V3 p) const { return {kOriginX + p.f * ca_ + p.l * sa_, kOriginY + 0.5f * (p.f * sa_ - p.l * ca_) - p.z}; }
+    Vector2 at(V3 p) const { return {kOriginX + p.f * ca_ + p.l * sa_, kOriginY + 0.5f * (p.f * sa_ - p.l * ca_) - p.z * kTall}; }
     float depth(V3 p) const { return p.f * sa_ - p.l * ca_; }  // nearer the viewer: more
 
     void begin(float dim = 1.0f, bool inked = true) {
@@ -614,18 +614,19 @@ public:
                 float u = t * seg;
                 float v = seg > 0.0001f ? ((q.x - a.x) * d.y - (q.y - a.y) * d.x) / seg : q.y - a.y;
                 if (seg <= 0.0001f) u = q.x - a.x;
-                put(x, y, tone(p, nx, ny, std::sqrt(1.0f - out), static_cast<int>(std::floor(u / 1.7f)), static_cast<int>(std::floor((v + 20.0f) / 1.7f))),
+                put(x, y, tone(p, nx, ny, std::sqrt(1.0f - out), static_cast<int>(std::floor(u / 2.4f)), static_cast<int>(std::floor((v + 20.0f) / 2.4f))),
                     shade(p.base, 0.55f * dim_));
             }
         }
     }
     // A head, a helmet: a ball; `cut` keeps only what's above that far below its middle (a helmet's dome).
-    void ball(V3 c3, float r, const Paint& p, float cut = 99.0f) {
+    void ball(V3 c3, float r, const Paint& p, float cut = 99.0f, float squash = 1.0f) {
         const Vector2 c = at(c3);
-        for (int y = static_cast<int>(std::floor(c.y - r)); y <= static_cast<int>(std::ceil(c.y + r)); ++y) {
+        const float ry = r * squash;
+        for (int y = static_cast<int>(std::floor(c.y - ry)); y <= static_cast<int>(std::ceil(c.y + ry)); ++y) {
             for (int x = static_cast<int>(std::floor(c.x - r)); x <= static_cast<int>(std::ceil(c.x + r)); ++x) {
                 const float nx = (static_cast<float>(x) + 0.5f - c.x) / r;
-                const float ny = (static_cast<float>(y) + 0.5f - c.y) / r;
+                const float ny = (static_cast<float>(y) + 0.5f - c.y) / ry;
                 const float out = nx * nx + ny * ny;
                 if (out > 1.0f || static_cast<float>(y) + 0.5f - c.y > cut) continue;
                 put(x, y, tone(p, nx, ny, std::sqrt(1.0f - out), x, y), shade(p.base, 0.55f * dim_));
@@ -719,8 +720,8 @@ private:
         Color c = p.base;
         if (p.camo) {
             const float h = hash01(p.seed, cx, cy);
-            if (h < 0.28f) c = p.spot_dark;
-            else if (h > 0.8f) c = p.spot_light;
+            if (h < 0.24f) c = p.spot_dark;
+            else if (h > 0.84f) c = p.spot_light;
         }
         const float light = -0.5f * nx - 0.62f * ny + 0.6f * nz;
         const float k = light > 0.6f ? 1.26f : light < 0.14f ? 0.68f : 1.0f;
@@ -737,32 +738,41 @@ private:
     bool inked_ = true;
 };
 
-// His side's colours on him.
+// His side's uniform and colours on him.
 struct Look {
     Paint cloth;   // jacket and trousers: a pixel camouflage
     Paint vest;    // the plate carrier
     Paint helmet;  // its cover
     Paint skin;
+    Paint gloves;
     Paint boots;
     Paint pack;
+    Color pouch;   // the pouches on the carrier and the belt
     Color team;
 };
 
-Look look_of(Kit kit, Color team) {
+Look look_of(Kit kit, Color team, Uniform uniform) {
     Look k;
-    const Color olive = mix({98, 102, 62, 255}, team, 0.1f);
-    k.cloth = {olive, {64, 72, 44, 255}, {112, 90, 58, 255}, true, 17u};
+    const bool emr = uniform == Uniform::Emr;
+    // MM-14: olive, dark green and brown pixels; EMR: a paler grey-green with dark green and brown.
+    const Color base = emr ? Color{112, 116, 90, 255} : Color{100, 102, 64, 255};
+    const Color dark = emr ? Color{62, 72, 50, 255} : Color{58, 68, 42, 255};
+    const Color light = emr ? Color{94, 78, 58, 255} : Color{126, 106, 72, 255};
+    k.cloth = {mix(base, team, 0.05f), dark, light, true, 17u};
     if (kit == Kit::Rear) {  // a work suit: plain faded cotton, a darker patch here and there (no camouflage)
         const Color suit = mix({126, 118, 86, 255}, team, 0.06f);
         k.cloth = {suit, shade(suit, 0.86f), shade(suit, 1.08f), true, 29u};
     }
-    const Color vest = kit == Kit::Assault ? Color{56, 60, 44, 255} : mix({84, 80, 56, 255}, team, 0.06f);
+    // The carrier set apart from the uniform: ours coyote, a Ratnik's dark green; an assault trooper's black.
+    const Color vest = kit == Kit::Assault ? Color{48, 50, 44, 255} : emr ? Color{66, 74, 52, 255} : Color{118, 98, 68, 255};
     k.vest = {vest, shade(vest, 0.8f), shade(vest, 1.1f), false, 5u};
-    const Color helmet = mix({82, 92, 60, 255}, team, 0.1f);
-    k.helmet = {kit == Kit::Assault ? Color{60, 66, 50, 255} : helmet, shade(helmet, 0.8f), shade(helmet, 1.15f), true, 9u};
-    k.skin = {{206, 160, 124, 255}};
-    k.boots = {{44, 38, 32, 255}};
-    k.pack = {mix({70, 78, 54, 255}, team, 0.08f), shade({70, 78, 54, 255}, 0.8f), {}, false, 3u};
+    k.pouch = shade(vest, 0.74f);
+    // The helmet in the uniform's cover.
+    k.helmet = kit == Kit::Assault ? Paint{{58, 62, 50, 255}} : Paint{shade(base, 0.92f), dark, light, true, 9u};
+    k.skin = {{198, 152, 118, 255}};
+    k.gloves = kit == Kit::Rear ? k.skin : Paint{{64, 58, 48, 255}};
+    k.boots = {{40, 34, 30, 255}};
+    k.pack = {mix(emr ? Color{76, 84, 60, 255} : Color{74, 76, 52, 255}, team, 0.06f), shade({70, 78, 54, 255}, 0.8f), {}, false, 3u};
     k.team = team;
     return k;
 }
@@ -856,12 +866,18 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
         const float dp = fig.depth(b.knee[s]);
         parts.push_back({dp, [&, s, dp] {
                              fig.begin(dim(dp));
-                             fig.capsule(b.hip[s], b.knee[s], 1.35f, 1.15f, look.cloth);
-                             fig.capsule(b.knee[s], b.foot[s] + V3{0.0f, 0.0f, 0.6f}, 1.1f, 1.0f, look.cloth);
-                             const V3 toe = b.foot[s] + unit(V3{1.0f, 0.0f, 0.0f}) * 1.3f;
-                             fig.capsule(b.foot[s] + V3{-0.3f, 0.0f, 0.3f}, V3{toe.f, toe.l, 0.4f}, 0.9f, 0.8f, look.boots);
-                             fig.capsule(b.hip[s], b.knee[s], 1.45f, 1.25f, {look.team}, 0.45f, 0.62f);
+                             fig.capsule(b.hip[s], b.knee[s], 0.98f, 0.8f, look.cloth);
+                             fig.capsule(b.knee[s], b.foot[s] + V3{0.0f, 0.0f, 1.2f}, 0.78f, 0.7f, look.cloth);
+                             const V3 toe = b.foot[s] + unit(V3{1.0f, 0.0f, 0.0f}) * 1.5f;
+                             fig.capsule(b.foot[s] + V3{-0.2f, 0.0f, 1.4f}, b.foot[s] + V3{0.0f, 0.0f, 0.3f}, 0.82f, 0.82f, look.boots);
+                             fig.capsule(b.foot[s] + V3{-0.4f, 0.0f, 0.3f}, V3{toe.f, toe.l, 0.35f}, 0.82f, 0.72f, look.boots);
+                             fig.capsule(b.hip[s], b.knee[s], 1.05f, 0.88f, {look.team}, 0.46f, 0.58f);
                              fig.end();
+                             if (kit != Kit::Rear) {  // a knee pad
+                                 fig.begin(dim(dp), false);
+                                 fig.ball(b.knee[s] + V3{0.55f, 0.0f, 0.0f}, 0.62f, {look.pouch});
+                                 fig.end();
+                             }
                          }});
     }
     // The body: the jacket, the plate carrier over it, its pouches in front.
@@ -871,31 +887,46 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     const bool vest = kit != Kit::Rear;
     parts.push_back({middle, [&] {
                          fig.begin();
-                         fig.capsule(b.pelvis, b.chest, 2.2f, 2.5f, look.cloth);
+                         fig.capsule(b.pelvis, b.chest, 1.45f, 2.05f, look.cloth);
                          fig.end();
                      }});
     if (vest) {
         parts.push_back({middle + 0.01f, [&] {
                              fig.begin();
-                             const float w = kit == Kit::Assault ? 2.8f : 2.6f;
-                             fig.capsule(mix(b.pelvis, b.chest, 0.22f), mix(b.pelvis, b.chest, 0.92f), w, w + 0.1f, look.vest);
+                             const float w = kit == Kit::Assault ? 2.2f : 2.05f;
+                             fig.capsule(mix(b.pelvis, b.chest, 0.34f), mix(b.pelvis, b.chest, 0.96f), w - 0.1f, w + 0.1f, look.vest);
                              fig.end();
                          }});
-        const V3 pouch = mix(b.pelvis, b.chest, 0.36f) + front * 2.5f;
-        parts.push_back({fig.depth(pouch), [&, pouch] {
+        const V3 pouch = mix(b.pelvis, b.chest, 0.44f) + front * 1.95f;
+        parts.push_back({fig.depth(pouch), [&, pouch] {  // three magazine pouches on its front
                              fig.begin(1.0f, false);
-                             for (const float l : {-1.1f, 0.0f, 1.1f}) fig.ball(pouch + V3{0.0f, l, 0.0f}, 0.75f, {shade(look.vest.base, 0.78f)});
+                             for (const float l : {-0.85f, 0.0f, 0.85f}) {
+                                 fig.capsule(pouch + V3{0.0f, l, -0.5f}, pouch + V3{0.0f, l, 0.5f}, 0.5f, 0.5f, {look.pouch});
+                             }
                              fig.end();
                          }});
+        parts.push_back({middle + 0.02f, [&] {  // the belt, its pouches at his hips
+                             fig.begin(1.0f, false);
+                             fig.capsule(mix(b.pelvis, b.chest, 0.06f), mix(b.pelvis, b.chest, 0.14f), 1.7f, 1.7f, {shade(look.pouch, 0.9f)});
+                             fig.end();
+                         }});
+        for (const float l : {-1.45f, 1.45f}) {
+            const V3 bag = mix(b.pelvis, b.chest, 0.08f) + V3{-0.2f, l, -0.4f};
+            parts.push_back({fig.depth(bag), [&, bag] {
+                                 fig.begin(1.0f, false);
+                                 fig.ball(bag, 0.62f, {look.pouch});
+                                 fig.end();
+                             }});
+        }
     } else {  // a belt
         parts.push_back({middle + 0.01f, [&] {
                              fig.begin(1.0f, false);
-                             fig.capsule(mix(b.pelvis, b.chest, 0.08f), mix(b.pelvis, b.chest, 0.14f), 2.3f, 2.3f, {{62, 50, 38, 255}});
+                             fig.capsule(mix(b.pelvis, b.chest, 0.08f), mix(b.pelvis, b.chest, 0.14f), 1.7f, 1.7f, {{62, 50, 38, 255}});
                              fig.end();
                          }});
     }
     // On his back: a pack, the radio and its aerial, spare rockets; his weapon slung.
-    const V3 pack = mix(b.pelvis, b.chest, 0.62f) + back * 2.3f;
+    const V3 pack = mix(b.pelvis, b.chest, 0.62f) + back * 1.9f;
     if (kit == Kit::Radio || kit == Kit::Sapper || kit == Kit::Assault || kit == Kit::Rpg) {
         parts.push_back({fig.depth(pack), [&, pack] {
                              fig.begin();
@@ -906,7 +937,7 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
                                      fig.ball(base + axis * 4.4f, 0.95f, {{66, 84, 52, 255}});
                                  }
                              } else {
-                                 const float r = kit == Kit::Sapper ? 2.0f : kit == Kit::Radio ? 1.7f : 1.5f;
+                                 const float r = kit == Kit::Sapper ? 1.65f : kit == Kit::Radio ? 1.45f : 1.25f;
                                  fig.capsule(pack - axis * 1.2f, pack + axis * 1.4f, r, r, look.pack);
                              }
                              fig.end();
@@ -921,7 +952,7 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     if (b.slung && !b.none) {
         const float len = arm_of(kit).length;
         const V3 across = unit(axis * 0.8f + V3{0.0f, -0.6f, 0.0f});
-        const V3 c = mix(b.pelvis, b.chest, 0.55f) + back * (kit == Kit::Mortar || kit == Kit::Ags ? 2.6f : 2.0f);
+        const V3 c = mix(b.pelvis, b.chest, 0.55f) + back * (kit == Kit::Mortar || kit == Kit::Ags ? 2.2f : 1.7f);
         parts.push_back({fig.depth(c) - 0.05f, [&, c, across, len] {
                              fig.begin();
                              draw_weapon(fig, kit, c - across * (len * 0.5f), c + across * (len * 0.5f), false);
@@ -935,15 +966,15 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
         const float dp = fig.depth(elbow);
         parts.push_back({dp, [&, s, elbow, dp] {
                              fig.begin(dim(dp));
-                             fig.capsule(b.shoulder[s], elbow, 1.15f, 1.0f, look.cloth);
-                             fig.capsule(elbow, b.hand[s], 0.95f, 0.85f, look.cloth);
-                             fig.capsule(b.shoulder[s], elbow, 1.25f, 1.1f, {look.team}, 0.3f, 0.62f);
+                             fig.capsule(b.shoulder[s], elbow, 0.86f, 0.74f, look.cloth);
+                             fig.capsule(elbow, b.hand[s], 0.72f, 0.64f, look.cloth);
+                             fig.capsule(b.shoulder[s], elbow, 0.95f, 0.84f, {look.team}, 0.32f, 0.5f);
                              fig.end();
                          }});
         const float dh = fig.depth(b.hand[s]) + 0.3f;
         parts.push_back({dh, [&, s, dh] {
                              fig.begin(dim(dh), false);
-                             fig.ball(b.hand[s], 0.85f, look.skin);
+                             fig.ball(b.hand[s], 0.68f, look.gloves);
                              fig.end();
                          }});
     }
@@ -1034,11 +1065,11 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     const float dhead = fig.depth(b.head);
     parts.push_back({dhead, [&] {
                          fig.begin();
-                         fig.capsule(b.chest + V3{0.0f, 0.0f, 0.4f}, b.head + V3{0.0f, 0.0f, -1.4f}, 0.9f, 0.9f, look.skin);
-                         fig.ball(b.head, 2.0f, look.skin);
+                         fig.capsule(b.chest + V3{0.0f, 0.0f, 0.4f}, b.head + V3{0.0f, 0.0f, -1.2f}, 0.7f, 0.7f, look.skin);
+                         fig.ball(b.head, 1.55f, look.skin);
                          fig.end();
                      }});
-    const V3 eye = b.head + look_dir * 1.7f + V3{0.0f, 0.0f, 0.1f};
+    const V3 eye = b.head + look_dir * 1.3f + V3{0.0f, 0.0f, 0.05f};
     parts.push_back({fig.depth(eye), [&, eye] {
                          fig.begin(1.0f, false);
                          fig.dot(eye, {40, 30, 26, 255});
@@ -1047,19 +1078,20 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     parts.push_back({dhead + 0.02f, [&] {
                          fig.begin();
                          if (kit == Kit::Sniper) {
-                             fig.brim(b.head + V3{0.0f, 0.0f, 0.7f}, 3.4f, {118, 112, 76, 255});
-                             fig.ball(b.head + V3{-0.1f, 0.0f, 1.2f}, 2.1f, {{124, 118, 80, 255}}, 0.3f);
+                             fig.brim(b.head + V3{0.0f, 0.0f, 0.6f}, 2.8f, {118, 112, 76, 255});
+                             fig.ball(b.head + V3{-0.1f, 0.0f, 1.0f}, 1.7f, {{124, 118, 80, 255}}, 0.3f);
                          } else if (kit == Kit::Rear) {  // a peaked field cap: its band, its flat top, the peak, a cockade
                              const Color cap = mix({92, 96, 64, 255}, look.team, 0.06f);
-                             fig.ball(b.head + V3{-0.1f, 0.0f, 1.3f}, 2.15f, {cap}, 0.2f);  // (only over the brow: the face below it)
-                             fig.brim(b.head + V3{-0.15f, 0.0f, 2.9f}, 1.9f, shade(cap, 1.15f));
-                             fig.capsule(b.head + look_dir * 1.6f + V3{0.0f, 0.0f, 1.1f}, b.head + look_dir * 3.2f + V3{0.0f, 0.0f, 0.9f}, 0.5f, 0.45f,
+                             fig.ball(b.head + V3{-0.1f, 0.0f, 1.05f}, 1.7f, {cap}, 0.2f);  // (only over the brow: the face below it)
+                             fig.brim(b.head + V3{-0.12f, 0.0f, 2.3f}, 1.5f, shade(cap, 1.15f));
+                             fig.capsule(b.head + look_dir * 1.25f + V3{0.0f, 0.0f, 0.9f}, b.head + look_dir * 2.6f + V3{0.0f, 0.0f, 0.7f}, 0.45f, 0.4f,
                                          {shade(cap, 0.6f)});
                              fig.end();
                              fig.begin(1.0f, false);
-                             fig.dot(b.head + look_dir * 1.9f + V3{0.0f, 0.0f, 2.0f}, {214, 170, 60, 255});
-                         } else {
-                             fig.ball(b.head + V3{-0.15f, 0.0f, 0.75f}, 2.6f, look.helmet, 0.5f);
+                             fig.dot(b.head + look_dir * 1.5f + V3{0.0f, 0.0f, 1.6f}, {214, 170, 60, 255});
+                         } else {  // the helmet: its dome in its cover, the rim round it in shadow
+                             fig.brim(b.head + V3{-0.1f, 0.0f, 0.4f}, 1.95f, shade(look.helmet.base, 0.66f));
+                             fig.ball(b.head + V3{-0.15f, 0.0f, 0.55f}, 2.15f, look.helmet, 0.3f, 0.82f);
                          }
                          fig.end();
                      }});
@@ -1078,11 +1110,11 @@ int first_frame(Pose p) {
 int frame_count(Pose p) { return kFrames[static_cast<size_t>(p)]; }
 int total_frames() { return first_frame(Pose::Count); }
 
-Image bake(Kit kit, Color team) {
+Image bake(Kit kit, Color team, Uniform uniform) {
     const int frames = total_frames();
     Image img = GenImageColor(kCellW * kDirs, kCellH * frames, {0, 0, 0, 0});
     auto* out = static_cast<Color*>(img.data);
-    const Look look = look_of(kit, team);
+    const Look look = look_of(kit, team, uniform);
     for (int d = 0; d < kDirs; ++d) {
         // The ground angle of the column, turned to the screen (the iso view turns the ground an eighth).
         const float angle = static_cast<float>(d) * 6.2831853f / static_cast<float>(kDirs) + 0.78539816f;
@@ -1100,7 +1132,7 @@ Image bake(Kit kit, Color team) {
 
 Offset muzzle(Kit kit, Pose p, int frame) {
     const Body b = pose(kit, p, std::clamp(frame, 0, frame_count(p) - 1));
-    return {b.muzzle.f / kPxPerTile, b.muzzle.l / kPxPerTile, b.muzzle.z};
+    return {b.muzzle.f / kPxPerTile, b.muzzle.l / kPxPerTile, b.muzzle.z * kTall};
 }
 
 }  // namespace render::soldiers

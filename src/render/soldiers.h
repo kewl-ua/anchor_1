@@ -51,16 +51,23 @@ enum class Kit : uint8_t {
 
 inline constexpr int kDirs = 8;     // columns: the way he faces, by the ground angle (as the vehicles' sheets)
 inline constexpr int kCellW = 48;   // a frame, pixels
-inline constexpr int kCellH = 36;
+inline constexpr int kCellH = 46;
 inline constexpr float kOriginX = 24.0f;  // where his feet are in a frame
-inline constexpr float kOriginY = 29.0f;
+inline constexpr float kOriginY = 39.0f;
+// A man stands this much taller on the screen than his pose's numbers (a
+// tall, lean figure: long legs, a small head).
+inline constexpr float kTall = 1.3f;
+
+// His side's uniform: the pixel camouflage and gear of the Democratic axis
+// (MM-14, olive carriers) or the Authoritarian one (EMR "tsifra", Ratnik).
+enum class Uniform : uint8_t { Mm14, Emr };
 
 int first_frame(Pose p);
 int frame_count(Pose p);
 int total_frames();
 
-// Every direction (columns) and frame (rows) of a kit in his side's colours.
-Image bake(Kit kit, Color team);
+// Every direction (columns) and frame (rows) of a kit in his side's uniform and colours.
+Image bake(Kit kit, Color team, Uniform uniform);
 
 // A point on him in a pose's frame: ahead of his feet, to his left (tiles on
 // the ground) and up (pixels). The muzzle of his weapon.
