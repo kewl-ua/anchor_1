@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <vector>
@@ -35,6 +36,14 @@ public:
     // it has arrived. Returns false while waiting for another player.
     bool try_step();
 
+    // Told of each tick just before it runs, with the commands it applies (every player's).
+    using StepObserver = std::function<void(engine::Tick, const std::vector<engine::Command>&)>;
+    void observe_steps(StepObserver observer) { observer_ = std::move(observer); }
+    // A game played over (offline): the commands as they ran then, each on
+    // its tick; the local player's own are dropped.
+    void set_replay(std::map<engine::Tick, std::vector<engine::Command>> commands) { replay_ = std::move(commands); }
+    bool replaying() const { return replay_.has_value(); }
+
     engine::PlayerId local_player() const { return local_; }
     engine::Tick input_delay() const { return input_delay_; }
     // First tick at which another peer's state differed from ours.
@@ -66,6 +75,8 @@ private:
     std::multimap<engine::Tick, uint64_t> early_remote_checksums_;
     std::optional<engine::Tick> desync_tick_;
     int rejected_packets_ = 0;
+    StepObserver observer_;
+    std::optional<std::map<engine::Tick, std::vector<engine::Command>>> replay_;
 };
 
 }  // namespace net

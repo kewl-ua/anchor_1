@@ -25,6 +25,7 @@ Lockstep::Lockstep(engine::Simulation& sim, engine::PlayerId local_player, int p
       next_seal_tick_(input_delay_) {}
 
 void Lockstep::submit(engine::Command cmd) {
+    if (replay_) return;  // (watching it played over)
     cmd.player = local_;
     if (cmd.units.size() > kMaxUnitsPerCommand) cmd.units.resize(kMaxUnitsPerCommand);
     local_buffer_.push_back(std::move(cmd));
@@ -39,6 +40,7 @@ bool Lockstep::try_step() {
     if (tick >= input_delay_ && !has_all_inputs(tick)) return false;
 
     arrived_.erase(tick);
+    if (observer_) observer_(tick, sim_.scheduled(tick));
     sim_.step();
 
     // Every peer's checksum for tick T came with its input for T + delay,
@@ -60,6 +62,13 @@ void Lockstep::seal_local_input() {
         if (local_buffer_.size() > kMaxCommandsPerTick) local_buffer_.resize(kMaxCommandsPerTick);
         input.commands = std::exchange(local_buffer_, {});
 
+        if (replay_) {  // the commands as they were then, whoever gave them
+            if (const auto it = replay_->find(input.tick); it != replay_->end()) {
+                for (const engine::Command& cmd : it->second) sim_.schedule(input.tick, cmd);
+            }
+            arrived_[input.tick] |= player_bit(local_);
+            continue;
+        }
         for (const engine::Command& cmd : input.commands) sim_.schedule(input.tick, cmd);
         arrived_[input.tick] |= player_bit(local_);
 
@@ -128,6 +137,7 @@ void Lockstep::report_desync(engine::Tick tick) {
 }
 
 bool Lockstep::has_all_inputs(engine::Tick tick) const {
+    if (replay_) return arrived_.contains(tick);
     const uint32_t everyone = (uint32_t{1} << player_count_) - 1;
     const auto it = arrived_.find(tick);
     return it != arrived_.end() && it->second == everyone;

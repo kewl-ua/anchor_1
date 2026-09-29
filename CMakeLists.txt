@@ -55,7 +55,8 @@ endif()
 
 function(anchor_target_defaults target)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        # /Zi: symbols in a .pdb beside the game (the crash report names the functions and lines)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /Zi)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
@@ -130,11 +131,17 @@ anchor_target_defaults(hud)
 
 add_executable(anchor
     src/app/main.cpp
+    src/app/debug_log.cpp
     src/app/game.cpp
     src/app/player_controller.cpp
 )
 target_link_libraries(anchor PRIVATE engine net net_enet render hud theme raylib)
 anchor_target_defaults(anchor)
+if(MSVC)
+    # (the .pdb, still optimized as a release build; dbghelp walks the stack in a crash)
+    target_link_options(anchor PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    target_link_libraries(anchor PRIVATE dbghelp)
+endif()
 
 # --- Tests -------------------------------------------------------------------
 

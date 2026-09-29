@@ -2,11 +2,13 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <utility>
 #include <vector>
 
 #include <raylib.h>
 
+#include "app/debug_log.h"
 #include "app/player_controller.h"
 #include "engine/simulation.h"
 #include "hud/hud.h"
@@ -54,6 +56,8 @@ public:
     void set_show_cursor(bool show) { show_cursor_ = show; }
     // Offline smoke scenes only: a peer changing the world directly would desync.
     engine::World& world_for_setup() { return sim_.world_for_setup(); }
+    // `--replay`: the game played over from a --debug replay (offline, watching).
+    void play_replay(const debug::Replay& replay);
 
 private:
     engine::Simulation sim_;
@@ -71,6 +75,9 @@ private:
     bool show_cursor_ = true;
     bool minimap_drag_ = false;  // left button went down on the minimap
     engine::Tick tick_limit_ = std::numeric_limits<engine::Tick>::max();
+    std::map<engine::Tick, uint64_t> replay_checksums_;  // --replay: how it went then
+    bool replay_diverged_ = false;
+    bool desync_logged_ = false;
 };
 
 }  // namespace app

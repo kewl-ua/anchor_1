@@ -14,6 +14,12 @@ void Simulation::schedule(Tick tick, Command cmd) {
     pending_[tick].push_back(std::move(cmd));
 }
 
+const std::vector<Command>& Simulation::scheduled(Tick tick) const {
+    static const std::vector<Command> kNone;
+    const auto it = pending_.find(tick);
+    return it == pending_.end() ? kNone : it->second;
+}
+
 void Simulation::step() {
     // Orders may only target what the player sees, so the fog comes first.
     world_.begin_tick();

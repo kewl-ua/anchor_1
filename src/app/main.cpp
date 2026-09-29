@@ -11,6 +11,7 @@
 
 #include <raylib.h>
 
+#include "app/debug_log.h"
 #include "app/game.h"
 #include "engine/scenario.h"
 #include "net/enet_session.h"
@@ -41,6 +42,10 @@ struct Options {
     std::optional<Vector2> mouse;
     // `--reveal`: no fog of war on screen (the game itself still plays by it).
     bool reveal = false;
+    // `--debug`: the session logged, with a replay of it, into logs/ beside the game (see app/debug_log.h).
+    bool debug = false;
+    // `--replay <file>`: a game recorded with --debug played over (offline, watching).
+    std::string replay;
     // `--ticks n`: take the smoke screenshot at this tick.
     std::optional<engine::Tick> smoke_ticks;
     // `--speed n`: the smoke test's game speed (default 50x; 1 to see smoke and particles as in play).
@@ -842,7 +847,33 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
             engine::Command cover{.type = engine::CommandType::TakeCover, .units = all, .queued = true};
             game.submit(cover);
         }
-        game.select_units(all);
+        if (options.scene == "trenchline_cells") {
+            // Cell after cell ordered onto one tile, with Shift and without,
+            // by these men and those, and by the tile's own button; one of
+            // them selected, his card showing him at it (it used to crash).
+            const engine::TilePos t = on_line(-1.0f);
+            const engine::FixedVec2 c = engine::tile_center(t);
+            const engine::Command cell{.type = engine::CommandType::Fortify, .target = c,
+                                       .structure_type = static_cast<uint8_t>(engine::TrenchFit::Cell), .target_end = c + front};
+            for (int i = 0; i < 3; ++i) {
+                engine::Command more = cell;
+                more.units = {r1, r2};
+                more.queued = true;
+                game.submit(more);
+            }
+            fortify({r5, r6}, t, engine::TrenchFit::Cell);
+            game.submit(cell);
+            game.submit(cell);
+            for (int i = 0; i < 3; ++i) {
+                engine::Command more = cell;
+                more.units = {r3, r4, r5};
+                more.queued = true;
+                game.submit(more);
+            }
+            game.select_units({r1});
+        } else {
+            game.select_units(all);
+        }
         // (`trenchline_line`: the camera on the front line.)
         return render::to_vector2(options.scene == "trenchline_line" ? ahead(14.0f, -0.5f) : ahead(12.0f, -0.5f));
     }
@@ -2159,6 +2190,10 @@ std::optional<Options> parse_args(int argc, char** argv) {
             opt.mouse = Vector2{static_cast<float>(x), static_cast<float>(y)};
         } else if (arg == "--reveal") {
             opt.reveal = true;
+        } else if (arg == "--debug") {
+            opt.debug = true;
+        } else if (arg == "--replay" && has_next) {
+            opt.replay = argv[++i];
         } else if (arg == "--scene" && has_next) {
             opt.scene = argv[++i];
         } else if (arg == "--ticks" && has_next) {
@@ -2188,7 +2223,9 @@ void print_usage() {
         "  --join address   join a hosted game, e.g. --join 192.168.1.5 or --join 1.2.3.4:7777\n"
         "  --map size       tiny 120, small 144, medium 168, normal 200 (default), large 220, giant 240,\n"
         "                   or a number of tiles %d..%d; when joining, the host's size is used\n"
-        "  --reveal         no fog of war on screen (for development)\n",
+        "  --reveal         no fog of war on screen (for development)\n"
+        "  --debug          log the session and record a replay of it into logs/ beside the game\n"
+        "  --replay file    play over a game recorded with --debug (watching)\n",
         static_cast<unsigned>(net::kDefaultPort), engine::kMinMapSize, engine::kMaxMapSize);
 }
 
@@ -2207,7 +2244,17 @@ int main(int argc, char** argv) {
     }
     const bool smoke = !options->smoke_screenshot.empty();
     const engine::Tick smoke_ticks = options->smoke_ticks.value_or(kSmokeTicks);
-    const uint64_t seed = smoke ? kSmokeSeed : random_seed();
+    uint64_t seed = smoke ? kSmokeSeed : random_seed();
+    app::debug::start(argc, argv, options->debug);
+    std::optional<app::debug::Replay> replay;
+    if (!options->replay.empty()) {
+        replay = app::debug::load_replay(options->replay);
+        if (!replay) {
+            std::fprintf(stderr, "replay: can't read %s\n", options->replay.c_str());
+            return 1;
+        }
+        seed = replay->seed;
+    }
 
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT | FLAG_MSAA_4X_HINT);
     InitWindow(1280, 720, "Anchor RTS");
@@ -2221,7 +2268,12 @@ int main(int argc, char** argv) {
     std::optional<app::Game> game;
     switch (options->mode) {
         case Options::Mode::Offline:
-            game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr);
+            if (replay) {  // (its player's view, everyone's commands played as they came)
+                game.emplace(seed, replay->map_size, replay->local_player, 1, nullptr);
+                game->play_replay(*replay);
+            } else {
+                game.emplace(seed, options->map_size, engine::PlayerId{0}, 1, nullptr);
+            }
             game->set_reveal(options->reveal);
             game->set_show_cursor(show_cursor);
             break;
@@ -2237,6 +2289,7 @@ int main(int argc, char** argv) {
         if (session) {
             session->update();
             if (!game && session->state() == net::EnetSession::State::Ready) {
+                app::debug::logf("connected: %s", session->status().c_str());
                 game.emplace(session->seed(), session->map_size(), session->local_player(), session->player_count(),
                              session.get());
                 game->set_reveal(options->reveal);
@@ -2328,12 +2381,18 @@ int main(int argc, char** argv) {
             UnloadImage(shot);
             break;
         }
+        if (session && session->state() == net::EnetSession::State::Failed) {
+            static bool logged = false;
+            if (!logged) app::debug::logf("connection failed: %s", session->status().c_str());
+            logged = true;
+        }
         if (smoke && session && session->state() == net::EnetSession::State::Failed) {
             std::printf("SMOKE failed: %s\n", session->status().c_str());
             break;
         }
     }
 
+    app::debug::logf("quit at tick %u", game ? game->world().tick() : 0u);
     game.reset();
     session.reset();
     CloseWindow();

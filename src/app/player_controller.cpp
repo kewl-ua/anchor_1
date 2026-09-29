@@ -535,7 +535,9 @@ void PlayerController::rebuild_grid(const engine::World& world) {
     auto put = [&](size_t slot, Action action, uint8_t param, const char* label, const char* tooltip,
                    engine::Stock cost = {}) -> hud::CommandButton& {
         cells_[slot] = {action, param};
-        buttons_[slot] = {.label = label, .tooltip = tooltip, .cost = cost};
+        labels_[slot] = label ? label : "";
+        tooltips_[slot] = tooltip ? tooltip : "";
+        buttons_[slot] = {.label = labels_[slot].c_str(), .tooltip = tooltip ? tooltips_[slot].c_str() : nullptr, .cost = cost};
         return buttons_[slot];
     };
 

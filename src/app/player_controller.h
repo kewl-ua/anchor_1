@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <optional>
 #include <span>
 #include <utility>
@@ -200,6 +201,8 @@ private:
     std::optional<Vector2> line_start_;  // a line skill being dragged: where it started
     std::vector<engine::TilePos> trench_preview_;
     std::array<hud::CommandButton, hud::kGridSlots> buttons_{};
+    std::array<std::string, hud::kGridSlots> labels_;    // the buttons' words, kept (TextFormat's buffers are reused)
+    std::array<std::string, hud::kGridSlots> tooltips_;
     std::array<Cell, hud::kGridSlots> cells_{};
 };
 

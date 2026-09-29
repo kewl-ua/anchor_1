@@ -1008,9 +1008,11 @@ void Hud::draw_unit_card(const engine::World& world, const engine::Unit& u, Rect
                                                   "Attack-moving", "Firing at ground", "Moving into a house",
                                                   "Gathering",     "Retraining",       "Building",
                                                   "Supply run",    "Observing, holding fire", "Using a skill",
-                                                  "Looking after a unit", "Collecting by the wood"};
-    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Collect) + 1);
-    const char* state = kOrderNames[static_cast<int>(u.order)];
+                                                  "Looking after a unit", "Collecting by the wood",
+                                                  "Fitting out the trench"};
+    static_assert(std::size(kOrderNames) == static_cast<size_t>(engine::Order::Count));
+    const auto order = static_cast<size_t>(u.order);
+    const char* state = order < std::size(kOrderNames) ? kOrderNames[order] : "?";
     if (u.order == engine::Order::Ability) state = engine::ability_def(u.order_ability).label;
     if (u.order == engine::Order::Idle && world.find_unit(u.engaged)) state = "Engaging";
     if (u.order == engine::Order::Garrison && world.find_unit(u.order_target)) state = "Mounting up";

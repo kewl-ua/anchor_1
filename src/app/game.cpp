@@ -1,6 +1,7 @@
 #include "app/game.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <optional>
 
 #include "theme/input.h"
@@ -42,6 +43,17 @@ Game::Game(uint64_t seed, int32_t map_size, engine::PlayerId local_player, int p
       controller_(local_player) {
     engine::setup_demo_scenario(sim_.world_for_setup());
     renderer_.set_viewer(local_player, reveal_);
+    debug::session(seed, map_size, local_player, player_count);
+    lockstep_.observe_steps([this](engine::Tick tick, const std::vector<engine::Command>& commands) {
+        debug::phase("the simulation's tick");
+        debug::step(sim_.world(), commands);
+        if (const auto it = replay_checksums_.find(tick); it != replay_checksums_.end() && !replay_diverged_ &&
+                                                          sim_.world().checksum() != it->second) {
+            replay_diverged_ = true;
+            debug::logf("replay: from tick %u it goes differently from how it went then", tick);
+            std::fprintf(stderr, "replay: from tick %u it goes differently from how it went then\n", tick);
+        }
+    });
 
     camera_.set_bounds(render::iso::map_bounds(sim_.world().map()));
     if (auto army = center_of(sim_.world(), [&](const engine::Unit& u) { return u.owner == local_player; })) {
@@ -59,7 +71,14 @@ void Game::center_camera_on_selection() {
     if (auto center = center_of(sim_.world(), selected)) center_camera_on(*center);
 }
 
+void Game::play_replay(const debug::Replay& replay) {
+    lockstep_.set_replay(replay.commands);
+    replay_checksums_ = replay.checksums;
+    debug::logf("replay: %zu ticks with commands", replay.commands.size());
+}
+
 void Game::update(float dt) {
+    debug::phase("the game's update");
     // Wall-clock time only decides WHEN ticks run, never what they compute.
     const float scaled = dt * time_scale_;
     accumulator_ = std::min(accumulator_ + scaled, kTickSeconds * kMaxCatchUpTicks * time_scale_);
@@ -73,6 +92,11 @@ void Game::update(float dt) {
     }
     stall_time_ = stalled ? stall_time_ + dt : 0.0f;
     alpha_ = std::min(accumulator_ / kTickSeconds, 1.0f);
+    if (lockstep_.desync_tick() && !desync_logged_) {
+        desync_logged_ = true;
+        debug::logf("DESYNC: the other side's state differs from tick %u", *lockstep_.desync_tick());
+    }
+    debug::phase("the game's update: the camera");
 
     camera_.update(dt);
     if (IsKeyPressed(KEY_SPACE)) center_camera_on_selection();
@@ -95,14 +119,19 @@ void Game::update(float dt) {
         center_camera_on_selection();
     }
 
+    debug::phase("the player's controls");
     controller_.update(sim_.world(), lockstep_, camera_, hud_, renderer_, alpha_);
+    debug::phase("the renderer's update");
     renderer_.update(sim_.world(), scaled);
+    debug::phase("the HUD's update");
     hud_.update(sim_.world(), lockstep_.local_player(), reveal_);
+    debug::phase("between frames");
 }
 
 void Game::draw(hud::NetStatus net) const {
     std::optional<render::BuildGhost> ghost;
     if (const auto& p = controller_.placement()) ghost = render::BuildGhost{p->type, p->origin, p->valid};
+    debug::phase("drawing the world");
     renderer_.draw(sim_.world(), camera_, alpha_, controller_.selection(), controller_.selected_structure(),
                    ghost ? &*ghost : nullptr, controller_.trench_preview());
 
@@ -116,6 +145,7 @@ void Game::draw(hud::NetStatus net) const {
         return render::iso::pick_ground(sim_.world().map(), camera_.screen_to_world(screen));
     };
 
+    debug::phase("drawing the HUD");
     hud_.draw(sim_.world(), {
         .local_player = lockstep_.local_player(),
         .selection = controller_.selection(),

@@ -36,6 +36,7 @@ enum class Order : uint8_t {
     Supply,        // a service vehicle looking after the unit `serves`
     Collect,       // a supply truck parked at order_point by the wood, taking loads in
     Fortify,       // infantry: walk to the trench tile of order_target and fit it out, then stay at it
+    Count,         // (not an order: how many there are; tables of them are checked against it)
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();

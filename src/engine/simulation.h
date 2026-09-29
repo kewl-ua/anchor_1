@@ -23,6 +23,8 @@ public:
     void schedule(Tick tick, Command cmd);
 
     void step();
+    // The commands scheduled for a tick (before it runs).
+    const std::vector<Command>& scheduled(Tick tick) const;
 
     const World& world() const { return world_; }
     // Mutable access is for initial setup only; during the game every change
