@@ -113,6 +113,7 @@ add_library(render STATIC
     src/render/iso.cpp
     src/render/plants.cpp
     src/render/soldiers.cpp
+    src/render/works.cpp
     src/render/world_renderer.cpp
 )
 target_link_libraries(render PUBLIC engine raylib PRIVATE theme)

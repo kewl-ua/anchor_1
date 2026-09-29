@@ -386,7 +386,10 @@ void World::update_ability(Unit& u) {
                 return;
             }
             if (++u.work < kGunPitWork) return;
-            place_fieldwork(StructureType::GunPit, u.owner, t, {});
+            const EntityId id = place_fieldwork(StructureType::GunPit, u.owner, t, def.vehicle ? u.hull : u.facing);
+            if (Structure* pit = find_structure_mut(id)) {
+                pit->pit = u.type == UnitTypeId::Mortar ? PitKind::Mortar : def.family == Family::Spg ? PitKind::Vehicle : PitKind::Gun;
+            }
             return finish_ability(u);
         }
 

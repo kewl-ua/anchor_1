@@ -3381,6 +3381,8 @@ void test_gun_pits() {
     CHECK(pit && pit->type == StructureType::GunPit);
     CHECK(sim.world().map().terrain(10, 10) == Terrain::GunPit);
     CHECK(sim.world().map().passable({10, 10}, MoveClass::Wheeled));  // a towed gun can stand in one
+    CHECK(pit->pit == PitKind::Mortar);  // a mortar's round pit, facing the way the crew did
+    CHECK(pit->facing == sim.world().find_unit(mortar)->facing);
 
     const EntityId watcher = sim.world_for_setup().spawn_unit(1, UnitTypeId::Truck, at(14, 10));
     for (Tick i = 0; i < 2 * kVisionInterval; ++i) sim.step();
@@ -3393,6 +3395,18 @@ void test_gun_pits() {
     }, UnitTypeId::Mortar);
     CHECK(open > 0);
     CHECK(dug_in * 100 < open * 70);
+
+    // A self-propelled gun digs a caponier along its hull; a towed gun, an emplacement.
+    for (const UnitTypeId type : {UnitTypeId::Spg, UnitTypeId::M777}) {
+        Simulation s2(1, TileMap(30, 20));
+        const EntityId gun = s2.world_for_setup().spawn_unit(0, type, post());
+        s2.world_for_setup().unit_for_setup(gun)->hull = {Fixed{}, Fixed::from_int(1)};
+        s2.schedule(0, use_ability(0, {gun}, AbilityId::DigGunPit, 0, 0));
+        for (Tick i = 0; i < kGunPitWork + 5; ++i) s2.step();
+        const Structure* dug = s2.world().structure_at({10, 10});
+        CHECK(dug && dug->pit == (type == UnitTypeId::Spg ? PitKind::Vehicle : PitKind::Gun));
+        CHECK(dug && dug->facing == s2.world().find_unit(gun)->hull);
+    }
 }
 
 // Camouflage hides a howitzer in the open until it moves.

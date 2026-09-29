@@ -15,6 +15,7 @@
 #include "render/camera.h"
 #include "render/iso.h"
 #include "render/soldiers.h"
+#include "render/works.h"
 
 namespace render {
 
@@ -35,6 +36,14 @@ struct BuildGhost {
 // Draws the game world in isometric view. Reads the engine state, never
 // changes it. Owns purely visual state: order markers, explosions, wrecks.
 enum class TruckModel : uint8_t;  // which real truck a truck is (see world_renderer.cpp)
+
+// Where a unit is drawn off its place (a man moved into the ditch he's in)
+// and how far down it's sunk (in a trench, in its pit).
+struct Settled {
+    Vector2 offset{};
+    float sink = 0.0f;
+    float w = 0.0f;  // how settled in: 0 on the move, 1 still
+};
 
 class WorldRenderer {
 public:
@@ -276,6 +285,32 @@ private:
         Vector2 ground{};
         Vector2 anchor{};
     };
+    // Field works in pixel art (see works.h): each tile's baked with its
+    // neighbours', its back drawn with the ground, its front over who's in it.
+    struct WorksSprite {
+        Texture2D back{};
+        Texture2D front{};
+        Vector2 at{};
+        uint32_t look = 0;
+        uint64_t used = 0;
+    };
+    mutable std::unordered_map<int, WorksSprite> works_sprites_;  // by tile
+    struct WorksBake {
+        int tx;
+        int ty;
+        works::Area area;
+        uint32_t look;
+    };
+    mutable std::vector<WorksBake> works_bakes_;
+    mutable std::unordered_map<int, works::Spec> works_known_;  // other players' as last seen, by tile
+    std::optional<works::Spec> works_at(const engine::World& world, int tx, int ty) const;
+    works::Area works_area(const engine::World& world, int tx, int ty) const;
+    // A tile's works, their back or their front; false if not baked yet (then it's asked for).
+    bool draw_works_baked(const engine::World& world, int tx, int ty, bool front) const;
+    void bake_works(const engine::World& world) const;
+    // Men in a trench stand in its ditch, sunk in it; guns sit down in their pits.
+    std::unordered_map<engine::EntityId, Settled> settle_;
+    float sink_of(engine::EntityId id) const;
     struct BuildingBake {
         uint64_t key = 0;
         uint32_t look = 0;
@@ -301,7 +336,8 @@ private:
     int kit(engine::VehicleModel model, engine::PlayerId owner) const;
     void bake_sprites(const engine::World& world) const;
     const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;
-    void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint = WHITE) const;
+    // `cut`: nothing drawn below that screen line (what's sunk in a pit, down in a trench).
+    void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint = WHITE, float cut = 1e9f) const;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;
     static constexpr int kRemembered = 1;  // explored, not in view now
@@ -351,6 +387,7 @@ private:
     const SpriteSheet& soldier_sheet(soldiers::Kit kit, engine::PlayerId owner) const;
     // What a man is doing, as drawn: his pose and its frame; where his weapon's muzzle is then (on the ground, up).
     std::pair<soldiers::Pose, int> soldier_pose(const engine::Unit& u) const;
+    std::pair<soldiers::Pose, int> soldier_pose_raw(const engine::Unit& u) const;
     void soldier_muzzle(const engine::Unit& u, Vector2 ground, Vector2 facing, Vector2& at, float& z) const;
     void draw_vehicle(const engine::TileMap& map, const engine::Unit& u, Vector2 ground, Vector2 facing) const;
     void draw_projectile(const engine::Projectile& p, float alpha) const;

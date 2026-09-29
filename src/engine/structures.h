@@ -58,6 +58,10 @@ enum class StructureType : uint8_t {
 // in a wood; a hide of branches in the crops, the reeds, the rubble; out in
 // the open, an artificial stump he sits in (as the old field manuals have it).
 enum class PostKind : uint8_t { Stump, Tree, Hide };
+// What a gun pit was dug for (it plays the same, it looks its own): a
+// towed gun's emplacement, a horseshoe of earth open at the back; a mortar's
+// round pit; a self-propelled gun's caponier, a ramp down into it.
+enum class PitKind : uint8_t { Gun, Mortar, Vehicle };
 inline constexpr size_t kStructureTypeCount = static_cast<size_t>(StructureType::Count);
 inline constexpr size_t kMaxRoster = 5;  // the grid's top row
 
@@ -174,6 +178,8 @@ struct Structure {
     PlayerId antenna = kNoOwner;
     // An observation post: what it is.
     PostKind post = PostKind::Stump;
+    // A gun pit: what for (its `facing` is the way the gun faced when it was dug).
+    PitKind pit = PitKind::Gun;
 
     // Where the units it hires go (AoE's rally point): rear troops to work
     // if it's on the wood or the stone, trucks to collect there.

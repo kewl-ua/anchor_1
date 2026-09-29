@@ -562,6 +562,89 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene.starts_with("fieldworks") && options.mode == Options::Mode::Offline) {
+        // Offline, out in the field: a line of trench with a breastwork to
+        // the front, a communication trench back to a dugout, foxholes (one
+        // being made a dugout), a pillbox, a lone breastwork, wire and
+        // hedgehogs out in front; behind, the guns in their pits: a mortar's,
+        // towed guns' emplacements, self-propelled guns' caponiers. Riflemen
+        // and a machine gunner in the trench.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            d += 28.0f;
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        auto tile = [&](float d, float side) { return engine::tile_of(ahead(d, side)); };
+        const engine::FixedVec2 front = render::to_fixed_vec2({fwd, -fwd});
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(12.0f, -1.0f), 12);
+        auto works = [&](engine::StructureType type, engine::TilePos t, bool parapet) {
+            const engine::EntityId id = w.place_structure(type, me, t, 1, 1);
+            if (engine::Structure* st = w.structure_for_setup(id)) {
+                st->parapet = parapet || type == engine::StructureType::Parapet;
+                st->facing = front;
+            }
+            return id;
+        };
+        for (const engine::TilePos& t : engine::trench_line(tile(14.0f, -6.0f), tile(14.0f, 3.0f))) {
+            works(engine::StructureType::Trench, t, true);
+        }
+        for (const engine::TilePos& t : engine::trench_line(tile(13.0f, -1.0f), tile(10.0f, -1.0f))) {
+            if (!w.structure_at(t)) works(engine::StructureType::Trench, t, false);
+        }
+        works(engine::StructureType::Dugout, tile(10.0f, -2.5f), false);
+        works(engine::StructureType::Foxhole, tile(16.0f, 5.0f), false);
+        works(engine::StructureType::Foxhole, tile(16.5f, 7.0f), true);
+        if (engine::Structure* st = w.structure_for_setup(works(engine::StructureType::Foxhole, tile(12.5f, 5.0f), false))) {
+            st->upgrading = true;
+        }
+        works(engine::StructureType::Pillbox, tile(15.5f, -8.5f), false);
+        works(engine::StructureType::Parapet, tile(17.0f, -3.0f), true);
+        for (float side = -6.0f; side <= 1.0f; side += 1.0f) works(engine::StructureType::Wire, tile(18.5f, side), false);
+        for (float side = 3.0f; side <= 5.0f; side += 1.0f) works(engine::StructureType::Hedgehogs, tile(18.5f, side), false);
+        // The men in the trench, facing the front.
+        std::vector<engine::EntityId> men;
+        const auto trench = engine::trench_line(tile(14.0f, -6.0f), tile(14.0f, 3.0f));
+        for (size_t i = 1; i < trench.size(); i += 3) {
+            const engine::UnitTypeId type = i == 4 ? engine::UnitTypeId::MachineGunner : engine::UnitTypeId::Rifleman;
+            const engine::EntityId id = w.spawn_unit(me, type, engine::tile_center(trench[i]));
+            w.unit_for_setup(id)->facing = front;
+            men.push_back(id);
+        }
+        // The guns in their pits.
+        struct Gun {
+            engine::UnitTypeId type;
+            float d;
+            float side;
+            engine::PitKind pit;
+        };
+        const Gun guns[] = {{engine::UnitTypeId::Mortar, 9.0f, 3.5f, engine::PitKind::Mortar},
+                            {engine::UnitTypeId::Mortar, 9.5f, 5.5f, engine::PitKind::Mortar},
+                            {engine::UnitTypeId::Howitzer, 6.0f, 1.0f, engine::PitKind::Gun},
+                            {engine::UnitTypeId::MstaB, 6.0f, 4.0f, engine::PitKind::Gun},
+                            {engine::UnitTypeId::Spg, 6.0f, -3.0f, engine::PitKind::Vehicle},
+                            {engine::UnitTypeId::MstaS, 6.0f, -6.5f, engine::PitKind::Vehicle}};
+        for (const Gun& g : guns) {
+            const engine::TilePos t = tile(g.d, g.side);
+            if (engine::Structure* st = w.structure_for_setup(w.place_structure(engine::StructureType::GunPit, me, t, 1, 1))) {
+                st->pit = g.pit;
+                st->facing = front;
+            }
+            const engine::EntityId id = w.spawn_unit(me, g.type, engine::tile_center(t));
+            engine::Unit* u = w.unit_for_setup(id);
+            u->facing = front;
+            u->hull = front;
+            u->deployed = true;
+        }
+        game.select_units(men);
+        // (`fieldworks_guns`: the camera on the guns; `fieldworks_pits`: on the mortars and foxholes.)
+        if (options.scene == "fieldworks_guns") return render::to_vector2(ahead(6.0f, -1.5f));
+        if (options.scene == "fieldworks_pits") return render::to_vector2(ahead(12.0f, 5.0f));
+        return render::to_vector2(ahead(13.0f, -1.0f));
+    }
+
     if (options.scene.starts_with("controls") && options.mode == Options::Mode::Offline) {
         // Offline, out in the field: riflemen given a way with Shift (their
         // queued orders' flags along it), a tank of ours by them, or

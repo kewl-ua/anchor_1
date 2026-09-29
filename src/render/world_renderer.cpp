@@ -292,8 +292,16 @@ Color cargo_color(engine::Resource r) {
 
 soldiers::Kit kit_of(engine::UnitTypeId type);  // (with the soldiers' drawing, below)
 
+namespace {
+const std::unordered_map<engine::EntityId, Settled>* g_settled = nullptr;  // (the renderer's)
+}
+
 Vector2 unit_ground_pos(const engine::Unit& unit, float alpha) {
-    return lerp(to_vector2(unit.prev_pos), to_vector2(unit.pos), alpha);
+    Vector2 p = lerp(to_vector2(unit.prev_pos), to_vector2(unit.pos), alpha);
+    if (g_settled) {
+        if (const auto it = g_settled->find(unit.id); it != g_settled->end()) p = {p.x + it->second.offset.x, p.y + it->second.offset.y};
+    }
+    return p;
 }
 
 Vector2 unit_screen_pos(const RtsCamera& camera, const engine::TileMap& map, const engine::Unit& unit,
@@ -1964,6 +1972,39 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         r.fell = 0.0f;
         r.age = 0.0f;  // (a wreck from now on)
         r.cargo = static_cast<uint8_t>(Cargo::Fuel);  // its fuel burning a while, black smoke over it
+    }
+    // Men in a trench stand in its ditch, sunk in it to the waist; a gun sits
+    // down in its pit, a self-propelled one in its caponier. They settle in
+    // once they stop, and get up as they set off.
+    g_settled = &settle_;
+    if (seen_terrain_.size() == static_cast<size_t>(map.width() * map.height())) {
+        for (const engine::Unit& u : world.units()) {
+            if (u.airborne || u.inside || u.riding) {
+                settle_.erase(u.id);
+                continue;
+            }
+            const Vector2 p = to_vector2(u.pos);
+            const int tx = static_cast<int>(std::floor(p.x));
+            const int ty = static_cast<int>(std::floor(p.y));
+            const std::optional<works::Spec> spec = map.contains_tile(tx, ty) ? works_at(world, tx, ty) : std::nullopt;
+            if (!spec && !settle_.count(u.id)) continue;
+            Vector2 offset{};
+            float sink = 0.0f;
+            if (spec) {
+                const Vector2 local{p.x - static_cast<float>(tx), p.y - static_cast<float>(ty)};
+                const works::Place place = works::place(*spec, local, engine::unit_type(u.type).vehicle);
+                offset = {place.at.x - local.x, place.at.y - local.y};
+                const bool in_it = std::hypot(offset.x, offset.y) < 0.06f;  // (walking along the ditch)
+                sink = u.moving && !in_it ? 0.0f : place.sunk;
+            }
+            Settled& st = settle_[u.id];
+            const float want = spec && !u.moving ? 1.0f : 0.0f;
+            st.w += std::clamp(want - st.w, -dt * 4.0f, dt * 4.0f);
+            st.offset = {offset.x * st.w, offset.y * st.w};
+            st.sink += std::clamp(sink - st.sink, -dt * 30.0f, dt * 30.0f);
+            if (!spec && st.w <= 0.0f && st.sink <= 0.0f) settle_.erase(u.id);
+        }
+        if (frame_ % 120 == 0) std::erase_if(settle_, [&](const auto& e) { return world.find_unit(e.first) == nullptr; });
     }
     std::erase_if(pings_, [](const Ping& p) { return p.age >= kPingLifetime; });
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
@@ -4575,21 +4616,121 @@ BuildingStyle style_of(engine::StructureType type) {
 
 // A player's building: a block with a flat roof and a flag. While under
 // construction it rises with the work done, inside a frame of scaffolding.
-// A pillbox: a low mound of logs and earth, a dark slit on the side it faces.
+void sandbags(const engine::TileMap& map, Vector2 g0, Vector2 g1, int rows, uint32_t seed);  // with the players' buildings, below
+
+// A pillbox, a log-and-earth firing point: walls of logs in courses, their
+// ends crossing at the corners; earth banked up against them; a roof of
+// logs under a mound of turf. Its embrasure a dark slit under a log lintel
+// on the side it faces, sandbags either side of it. Being built: its log
+// walls going up course by course, no roof yet. Shelled: its roof caved in.
 void draw_pillbox(const engine::TileMap& map, const engine::Structure& s) {
+    const engine::StructureDef& def = engine::structure_type(s.type);
     const Vector2 c{static_cast<float>(s.tiles.front().x) + 0.5f, static_cast<float>(s.tiles.front().y) + 0.5f};
-    const float done = s.built ? 1.0f : 0.4f;
-    fill_ground_ellipse(on_terrain(map, c), 0.5f, {110, 94, 70, 255});
-    fill_ground_ellipse(on_terrain(map, c, 5.0f * done), 0.4f, {96, 84, 62, 255});
-    fill_ground_ellipse(on_terrain(map, c, 8.0f * done), 0.28f, {84, 74, 56, 255});
-    if (!s.built) return;
     Vector2 f = to_vector2(s.facing);
-    const float len = std::hypot(f.x, f.y);
-    f = len > 0.0f ? Vector2{f.x / len, f.y / len} : Vector2{1.0f, 0.0f};
-    const Vector2 mid{c.x + f.x * 0.36f, c.y + f.y * 0.36f};
-    const Vector2 a{mid.x - f.y * 0.18f, mid.y + f.x * 0.18f};
-    const Vector2 b{mid.x + f.y * 0.18f, mid.y - f.x * 0.18f};
-    DrawLineEx(on_terrain(map, a, 4.0f), on_terrain(map, b, 4.0f), 2.5f, lit({24, 22, 20, 255}));
+    const float fl = std::hypot(f.x, f.y);
+    f = fl > 0.0f ? Vector2{f.x / fl, f.y / fl} : Vector2{0.7071f, -0.7071f};
+    const Vector2 side{-f.y, f.x};  // (a shell hole's to one side)
+    const uint32_t h = s.id * 2654435761u;
+    const float done = s.built ? 1.0f : std::clamp(static_cast<float>(s.build_progress) / static_cast<float>(std::max<engine::Tick>(1, def.build_time)), 0.0f, 1.0f);
+    const float damage = s.built ? 1.0f - static_cast<float>(s.hp) / static_cast<float>(std::max(1, def.max_hp)) : 0.0f;
+    constexpr float kHalf = 0.33f;
+    constexpr float kCourse = 2.6f;
+    constexpr int kCourses = 3;
+    const int courses = s.built ? kCourses : std::max(1, static_cast<int>(done * static_cast<float>(kCourses + 1)));
+    const float wall = kCourse * static_cast<float>(std::min(courses, kCourses));
+    const Color log{132, 97, 64, 255};
+    const Color seam{70, 50, 34, 255};
+    const Color end{202, 170, 122, 255};
+    const Color earth{120, 98, 70, 255};
+    const Color turf{98, 112, 62, 255};
+    // Its corners round it (square to the map), and its sides: each from one
+    // corner to the next, facing out. The embrasure in the side most towards
+    // the front, the nearer one of two as much so.
+    const Vector2 corner[4] = {{c.x - kHalf, c.y - kHalf}, {c.x + kHalf, c.y - kHalf}, {c.x + kHalf, c.y + kHalf}, {c.x - kHalf, c.y + kHalf}};
+    const Vector2 out[4] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+    int slit = 0;
+    for (int k = 1; k < 4; ++k) {
+        const float dk = out[k].x * f.x + out[k].y * f.y + (out[k].x + out[k].y > 0.0f ? 0.05f : 0.0f);
+        const float ds = out[slit].x * f.x + out[slit].y * f.y + (out[slit].x + out[slit].y > 0.0f ? 0.05f : 0.0f);
+        if (dk > ds) slit = k;
+    }
+    auto light_of = [](Vector2 n) { return 0.86f + 0.14f * (n.x - n.y); };  // (lit on the right, as the houses are)
+    fill_ground_ellipse(on_terrain(map, c), kHalf + 0.24f, {104, 86, 62, 255});  // the trodden, dug ground round it
+    for (int k = 0; k < 4; ++k) {
+        const Vector2 n = out[k];
+        if (n.x + n.y <= 0.0f) continue;  // (a side turned away)
+        const Vector2 a = corner[k];
+        const Vector2 b = corner[(k + 1) % 4];
+        const float lk = light_of(n);
+        const bool embrasure = k == slit && s.built;
+        // The logs, course over course: each lit along its top, a dark seam under it.
+        for (int course = 0; course < std::min(courses, kCourses); ++course) {
+            const float z0 = kCourse * static_cast<float>(course);
+            const float z1 = z0 + kCourse;
+            fill_quad(on_terrain(map, a, z0), on_terrain(map, b, z0), on_terrain(map, b, z1), on_terrain(map, a, z1), shade(log, lk * (0.92f + 0.12f * rand01(h, course * 4 + k))));
+            DrawLineV(on_terrain(map, a, z1 - 0.6f), on_terrain(map, b, z1 - 0.6f), lit(shade(log, lk * 1.18f)));
+            DrawLineV(on_terrain(map, a, z0 + 0.3f), on_terrain(map, b, z0 + 0.3f), lit(shade(seam, lk)));
+            for (const Vector2& e : {a, b}) {  // their ends crossing at the corners
+                const Vector2 p = on_terrain(map, {e.x + n.x * 0.03f, e.y + n.y * 0.03f}, z0 + kCourse * 0.5f);
+                disc(p, 1.3f, lit(end));
+            }
+        }
+        if (embrasure) {  // the slit under a lintel, the dark inside
+            const Vector2 a1 = lerp(a, b, 0.27f);
+            const Vector2 b1 = lerp(a, b, 0.73f);
+            fill_quad(on_terrain(map, a1, wall - 4.0f), on_terrain(map, b1, wall - 4.0f), on_terrain(map, b1, wall - 0.8f), on_terrain(map, a1, wall - 0.8f), {18, 15, 12, 255});
+            DrawLineEx(on_terrain(map, lerp(a, b, 0.2f), wall - 0.4f), on_terrain(map, lerp(a, b, 0.8f), wall - 0.4f), 1.6f, lit(shade(log, 1.1f)));
+        }
+        // Earth banked up against it (lower below the slit), out to the ground.
+        const float bank = embrasure ? 1.2f : kCourse;
+        if (s.built) {
+            const Vector2 a2{a.x + n.x * 0.17f, a.y + n.y * 0.17f};
+            const Vector2 b2{b.x + n.x * 0.17f, b.y + n.y * 0.17f};
+            fill_quad(on_terrain(map, a, bank), on_terrain(map, b, bank), on_terrain(map, b2, 0.0f), on_terrain(map, a2, 0.0f), shade(earth, lk * 0.95f));
+            for (int i = 0; i < 10; ++i) {  // clods, tufts on it
+                const float u = rand01(h, 60 + i + k * 10);
+                const float v = rand01(h, 90 + i + k * 10);
+                const Vector2 g = lerp(lerp(a, b, u), lerp(a2, b2, u), v);
+                const Vector2 p = on_terrain(map, g, bank * (1.0f - v));
+                DrawRectangleRec({std::round(p.x), std::round(p.y), 1.0f, 1.0f}, lit(i % 3 == 0 ? turf : shade(earth, 0.8f)));
+            }
+        }
+    }
+    if (!s.built) return;
+    // The roof: logs under a mound of turf, a little proud of the walls; caved in when shelled hard.
+    const float rise = damage > 0.7f ? 1.0f : 3.0f;
+    Vector2 eave[4];
+    Vector2 top[4];
+    for (int k = 0; k < 4; ++k) {
+        const Vector2 d{corner[k].x - c.x, corner[k].y - c.y};
+        eave[k] = on_terrain(map, {c.x + d.x * 1.12f, c.y + d.y * 1.12f}, wall);
+        top[k] = on_terrain(map, {c.x + d.x * 0.5f, c.y + d.y * 0.5f}, wall + rise);
+    }
+    for (int k = 0; k < 4; ++k) {
+        const Vector2 n = out[k];
+        fill_quad(eave[k], eave[(k + 1) % 4], top[(k + 1) % 4], top[k], shade(turf, light_of(n) * (n.x + n.y > 0.0f ? 1.0f : 1.12f)));
+    }
+    fill_quad(top[0], top[1], top[2], top[3], shade(turf, 1.08f));
+    for (int k = 0; k < 4; ++k) {  // the roof's logs, their ends out under the turf at the eaves
+        const Vector2 n = out[k];
+        if (n.x + n.y <= 0.0f) continue;
+        for (int i = 1; i < 5; ++i) disc(lerp(eave[k], eave[(k + 1) % 4], static_cast<float>(i) / 5.0f), 1.2f, lit(end));
+    }
+    for (int i = 0; i < 26; ++i) {  // the turf's grass and earth
+        const Vector2 g{c.x + (rand01(h, 200 + i) - 0.5f) * kHalf * 1.4f, c.y + (rand01(h, 300 + i) - 0.5f) * kHalf * 1.4f};
+        const Vector2 p = on_terrain(map, g, wall + rise * 0.9f);
+        DrawRectangleRec({std::round(p.x), std::round(p.y), 1.0f + static_cast<float>(i % 2), 1.0f}, lit(i % 4 == 0 ? earth : shade(turf, 1.25f)));
+    }
+    if (damage > 0.45f) {  // a shell's hole in the roof
+        const Vector2 p = on_terrain(map, {c.x + side.x * 0.08f, c.y + side.y * 0.08f}, wall + rise * 0.6f);
+        DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 4.0f, 2.0f, lit({34, 28, 22, 255}));
+    }
+    // Sandbags either side of the slit, out in front of it.
+    const Vector2 n = out[slit];
+    const Vector2 a{corner[slit].x + n.x * 0.2f, corner[slit].y + n.y * 0.2f};
+    const Vector2 b{corner[(slit + 1) % 4].x + n.x * 0.2f, corner[(slit + 1) % 4].y + n.y * 0.2f};
+    sandbags(map, a, lerp(a, b, 0.24f), 2, h);
+    sandbags(map, lerp(a, b, 0.76f), b, 2, h + 1);
 }
 
 // A barn or a machine shed (a farm's): silicate blocks or whitewashed
@@ -7133,22 +7274,6 @@ void draw_works(const engine::TileMap& map, int tx, int ty, engine::Terrain terr
     }
 }
 
-// A parapet: a bank of earth across the tile on its front side.
-void draw_parapet(const engine::TileMap& map, const engine::Structure& s, float light) {
-    if (s.tiles.empty()) return;
-    g_light = light;
-    const Vector2 c{static_cast<float>(s.tiles.front().x) + 0.5f, static_cast<float>(s.tiles.front().y) + 0.5f};
-    Vector2 f = to_vector2(s.facing);
-    const float len = std::hypot(f.x, f.y);
-    f = len > 0.0f ? Vector2{f.x / len, f.y / len} : Vector2{1.0f, 0.0f};
-    const Vector2 mid{c.x + f.x * 0.36f, c.y + f.y * 0.36f};
-    const Vector2 a{mid.x - f.y * 0.45f, mid.y + f.x * 0.45f};
-    const Vector2 b{mid.x + f.y * 0.45f, mid.y - f.x * 0.45f};
-    DrawLineEx(on_terrain(map, a, 2.0f), on_terrain(map, b, 2.0f), 8.0f, lit({112, 94, 68, 255}));
-    DrawLineEx(on_terrain(map, a, 4.0f), on_terrain(map, b, 4.0f), 4.0f, lit({146, 124, 90, 255}));
-    g_light = 1.0f;
-}
-
 // A boulder: an angular stone of facets, lit from the upper left, its
 // shadow to the lower right, moss on some.
 void draw_boulder(Vector2 base, float r, uint32_t h, float tint, bool warm) {
@@ -7990,6 +8115,179 @@ void WorldRenderer::bake_buildings(const engine::World& world) const {
     }
 }
 
+// The field works on a tile as they are, if there are any (by the ground
+// as it was last seen, the structure dug there).
+std::optional<works::Spec> works_now(const engine::World& world, int tx, int ty, engine::Terrain t) {
+    works::Spec spec;
+    const engine::Structure* s = world.structure_at({tx, ty});
+    switch (t) {
+        case engine::Terrain::Trench: spec.kind = works::Kind::Trench; break;
+        case engine::Terrain::Foxhole: spec.kind = works::Kind::Foxhole; break;
+        case engine::Terrain::Dugout: spec.kind = works::Kind::Dugout; break;
+        case engine::Terrain::GunPit:
+            spec.kind = !s || s->pit == engine::PitKind::Gun ? works::Kind::GunPit
+                        : s->pit == engine::PitKind::Mortar ? works::Kind::MortarPit
+                                                             : works::Kind::Caponier;
+            break;
+        case engine::Terrain::Wire: spec.kind = works::Kind::Wire; break;
+        case engine::Terrain::Hedgehogs: spec.kind = works::Kind::Hedgehogs; break;
+        default:
+            if (s && s->type == engine::StructureType::Parapet) {
+                spec.kind = works::Kind::Parapet;
+                break;
+            }
+            return std::nullopt;
+    }
+    spec.facing = {0.7071f, -0.7071f};
+    if (s) {
+        const Vector2 f = to_vector2(s->facing);
+        if (f.x != 0.0f || f.y != 0.0f) spec.facing = f;
+        spec.parapet = s->parapet;
+        spec.upgrading = s->upgrading;
+        const int32_t max_hp = engine::structure_type(s->type).max_hp;
+        spec.damage = max_hp > 0 ? damage_stage(1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp)) : 0;
+    }
+    spec.seed = tile_hash(tx * 3 + 7, ty * 5 + 11);
+    return spec;
+}
+
+std::optional<works::Spec> WorldRenderer::works_at(const engine::World& world, int tx, int ty) const {
+    const engine::TileMap& map = world.map();
+    if (!map.contains_tile(tx, ty)) return std::nullopt;
+    const int idx = ty * map.width() + tx;
+    const engine::Terrain t = seen_terrain_[static_cast<size_t>(idx)];
+    const engine::Structure* s = world.structure_at({tx, ty});
+    std::optional<works::Spec> spec;
+    if (reveal_ || (s && s->owner == viewer_) || fog(world, tx, ty) == kInView) {  // as it is
+        spec = works_now(world, tx, ty, t);
+        if (spec) {
+            works_known_[idx] = *spec;
+        } else if (!works_known_.empty()) {
+            works_known_.erase(idx);
+        }
+    } else if (const auto it = works_known_.find(idx); it != works_known_.end()) {  // as last seen
+        spec = it->second;
+    } else {
+        spec = works_now(world, tx, ty, t);  // (never seen close: the ground shows it's dug)
+        if (spec && spec->kind == works::Kind::Parapet) spec.reset();
+    }
+    if (!spec) return spec;
+    // Where its ditch goes on to: the trenches, foxholes and dugouts next to it; wire to the wire.
+    const bool wire = spec->kind == works::Kind::Wire;
+    const bool joins = spec->kind == works::Kind::Trench || spec->kind == works::Kind::Foxhole ||
+                       spec->kind == works::Kind::Dugout || spec->kind == works::Kind::MortarPit;
+    static constexpr int kSteps[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (int bit = 0; bit < 4; ++bit) {
+        const int x = tx + kSteps[bit][0];
+        const int y = ty + kSteps[bit][1];
+        if (!map.contains_tile(x, y)) continue;
+        const engine::Terrain n = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
+        const bool linked = wire ? n == engine::Terrain::Wire
+                                 : joins && (n == engine::Terrain::Trench || n == engine::Terrain::Foxhole || n == engine::Terrain::Dugout);
+        if (linked) spec->links |= static_cast<uint8_t>(1u << bit);
+    }
+    if (wire && spec->links == 0) {  // a line of wire corner to corner
+        static constexpr int kDiagonals[4][2] = {{1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+        for (int k = 0; k < 4; ++k) {
+            const int x = tx + kDiagonals[k][0];
+            const int y = ty + kDiagonals[k][1];
+            if (map.contains_tile(x, y) && seen_terrain_[static_cast<size_t>(y * map.width() + x)] == engine::Terrain::Wire) {
+                spec->links |= static_cast<uint8_t>(16u << k);
+            }
+        }
+    }
+    return spec;
+}
+
+works::Area WorldRenderer::works_area(const engine::World& world, int tx, int ty) const {
+    works::Area area;
+    for (int k = 0; k < 9; ++k) {
+        const std::optional<works::Spec> spec = works_at(world, tx + k % 3 - 1, ty + k / 3 - 1);
+        if (!spec) continue;
+        area.spec[static_cast<size_t>(k)] = *spec;
+        area.has[static_cast<size_t>(k)] = true;
+    }
+    return area;
+}
+
+namespace {
+// What a tile's works look like (and its neighbours'): baked again when it changes.
+uint32_t look_of(const works::Area& area) {
+    uint32_t h = 2166136261u;
+    auto in = [&](uint32_t v) { h = (h ^ v) * 16777619u; };
+    for (size_t k = 0; k < 9; ++k) {
+        in(area.has[k] ? 1u : 0u);
+        if (!area.has[k]) continue;
+        const works::Spec& s = area.spec[k];
+        in(static_cast<uint32_t>(s.kind));
+        in(s.links);
+        in((s.parapet ? 1u : 0u) | (s.upgrading ? 2u : 0u) | static_cast<uint32_t>(s.damage) << 2);
+        in(static_cast<uint32_t>(std::lround(std::atan2(s.facing.y, s.facing.x) * 8.0f / 3.14159265f)) & 15u);
+    }
+    return h;
+}
+}  // namespace
+
+bool WorldRenderer::draw_works_baked(const engine::World& world, int tx, int ty, bool front) const {
+    const int idx = ty * world.map().width() + tx;
+    const auto it = works_sprites_.find(idx);
+    if (!front) {  // (the back's drawn first each frame: it asks for a bake if it's changed)
+        const works::Area area = works_area(world, tx, ty);
+        const uint32_t look = look_of(area);
+        if ((it == works_sprites_.end() || it->second.look != look) &&
+            std::none_of(works_bakes_.begin(), works_bakes_.end(), [&](const WorksBake& b) { return b.tx == tx && b.ty == ty; })) {
+            works_bakes_.push_back({tx, ty, area, look});
+        }
+    }
+    if (it == works_sprites_.end()) return false;
+    it->second.used = frame_;
+    set_grain({});
+    DrawTextureV(front ? it->second.front : it->second.back, it->second.at, lit(WHITE));
+    return true;
+}
+
+// The works asked for, a few a frame; the ones no longer drawn let go.
+void WorldRenderer::bake_works(const engine::World& world) const {
+    const engine::TileMap& map = world.map();
+    const double start = GetTime();
+    size_t done = 0;
+    for (; done < works_bakes_.size() && (done == 0 || GetTime() - start < 0.004); ++done) {
+        const WorksBake& b = works_bakes_[done];
+        std::array<float, 4> corner{};
+        static constexpr int kCorner[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        for (int k = 0; k < 4; ++k) corner[static_cast<size_t>(k)] = iso::corner_height(map, b.tx + kCorner[k][0], b.ty + kCorner[k][1]) * iso::kElevationStep;
+        works::Sprite sprite = works::bake(b.area, b.tx, b.ty, corner);
+        if (const char* dump = dump_dir()) {
+            ExportImage(sprite.back, TextFormat("%s/works_%d_%d.png", dump, b.tx, b.ty));
+            ExportImage(sprite.front, TextFormat("%s/works_%d_%d_front.png", dump, b.tx, b.ty));
+        }
+        WorksSprite& ws = works_sprites_[b.ty * map.width() + b.tx];
+        if (ws.back.id != 0) UnloadTexture(ws.back);
+        if (ws.front.id != 0) UnloadTexture(ws.front);
+        ws.back = LoadTextureFromImage(sprite.back);
+        ws.front = LoadTextureFromImage(sprite.front);
+        SetTextureFilter(ws.back, TEXTURE_FILTER_POINT);
+        SetTextureFilter(ws.front, TEXTURE_FILTER_POINT);
+        ws.at = sprite.at;
+        ws.look = b.look;
+        ws.used = frame_;
+        UnloadImage(sprite.back);
+        UnloadImage(sprite.front);
+    }
+    works_bakes_.erase(works_bakes_.begin(), works_bakes_.begin() + static_cast<long>(done));
+    if (frame_ % 600 == 300) {
+        for (auto it = works_sprites_.begin(); it != works_sprites_.end();) {
+            if (frame_ - it->second.used > 1200) {
+                UnloadTexture(it->second.back);
+                UnloadTexture(it->second.front);
+                it = works_sprites_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+}
+
 void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, float alpha,
                          std::span<const engine::EntityId> selection, engine::EntityId selected_structure,
                          const BuildGhost* ghost, std::span<const engine::TilePos> trench) const {
@@ -8025,6 +8323,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     bake_sprites(world);  // outside the 2D mode: it draws into a texture
     bake_trees();
     bake_buildings(world);
+    bake_works(world);
     BeginMode2D(camera.camera2d());
     const float zoom = camera.camera2d().zoom;
     g_zoom = zoom;
@@ -8049,13 +8348,6 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         DrawRectangleRec({p.x - 3.0f, p.y - 3.0f, 6.0f, 6.0f}, blink ? Color{220, 40, 30, 255} : Color{120, 30, 24, 255});
     }
 
-    // Parapets: ours as they are, others' as last seen.
-    for (const engine::Structure& s : world.structures()) {
-        if (s.parapet && s.owner == viewer_) draw_parapet(map, s, 1.0f);
-    }
-    for (const auto& [id, s] : remembered_) {
-        if (s.parapet) draw_parapet(map, s, reveal_ || world.sees(viewer_, s) ? 1.0f : kFogLight);
-    }
 
     for (const engine::Unit& u : world.units()) {
         if (!is_selected(u.id) || u.inside) continue;
@@ -8116,6 +8408,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const engine::Structure* post = nullptr;  // a scout's observation post
         const BusStop* stop = nullptr;
         bool yard = false;  // a village yard's things on house_x, house_y
+        bool works = false;  // the front of the field works on house_x, house_y (their near bank, sandbags, a mound)
         const FallingTree* falling = nullptr;
         float damage = 0.0f;  // 0 = intact, 1 = about to collapse
         const engine::Structure* building = nullptr;
@@ -8166,6 +8459,9 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const int state = fog(world, tx, ty);
         if (state == kUnexplored || behind_relief(tx, ty)) return;
         const float light = state == kInView ? 1.0f : kFogLight;
+        if (works_at(world, tx, ty)) {
+            drawables.push_back({.depth = static_cast<float>(tx + ty) + 1.5f, .house_x = tx, .house_y = ty, .works = true, .light = light});
+        }
         switch (seen_terrain_[static_cast<size_t>(ty * map.width() + tx)]) {
             case engine::Terrain::Urban: {
                 if (!village(tx, ty)) break;
@@ -8333,6 +8629,8 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
             }
         } else if (d.projectile) {
             draw_projectile(*d.projectile, alpha);
+        } else if (d.works) {
+            draw_works_baked(world, d.house_x, d.house_y, true);
         } else if (d.building) {
             const engine::Structure& s = *d.building;
             const engine::StructureDef& def = engine::structure_type(s.type);
@@ -8460,6 +8758,10 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     auto hovered = [&](const Drawable& d) {
         if (!hover_.any()) return false;
         if (d.unit) return d.unit->id == hover_.unit;
+        if (d.works) {
+            const engine::Structure* w = world.structure_at({d.house_x, d.house_y});
+            return w && w->id == hover_.structure;
+        }
         const engine::Structure* s = d.barn ? d.barn : d.building ? d.building : d.post;
         if (s) return s->id == hover_.structure;
         if (!hover_.tile) return false;
@@ -8486,7 +8788,12 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     };
     for (const Drawable& d : drawables) {
         draw_drawable(d);
-        if (hovered(d)) into_hover([&] { draw_drawable(d); });
+        if (hovered(d)) {
+            into_hover([&] {
+                if (d.works) draw_works_baked(world, d.house_x, d.house_y, false);  // (its back is drawn with the ground)
+                draw_drawable(d);
+            });
+        }
     }
     g_light = 1.0f;
     set_grain({});
@@ -8907,6 +9214,13 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
     if (seen_terrain_.size() != static_cast<size_t>(map.width() * map.height())) return;
 
     std::vector<engine::TilePos> craters;
+    struct WorksTile {
+        int tx;
+        int ty;
+        engine::Terrain terrain;
+        float light;
+    };
+    std::vector<WorksTile> works_here;  // drawn over the ground, all of it (their banks spill over)
     draw_track_marks(world, view);  // (bucketed by tile: drawn with each tile's ground)
     for_each_visible_tile(map, view, [&](int tx, int ty) {
         const float h00 = corner(tx, ty);
@@ -8934,15 +9248,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         if (behind_relief(tx, ty)) return;  // the ground in front covers the rest
         draw_marks_on_tile(map, tx, ty);
         if (terrain == engine::Terrain::Crater) craters.push_back({tx, ty});
-        if (terrain == engine::Terrain::Trench || terrain == engine::Terrain::Foxhole ||
-            terrain == engine::Terrain::Dugout || terrain == engine::Terrain::GunPit ||
-            terrain == engine::Terrain::Wire || terrain == engine::Terrain::Hedgehogs) {
-            draw_works(map, tx, ty, terrain, [&](int x, int y) {
-                if (!map.contains_tile(x, y)) return false;
-                const engine::Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
-                return t == engine::Terrain::Trench || t == engine::Terrain::Foxhole || t == engine::Terrain::Dugout;
-            });
-        }
+        if (works_at(world, tx, ty)) works_here.push_back({tx, ty, terrain, g_light});
         draw_ground_detail(map, tx, ty, terrain, top, right, bottom, left);
         if (terrain == engine::Terrain::Airstrip) {
             // Concrete slabs; a dashed centre line down the middle row of the runway.
@@ -8963,6 +9269,17 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
         }
         paint_ground(world, tx, ty, terrain, true);
     });
+    std::sort(works_here.begin(), works_here.end(), [](const WorksTile& a, const WorksTile& b) { return a.tx + a.ty < b.tx + b.ty; });
+    for (const WorksTile& w : works_here) {
+        g_light = w.light;
+        if (draw_works_baked(world, w.tx, w.ty, false)) continue;
+        set_grain(grain_of(engine::Terrain::Crater));
+        draw_works(map, w.tx, w.ty, w.terrain, [&](int x, int y) {  // (until it's baked)
+            if (!map.contains_tile(x, y)) return false;
+            const engine::Terrain t = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
+            return t == engine::Terrain::Trench || t == engine::Terrain::Foxhole || t == engine::Terrain::Dugout;
+        });
+    }
     for (const engine::TilePos& t : craters) {
         g_light = fog(world, t.x, t.y) == kInView ? 1.0f : kFogLight;
         draw_crater(world, t.x, t.y);
@@ -9602,7 +9919,23 @@ const WorldRenderer::SpriteSheet& WorldRenderer::soldier_sheet(soldiers::Kit kit
 // (a machine gunner, a scout lying down, an assault trooper standing, the
 // rest on a knee; the kick of each shot; an RPG, an Igla reloaded); sitting
 // down after a long while standing about; at ease.
+// As he's drawn: down in a trench he fires standing at its breastwork (not
+// lying or kneeling), and doesn't sit down in it.
 std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose(const engine::Unit& u) const {
+    auto [pose, frame] = soldier_pose_raw(u);
+    if (sink_of(u.id) > 3.0f) {
+        if (pose == soldiers::Pose::Prone || pose == soldiers::Pose::Kneel) pose = soldiers::Pose::Aim;
+        if (pose == soldiers::Pose::Sit) return {soldiers::Pose::Stand, 0};
+    }
+    return {pose, frame};
+}
+
+float WorldRenderer::sink_of(engine::EntityId id) const {
+    const auto it = settle_.find(id);
+    return it != settle_.end() ? it->second.sink : 0.0f;
+}
+
+std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose_raw(const engine::Unit& u) const {
     using engine::AbilityId;
     using engine::Order;
     using engine::UnitTypeId;
@@ -9673,7 +10006,7 @@ void WorldRenderer::soldier_muzzle(const engine::Unit& u, Vector2 ground, Vector
     const soldiers::Offset m = soldiers::muzzle(kit_of(u.type), pose, frame);
     const Vector2 left{facing.y, -facing.x};  // (his own left, as he's drawn)
     at = {ground.x + facing.x * m.ahead + left.x * m.left, ground.y + facing.y * m.ahead + left.y * m.left};
-    z = m.up;
+    z = m.up - sink_of(u.id);  // (down in a trench)
 }
 
 // The men on top of an IFV, an APC: sitting along its deck on both sides,
@@ -9887,6 +10220,10 @@ void WorldRenderer::draw_tower_aerial(const engine::TileMap& map, const engine::
 // a crew; a rear trooper's load on his back.
 void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 facing) const {
     using engine::UnitTypeId;
+    // Down in a trench, a pit: drawn that much lower, cut off at its near rim.
+    const float sunk = sink_of(u.id);
+    const float cut = sunk > 0.5f ? feet.y + 1.5f : 1e9f;
+    feet.y += sunk;
     Vector2 fs = iso_offset(facing);
     {
         const float l = std::hypot(fs.x, fs.y);
@@ -9929,7 +10266,7 @@ void WorldRenderer::draw_soldier(const engine::Unit& u, Vector2 feet, Vector2 fa
     const bool toward_us = fs.y > 0.0f;  // what's ahead of him is nearer us than he is
     if (!toward_us) crew_weapon();
     const SpriteSheet& sheet = soldier_sheet(kit_of(type), u.owner);
-    draw_sprite(sheet, feet, facing, soldiers::first_frame(pose) + frame);  // (a rear trooper's load: in his pose)
+    draw_sprite(sheet, feet, facing, soldiers::first_frame(pose) + frame, WHITE, cut);  // (a rear trooper's load: in his pose)
     if (toward_us) crew_weapon();
 }
 
@@ -10190,6 +10527,14 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
     const bool hull_leads = drawn_as_armor(engine::unit_type(type));
     const bool gun_leads = engine::unit_type(type).family == engine::Family::Gun;  // no hull apart from the gun
     Frame fr = make_frame(map, ground, hull_leads || gun_leads ? hull_dir : facing);
+    // Down in its pit (a caponier, a gun's emplacement): drawn that much
+    // lower, cut off at the pit's near rim (its bank drawn over that).
+    float cut = 1e9f;
+    if (const float pit = sink_of(u.id); pit > 0.5f) {
+        const Vector2 f = fr.f;
+        cut = fr.o.y + 16.0f * (0.45f * std::fabs(f.x + f.y) + 0.24f * std::fabs(f.x - f.y)) + 1.0f;
+        fr.o.y += pit;
+    }
     // Alive: the engine's shudder on the idle, a sway on the move; a jolt
     // when it's hit; the gun's recoil when it fires rocking it back (a towed
     // gun thrown back whole).
@@ -10292,7 +10637,7 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             const uint32_t seed = static_cast<uint32_t>(u.id) * 2654435761u;
             if (bog) mud_halo(fr, armor_size(model), false, seed);  // the mud behind and under it
             const int frame = u.moving ? static_cast<int>(GetTime() * 10.0) % 2 : 0;
-            draw_sprite(*hull_sheet, fr.o, fr.f, frame);
+            draw_sprite(*hull_sheet, fr.o, fr.f, frame, WHITE, cut);
             const Vector2 ring = ring_at(fr, model);
             // The gun as it's laid. A tank's after a shot: the muzzle jumps
             // up, dips, settles, the turret rocking on its ring a moment. A
@@ -10325,9 +10670,9 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             }
             const Vector2 on_ring{ring.x + turret_kick.x + sway.x, ring.y + turret_kick.y + sway.y};
             const bool front = barrel && gun_toward_viewer(facing, barrel->dirs);
-            if (barrel && !front) draw_sprite(*barrel, on_ring, facing, barrel_frame);
-            draw_sprite(*turret_sheet, on_ring, facing, turret_frame);
-            if (barrel && front) draw_sprite(*barrel, on_ring, facing, barrel_frame);
+            if (barrel && !front) draw_sprite(*barrel, on_ring, facing, barrel_frame, WHITE, cut);
+            draw_sprite(*turret_sheet, on_ring, facing, turret_frame, WHITE, cut);
+            if (barrel && front) draw_sprite(*barrel, on_ring, facing, barrel_frame, WHITE, cut);
             if (const SpriteSheet* radar = sheet(SpritePart::Radar, armor_variant(model, era, wear, depth), u.owner)) {
                 // An AA gun's search radar turning round and round on its turret.
                 const Vector2 r = turret_ring_of(model);
@@ -10439,14 +10784,14 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
         if (body) {
             const int frame = u.deployed ? 1 : 0;  // set up: masts raised, jacks down, the launcher up
             const bool rolling = u.moving && static_cast<int>(GetTime() * 10.0) % 2 == 1;
-            draw_sprite(*body, fr.o, fr.f, rolling ? 2 : frame);  // (2: on the move, the wheels turned)
+            draw_sprite(*body, fr.o, fr.f, rolling ? 2 : frame, WHITE, cut);  // (2: on the move, the wheels turned)
             if (truck_turns_top(*truck)) {
                 if (const SpriteSheet* top = sheet(SpritePart::TruckTop, truck_variant(*truck, wear, 0, 0), u.owner)) {
                     // A radar set up turns round and round; packed, it lies along the truck.
                     const float spin = static_cast<float>(GetTime()) * 1.8f + static_cast<float>(u.id);
                     const Vector2 dir = u.deployed ? Vector2{std::cos(spin), std::sin(spin)} : fr.f;
                     const Vector2 ring = truck_top_ring_of(*truck);
-                    draw_sprite(*top, fr.at(ring.x * kVehicleScale, ring.y * kVehicleScale), dir, frame);
+                    draw_sprite(*top, fr.at(ring.x * kVehicleScale, ring.y * kVehicleScale), dir, frame, WHITE, cut);
                 }
             }
             return;
@@ -10461,10 +10806,10 @@ void WorldRenderer::draw_vehicle(const engine::TileMap& map, const engine::Unit&
             const float elev = seen != vehicles_seen_.end() && seen->second.elev >= 0.0f ? seen->second.elev : 1.0f;
             const SpriteSheet* barrel =
                 u.deployed && wear < 4 ? sheet(SpritePart::Barrel, armor_variant(type_def.model, 0, wear >= 3 ? 3 : 0, 0), u.owner) : nullptr;
-            draw_sprite(*gun, fr.o, fr.f, barrel ? 1 : 0);
+            draw_sprite(*gun, fr.o, fr.f, barrel ? 1 : 0, WHITE, cut);
             if (barrel) {
                 const int laid_at = std::clamp(static_cast<int>(std::lround(elev)), 1, kHowitzerFrames - 1);
-                draw_sprite(*barrel, fr.o, fr.f, (laid_at - 1) * kRecoilStates + recoil_state(since));
+                draw_sprite(*barrel, fr.o, fr.f, (laid_at - 1) * kRecoilStates + recoil_state(since), WHITE, cut);
             }
             if (seen != vehicles_seen_.end() && seen->second.camo > 0.0f) {  // nets and branches over it
                 camo_net(fr, 12.0f, 0.72f, 0.58f, seen->second.camo, static_cast<uint32_t>(u.id) * 2654435761u);
@@ -14487,14 +14832,20 @@ void WorldRenderer::draw_radio_calls(const engine::World& world, float alpha) co
     }
 }
 
-void WorldRenderer::draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint) const {
+void WorldRenderer::draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint, float cut) const {
     float a = std::atan2(dir.y, dir.x);
     if (a < 0.0f) a += 6.2831853f;
     const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(sheet.dirs))) % sheet.dirs;
-    const Rectangle src{static_cast<float>(d * sheet.w), static_cast<float>((frame % sheet.frames) * sheet.h), static_cast<float>(sheet.w),
-                        static_cast<float>(sheet.h)};
-    const Rectangle dst{std::round(at.x - sheet.origin.x), std::round(at.y - sheet.origin.y), static_cast<float>(sheet.w),
-                        static_cast<float>(sheet.h)};
+    Rectangle src{static_cast<float>(d * sheet.w), static_cast<float>((frame % sheet.frames) * sheet.h), static_cast<float>(sheet.w),
+                  static_cast<float>(sheet.h)};
+    Rectangle dst{std::round(at.x - sheet.origin.x), std::round(at.y - sheet.origin.y), static_cast<float>(sheet.w),
+                  static_cast<float>(sheet.h)};
+    if (cut < dst.y + dst.height) {  // the rest sunk out of sight
+        const float keep = std::floor(cut - dst.y);
+        if (keep <= 0.0f) return;
+        src.height = keep;
+        dst.height = keep;
+    }
     DrawTexturePro(sheet.atlas, src, dst, {0.0f, 0.0f}, 0.0f, lit(tint));
 }
 

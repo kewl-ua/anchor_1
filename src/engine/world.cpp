@@ -1994,6 +1994,7 @@ uint64_t World::checksum() const {
         for (const uint8_t b : s.bomb_at) mix(b);
         mix(s.antenna);
         mix(static_cast<uint8_t>(s.post));
+        mix(static_cast<uint8_t>(s.pit));
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
         mix(s.parapet ? 1 : 0);
