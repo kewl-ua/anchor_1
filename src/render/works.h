@@ -35,6 +35,7 @@ struct Spec {
     bool upgrading = false;  // being made a dugout: logs over it, more by it
     uint8_t fit = kNoFit;      // a trench tile: what's built into it (a Fit), facing `facing`
     uint8_t fitting = kNoFit;  // what it's being fitted out with
+    float progress = 1.0f;     // dug this far (the ditch deeper, the bank higher, bags on it, logs laid)
     int damage = 0;          // 0 whole .. 3 caved in
     uint32_t seed = 0;
 };

@@ -202,7 +202,7 @@ Parts parts_of(const Spec& spec) {
             // What's built into it: a pit off the ditch for it, its way
             // (half dug while it's being made).
             const uint8_t built = spec.fit != kNoFit ? spec.fit : spec.fitting <= kMortarPost ? spec.fitting : kNoFit;
-            const float dug = spec.fit != kNoFit ? 1.0f : 0.45f;
+            const float dug = spec.fit != kNoFit ? 1.0f : 0.15f + 0.85f * std::clamp(spec.progress, 0.0f, 1.0f);
             if (built != kNoFit) sc.round = true;
             switch (built) {
                 case kCell: sc.rc = add(c, mul(f, 0.17f)), sc.rr = 0.085f, sc.rdepth = 8.0f * dug; break;
@@ -323,6 +323,17 @@ Parts parts_of(const Spec& spec) {
             sc.deep = 1.0f;
             sc.margin = 0.2f;
             break;
+    }
+    if (spec.progress < 1.0f && spec.fitting == kNoFit && !spec.upgrading) {  // being dug: shallow yet, the bank low
+        const float p = std::clamp(spec.progress, 0.1f, 1.0f);
+        for (Seg& sg : sc.segs) sg.depth *= p;
+        sc.rdepth *= p;
+        sc.kdepth *= p;
+        look.bank_front *= 0.3f + 0.7f * p;
+        look.bank_rear *= 0.3f + 0.7f * p;
+        look.bags = look.bags && p >= 1.0f;
+        look.wall = Mat::Clay;  // (no planks, no duckboards yet: raw earth)
+        look.floor = Mat::Floor;
     }
     if (spec.damage >= 2) {  // shelled: caved in in places
         for (Seg& sg : sc.segs) sg.depth *= spec.damage >= 3 ? 0.45f : 0.75f;
@@ -700,6 +711,9 @@ Color bag_colour(uint32_t seed, int i) {
 
 // Sandbags along the crest of the bank in front of a stretch of ditch
 // from a to b (tile-local): a row, a few more on top of it.
+// (How many of the bags there are yet: laid in turn as the work goes on.)
+float g_bag_share = 1.0f;
+
 void bags_along(Canvas& cv, Vector2 a, Vector2 b, float half, Vector2 facing, uint32_t seed) {
     const Vector2 base{static_cast<float>(cv.sc.tx), static_cast<float>(cv.sc.ty)};
     const Vector2 d = unit(sub(b, a));
@@ -707,8 +721,9 @@ void bags_along(Canvas& cv, Vector2 a, Vector2 b, float half, Vector2 facing, ui
     if (dot(n, facing) < 0.0f) n = mul(n, -1.0f);
     if (dot(n, facing) < 0.3f) return;  // (a stretch running towards the front)
     const float l = len(sub(b, a));
+    const int laid = static_cast<int>(std::ceil(g_bag_share * l / 0.1f));
     int i = 0;
-    for (float t = 0.05f; t < l; t += 0.1f, ++i) {
+    for (float t = 0.05f; t < l && i < laid; t += 0.1f, ++i) {
         const Vector2 m = add(a, mul(d, t));
         const Vector2 at = add(base, add(m, mul(n, half + 0.1f)));
         const float z = std::max(0.0f, cv.sc.eval(at).h - 1.4f);
@@ -726,8 +741,9 @@ void bags_round(Canvas& cv, Vector2 c, float r, Vector2 facing, float spread, ui
     const Vector2 base{static_cast<float>(cv.sc.tx), static_cast<float>(cv.sc.ty)};
     const float a0 = std::atan2(facing.y, facing.x);
     const float step = 0.1f / (r + 0.1f);
+    const int laid = static_cast<int>(std::ceil(g_bag_share * 2.0f * spread / step));
     int i = 0;
-    for (float a = a0 - spread; a <= a0 + spread + 1e-3f; a += step, ++i) {
+    for (float a = a0 - spread; a <= a0 + spread + 1e-3f && i <= laid; a += step, ++i) {
         const Vector2 dir{std::cos(a), std::sin(a)};
         const Vector2 at = add(base, add(c, mul(dir, r + 0.1f)));
         const float z = std::max(0.0f, cv.sc.eval(at).h - 1.4f);
@@ -766,6 +782,15 @@ void furnish(Canvas& cv) {
     switch (spec.kind) {
         case Kind::Trench:
         case Kind::Foxhole: {
+            if (spec.fitting == kParapetFit && spec.damage < 3) {  // a breastwork going up: bags along the front, in turn
+                g_bag_share = std::clamp(spec.progress, 0.0f, 1.0f);
+                if (spec.kind == Kind::Trench) {
+                    for (const Seg& sg : sc.segs) bags_along(cv, sg.a, sg.b, sg.half, f, h + static_cast<uint32_t>(sg.start * 100.0f));
+                } else {
+                    bags_round(cv, sc.rc, sc.rr, f, 1.1f, h);
+                }
+                g_bag_share = 1.0f;
+            }
             if (spec.parapet && spec.damage < 3 && (spec.kind != Kind::Trench || spec.fit == kNoFit || spec.fit == kMortarPost)) {
                 if (spec.kind == Kind::Trench) {
                     for (const Seg& sg : sc.segs) bags_along(cv, sg.a, sg.b, sg.half, f, h + static_cast<uint32_t>(sg.start * 100.0f));
@@ -825,6 +850,16 @@ void furnish(Canvas& cv) {
                         break;
                     default: break;
                 }
+                if (spec.fitting >= kCell && spec.fitting <= kMortarPost) {  // its bags going on as it's made
+                    g_bag_share = std::clamp(spec.progress, 0.0f, 1.0f);
+                    const Vector2 rc = sc.rc;
+                    switch (spec.fitting) {
+                        case kNest: bags_round(cv, rc, sc.rr, f, 2.2f, h + 9u, 3); break;
+                        case kMortarPost: bags_round(cv, rc, sc.rr, mul(f, -1.0f), 1.2f, h + 13u); break;
+                        default: bags_round(cv, rc, sc.rr, f, 0.8f, h + 7u); break;
+                    }
+                    g_bag_share = 1.0f;
+                }
                 if (spec.fitting != kNoFit && spec.fitting != kDugoutFit) {  // being made: bags waiting on the bank, a spade stuck in
                     const Vector2 pile = add(c, add(mul(f, spec.fitting == kParapetFit ? 0.33f : -0.33f), mul(side, 0.16f)));
                     for (int i = 0; i < 4; ++i) {
@@ -836,14 +871,16 @@ void furnish(Canvas& cv) {
                     box(cv, at(spade), side, 0.03f, 0.008f, -1.5f, 1.5f, kSteel, true);
                 }
             }
-            if (spec.upgrading) {  // being made a dugout: logs laid over, more stacked by it
-                for (int i = 0; i < 3; ++i) {
+            if (spec.upgrading) {  // being made a dugout: logs laid over one by one, the stack by it going down
+                const int over = std::clamp(1 + static_cast<int>(spec.progress * 3.0f), 1, 3);
+                const int stacked = std::clamp(5 - static_cast<int>(spec.progress * 6.0f), 0, 5);
+                for (int i = 0; i < over; ++i) {
                     const float k = -0.12f + 0.12f * static_cast<float>(i);
                     const Vector2 m = add(c, mul(side, k));
                     cylinder(cv, p3(at(add(m, mul(f, -0.27f))), 0.8f), p3(at(add(m, mul(f, 0.27f))), 0.8f), 1.4f, kLog, true, true);
                 }
                 const Vector2 pile = add(c, add(mul(side, 0.36f), mul(f, -0.2f)));
-                for (int i = 0; i < 5; ++i) {
+                for (int i = 0; i < stacked; ++i) {
                     const float row = i < 3 ? 0.0f : 1.0f;
                     const float k = (i < 3 ? static_cast<float>(i) - 1.0f : static_cast<float>(i - 3) - 0.5f) * 0.075f;
                     const Vector2 m = add(pile, mul(side, k));
@@ -948,7 +985,8 @@ void furnish(Canvas& cv) {
                     put(cv, p3(at(add(add(a, mul(d, t)), mul(across, k))), 7.8f - sag * 0.8f), kWire, 1.0f, true);
                 }
             }
-            for (float t = 0.02f; t < 2.0f * reach; t += 0.085f) {  // the coil, loop after loop leaning along it
+            const float unrolled = 2.0f * reach * std::clamp(spec.progress, 0.0f, 1.0f);
+            for (float t = 0.02f; t < unrolled; t += 0.085f) {  // the coil, loop after loop leaning along it (unrolled as far as it's got)
                 const P3 m = p3(at(add(a, mul(d, t))), 4.0f);
                 int k = 0;
                 for (float an = 0.0f; an < 2.0f * kPi; an += 0.07f, ++k) {
@@ -962,7 +1000,7 @@ void furnish(Canvas& cv) {
         }
         case Kind::Hedgehogs: {
             // Czech hedgehogs: three steel bars through one another, standing on three ends.
-            for (int i = 0; i < 2; ++i) {
+            for (int i = 0; i < (spec.progress < 0.5f ? 1 : 2); ++i) {
                 const Vector2 m = add(c, mul(unit({1.0f, -1.0f}), (i == 0 ? -0.2f : 0.2f)));
                 const float turn = rnd(h, 10 + i) * 2.0f * kPi;
                 const P3 mid = p3(at(m), 5.2f);
@@ -1201,7 +1239,15 @@ Sprite bake(const Area& area, int tx, int ty, const std::array<float, 4>& corner
     return out;
 }
 
+Place place_in(const Spec& spec, Vector2 local, bool vehicle);
+
 Place place(const Spec& spec, Vector2 local, bool vehicle) {
+    Place pl = place_in(spec, local, vehicle);
+    if (spec.fitting == kNoFit && !spec.upgrading) pl.sunk *= std::clamp(spec.progress, 0.0f, 1.0f);
+    return pl;
+}
+
+Place place_in(const Spec& spec, Vector2 local, bool vehicle) {
     const Parts sc = parts_of(spec);
     auto pull = [&](Vector2 c, float r) {
         const Vector2 d = sub(local, c);

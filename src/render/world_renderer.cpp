@@ -2042,6 +2042,97 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         r.age = 0.0f;  // (a wreck from now on)
         r.cargo = static_cast<uint8_t>(Cargo::Fuel);  // its fuel burning a while, black smoke over it
     }
+    // What's being dug or put up, and how far along (drawn as it goes).
+    digging_.clear();
+    {
+        const int w = map.width();
+        auto seen = [&](int tx, int ty) { return reveal_ || fog(world, tx, ty) == kInView; };
+        for (const auto& [index, work] : world.dig_work()) {
+            const int tx = index % w;
+            const int ty = index / w;
+            if (!seen(tx, ty)) continue;
+            // What it is by who's at it: a trench's diggers, wire's, hedgehogs'.
+            works::Kind kind = works::Kind::Trench;
+            Vector2 facing{0.7071f, -0.7071f};
+            for (const engine::Unit& u : world.units()) {
+                if (u.order != engine::Order::Ability) continue;
+                const Vector2 d{to_vector2(u.pos).x - (static_cast<float>(tx) + 0.5f), to_vector2(u.pos).y - (static_cast<float>(ty) + 0.5f)};
+                if (d.x * d.x + d.y * d.y > 2.5f) continue;
+                if (u.order_ability == engine::AbilityId::LayWire) kind = works::Kind::Wire;
+                if (u.order_ability == engine::AbilityId::PlaceHedgehogs) kind = works::Kind::Hedgehogs;
+                facing = unit_facing(u);
+            }
+            const engine::Tick needed = kind == works::Kind::Wire ? engine::kWireWork : kind == works::Kind::Hedgehogs ? engine::kHedgehogWork : engine::kTrenchWork;
+            digging_[index] = {kind, std::clamp(static_cast<float>(work) / static_cast<float>(needed), 0.0f, 1.0f), facing};
+        }
+        for (const engine::Unit& u : world.units()) {
+            if (u.order != engine::Order::Ability || u.work <= 0) continue;
+            engine::TilePos t = map.clamp_tile(engine::tile_of(u.order_point));
+            Digging dg{works::Kind::Foxhole, 0.0f, unit_facing(u)};
+            switch (u.order_ability) {
+                case engine::AbilityId::DigFoxhole: dg.progress = static_cast<float>(u.work) / static_cast<float>(engine::kFoxholeWork); break;
+                case engine::AbilityId::DigGunPit: {
+                    const engine::UnitTypeDef& def = engine::unit_type(u.type);
+                    dg.kind = u.type == engine::UnitTypeId::Mortar ? works::Kind::MortarPit
+                              : def.family == engine::Family::Spg  ? works::Kind::Caponier
+                                                                   : works::Kind::GunPit;
+                    dg.progress = static_cast<float>(u.work) / static_cast<float>(engine::kGunPitWork);
+                    const Vector2 hull = to_vector2(def.vehicle ? u.hull : u.facing);
+                    const float l = std::hypot(hull.x, hull.y);
+                    if (l > 0.0f) dg.facing = {hull.x / l, hull.y / l};
+                    break;
+                }
+                case engine::AbilityId::BuildParapet: {
+                    t = map.clamp_tile(engine::tile_of(u.pos));
+                    dg.kind = works::Kind::Parapet;
+                    dg.progress = static_cast<float>(u.work) / static_cast<float>(engine::kParapetWork);
+                    const engine::Structure* here = world.structure_at(t);
+                    dg.on_works = here && (here->type == engine::StructureType::Trench || here->type == engine::StructureType::Foxhole);
+                    break;
+                }
+                default: continue;
+            }
+            if (!seen(t.x, t.y)) continue;
+            dg.progress = std::clamp(dg.progress, 0.0f, 1.0f);
+            digging_[t.y * w + t.x] = dg;
+        }
+    }
+    // Earth off the spades: a shovelful thrown up to the side on each stroke.
+    for (const engine::Unit& u : world.units()) {
+        if (engine::unit_type(u.type).vehicle || u.inside || u.moving || !shows(world, u)) continue;
+        const bool digs = (u.order == engine::Order::Ability &&
+                           (u.order_ability == engine::AbilityId::DigTrench || u.order_ability == engine::AbilityId::DigFoxhole ||
+                            u.order_ability == engine::AbilityId::BuildParapet || u.order_ability == engine::AbilityId::DigGunPit)) ||
+                          u.order == engine::Order::Fortify;
+        if (!digs) {
+            strokes_.erase(u.id);
+            continue;
+        }
+        const float t = static_cast<float>(GetTime()) + static_cast<float>(u.id % 17) * 0.37f;
+        const int stroke = static_cast<int>(t * 2.2f);
+        auto [it, fresh] = strokes_.try_emplace(u.id, stroke);
+        if (fresh || it->second == stroke) continue;
+        it->second = stroke;
+        if (stroke % 2 != 0) continue;  // (the spade in; the earth comes up on the next)
+        const Vector2 f = unit_facing(u);
+        const float side = (u.id % 2 == 0) ? 1.0f : -1.0f;
+        for (int i = 0; i < 3; ++i) {
+            Particle p{};
+            p.kind = Particle::Kind::Clod;
+            p.ground = {to_vector2(u.pos).x + f.x * 0.12f, to_vector2(u.pos).y + f.y * 0.12f};
+            p.z = 4.0f;
+            const Vector2 out{-f.y * side, f.x * side};
+            const float speed = 0.35f + 0.25f * fx_random();
+            p.vel = {(out.x * 0.8f + f.x * 0.3f) * speed, (out.y * 0.8f + f.y * 0.3f) * speed};
+            p.vz = 38.0f + 22.0f * fx_random();
+            p.life = 0.7f;
+            p.size = 1.2f + 0.8f * fx_random();
+            static constexpr Color kEarth[3] = {{92, 72, 50, 255}, {118, 96, 68, 255}, {70, 56, 40, 255}};
+            p.color = kEarth[i % 3];
+            particles_.push_back(p);
+        }
+    }
+
     // Men in a trench stand in its ditch, sunk in it to the waist; a gun sits
     // down in its pit, a self-propelled one in its caponier. They settle in
     // once they stop, and get up as they set off.
@@ -8215,6 +8306,10 @@ std::optional<works::Spec> works_now(const engine::World& world, int tx, int ty,
         spec.upgrading = s->upgrading && s->fitting == engine::TrenchFit::Dugout;
         spec.fit = static_cast<uint8_t>(s->fit);
         spec.fitting = s->upgrading ? static_cast<uint8_t>(s->fitting) : 0;
+        if (s->upgrading) {
+            const float p = static_cast<float>(s->upgrade_work) / static_cast<float>(std::max<engine::Tick>(1, engine::fit_def(s->fitting).work));
+            spec.progress = std::floor(std::clamp(p, 0.0f, 1.0f) * 6.0f) / 6.0f;
+        }
         if (s->upgrading && (s->fit_facing.x.raw != 0 || s->fit_facing.y.raw != 0) && s->fit == engine::TrenchFit::None) {
             spec.facing = to_vector2(s->fit_facing);  // (what's being made faces its own way)
         }
@@ -8231,6 +8326,7 @@ std::optional<works::Spec> WorldRenderer::works_at(const engine::World& world, i
     const int idx = ty * map.width() + tx;
     const engine::Terrain t = seen_terrain_[static_cast<size_t>(idx)];
     const engine::Structure* s = world.structure_at({tx, ty});
+    const auto dug = digging_.find(idx);
     std::optional<works::Spec> spec;
     if (reveal_ || (s && s->owner == viewer_) || fog(world, tx, ty) == kInView) {  // as it is
         spec = works_now(world, tx, ty, t);
@@ -8245,6 +8341,19 @@ std::optional<works::Spec> WorldRenderer::works_at(const engine::World& world, i
         spec = works_now(world, tx, ty, t);  // (never seen close: the ground shows it's dug)
         if (spec && spec->kind == works::Kind::Parapet) spec.reset();
     }
+    if (dug != digging_.end()) {  // being dug: as far as it's got
+        if (!spec && !dug->second.on_works) {
+            spec = works::Spec{};
+            spec->kind = dug->second.kind;
+            spec->facing = dug->second.facing;
+            spec->seed = tile_hash(tx * 3 + 7, ty * 5 + 11);
+            spec->progress = std::max(1.0f / 6.0f, std::floor(dug->second.progress * 6.0f) / 6.0f);
+        } else if (spec && dug->second.on_works && spec->fitting == works::kNoFit) {  // a breastwork going up on it
+            spec->fitting = works::kParapetFit;
+            spec->facing = dug->second.facing;
+            spec->progress = std::floor(dug->second.progress * 6.0f) / 6.0f;
+        }
+    }
     if (!spec) return spec;
     // Where its ditch goes on to: the trenches, foxholes and dugouts next to it; wire to the wire.
     const bool wire = spec->kind == works::Kind::Wire;
@@ -8256,8 +8365,11 @@ std::optional<works::Spec> WorldRenderer::works_at(const engine::World& world, i
         const int y = ty + kSteps[bit][1];
         if (!map.contains_tile(x, y)) continue;
         const engine::Terrain n = seen_terrain_[static_cast<size_t>(y * map.width() + x)];
-        const bool linked = wire ? n == engine::Terrain::Wire
-                                 : joins && (n == engine::Terrain::Trench || n == engine::Terrain::Foxhole || n == engine::Terrain::Dugout);
+        const auto nd = digging_.find(y * map.width() + x);
+        const bool digging = nd != digging_.end() && !nd->second.on_works;
+        const bool linked = wire ? n == engine::Terrain::Wire || (digging && nd->second.kind == works::Kind::Wire)
+                                 : joins && (n == engine::Terrain::Trench || n == engine::Terrain::Foxhole || n == engine::Terrain::Dugout ||
+                                             (digging && (nd->second.kind == works::Kind::Trench || nd->second.kind == works::Kind::Foxhole)));
         if (linked) spec->links |= static_cast<uint8_t>(1u << bit);
     }
     if (wire && spec->links == 0) {  // a line of wire corner to corner
@@ -8297,6 +8409,7 @@ uint32_t look_of(const works::Area& area) {
         in(s.links);
         in((s.parapet ? 1u : 0u) | (s.upgrading ? 2u : 0u) | static_cast<uint32_t>(s.damage) << 2 | static_cast<uint32_t>(s.fit) << 4 |
            static_cast<uint32_t>(s.fitting) << 8);
+        if (k == 4) in(static_cast<uint32_t>(std::lround(s.progress * 6.0f)));  // (a neighbour's own progress: its own)
         in(static_cast<uint32_t>(std::lround(std::atan2(s.facing.y, s.facing.x) * 8.0f / 3.14159265f)) & 15u);
     }
     return h;

@@ -737,6 +737,8 @@ public:
     const Structure* haul_destination(const Unit& truck, Resource cargo) const;
     // Open ground a trench, foxhole or parapet can go on.
     bool diggable(TilePos t) const;
+    // Trench, wire, hedgehog tiles being dug or put up: tile index -> work done (for the drawing).
+    const std::map<int32_t, Tick>& dig_work() const { return dig_work_; }
     // A trench, a foxhole, a gun pit, a dugout: works a man goes along under cover.
     bool trench_like(TilePos t) const;
     // Whether the player can fit out his works at t with `fit` now.

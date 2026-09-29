@@ -564,6 +564,54 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene == "digging" && options.mode == Options::Mode::Offline) {
+        // Offline, out in the field, everything dug at once, to see it go:
+        // riflemen dig a trench line, two dig foxholes, one throws up a
+        // breastwork; a mortar crew digs its pit, an SPG its caponier; a
+        // sapper puts up wire.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            d += 28.0f;
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(12.0f, 0.0f), 10);
+        w.set_stock(me, {50, 500, 500, 500, 500});
+        const engine::FixedVec2 front = render::to_fixed_vec2({fwd, -fwd});
+        auto spawn = [&](engine::UnitTypeId type, float d, float side) {
+            const engine::EntityId id = w.spawn_unit(me, type, ahead(d, side));
+            w.unit_for_setup(id)->facing = front;
+            w.unit_for_setup(id)->hull = front;
+            return id;
+        };
+        using engine::AbilityId;
+        using engine::CommandType;
+        auto ability = [&](std::vector<engine::EntityId> units, AbilityId id, engine::FixedVec2 at, engine::FixedVec2 end) {
+            game.submit({.type = CommandType::Ability, .units = std::move(units), .target = at, .ability = static_cast<uint8_t>(id), .target_end = end});
+        };
+        std::vector<engine::EntityId> diggers;
+        for (int i = 0; i < 4; ++i) diggers.push_back(spawn(engine::UnitTypeId::Rifleman, 13.0f, -3.0f + static_cast<float>(i)));
+        ability(diggers, AbilityId::DigTrench, ahead(14.0f, -4.0f), ahead(14.0f, 2.0f));
+        const engine::EntityId f1 = spawn(engine::UnitTypeId::Rifleman, 16.0f, 3.5f);
+        const engine::EntityId f2 = spawn(engine::UnitTypeId::Rifleman, 16.5f, 5.0f);
+        ability({f1}, AbilityId::DigFoxhole, ahead(16.0f, 3.5f), {});
+        ability({f2}, AbilityId::DigFoxhole, ahead(16.5f, 5.0f), {});
+        const engine::EntityId mg = spawn(engine::UnitTypeId::MachineGunner, 15.5f, -6.0f);
+        (void)mg;
+        const engine::EntityId r = spawn(engine::UnitTypeId::Rifleman, 17.0f, -3.0f);
+        ability({r}, AbilityId::BuildParapet, ahead(19.0f, -3.0f), {});
+        const engine::EntityId mortar = spawn(engine::UnitTypeId::Mortar, 10.0f, 3.0f);
+        ability({mortar}, AbilityId::DigGunPit, ahead(10.0f, 3.0f), {});
+        const engine::EntityId spg = spawn(engine::UnitTypeId::Spg, 10.5f, -1.5f);
+        ability({spg}, AbilityId::DigGunPit, ahead(10.5f, -1.5f), {});
+        const engine::EntityId sapper = spawn(engine::UnitTypeId::Sapper, 18.0f, 0.0f);
+        ability({sapper}, AbilityId::LayWire, ahead(19.0f, -1.0f), ahead(19.0f, 3.0f));
+        game.select_units(diggers);
+        return render::to_vector2(ahead(13.5f, 0.0f));
+    }
+
     if (options.scene.starts_with("bridge_down") && options.mode == Options::Mode::Offline) {
         // Offline: the bridge nearest the base (`bridge_down2`: the next one)
         // blown a second in, the camera on it: it comes down, one way or the other.

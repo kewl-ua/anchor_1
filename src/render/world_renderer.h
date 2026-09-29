@@ -314,6 +314,16 @@ private:
     };
     mutable std::vector<WorksBake> works_bakes_;
     mutable std::unordered_map<int, works::Spec> works_known_;  // other players' as last seen, by tile
+    // Works being dug or put up, by tile: what, which way, how far along
+    // (a breastwork on a trench: `on_works`).
+    struct Digging {
+        works::Kind kind;
+        float progress;
+        Vector2 facing;
+        bool on_works = false;
+    };
+    std::unordered_map<int, Digging> digging_;
+    std::unordered_map<engine::EntityId, int> strokes_;  // each digger's spade strokes so far (earth thrown on each)
     std::optional<works::Spec> works_at(const engine::World& world, int tx, int ty) const;
     works::Area works_area(const engine::World& world, int tx, int ty) const;
     // A tile's works, their back or their front; false if not baked yet (then it's asked for).
