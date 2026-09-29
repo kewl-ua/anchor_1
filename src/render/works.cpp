@@ -199,6 +199,18 @@ Parts parts_of(const Spec& spec) {
             look.wall = pick < 0.45f ? Mat::Planks : pick < 0.8f ? Mat::Wattle : Mat::Clay;
             look.floor = Mat::Duck;
             sc.top = 7.0f;
+            // What's built into it: a pit off the ditch for it, its way
+            // (half dug while it's being made).
+            const uint8_t built = spec.fit != kNoFit ? spec.fit : spec.fitting <= kMortarPost ? spec.fitting : kNoFit;
+            const float dug = spec.fit != kNoFit ? 1.0f : 0.45f;
+            if (built != kNoFit) sc.round = true;
+            switch (built) {
+                case kCell: sc.rc = add(c, mul(f, 0.17f)), sc.rr = 0.085f, sc.rdepth = 8.0f * dug; break;
+                case kNest: sc.rc = add(c, mul(f, 0.11f)), sc.rr = 0.19f, sc.rdepth = 7.0f * dug; break;
+                case kAtPost: sc.rc = add(c, mul(f, 0.15f)), sc.rr = 0.13f, sc.rdepth = 8.0f * dug; break;
+                case kMortarPost: sc.rc = add(c, mul(f, -0.2f)), sc.rr = 0.21f, sc.rdepth = 6.0f * dug; break;
+                default: break;
+            }
             break;
         }
         case Kind::Foxhole: {
@@ -709,7 +721,8 @@ void bags_along(Canvas& cv, Vector2 a, Vector2 b, float half, Vector2 facing, ui
 }
 
 // The same round the front of a round pit.
-void bags_round(Canvas& cv, Vector2 c, float r, Vector2 facing, float spread, uint32_t seed) {
+// `rows`: 0 a row and a few more on it; else that many rows, whole.
+void bags_round(Canvas& cv, Vector2 c, float r, Vector2 facing, float spread, uint32_t seed, int rows = 0) {
     const Vector2 base{static_cast<float>(cv.sc.tx), static_cast<float>(cv.sc.ty)};
     const float a0 = std::atan2(facing.y, facing.x);
     const float step = 0.1f / (r + 0.1f);
@@ -720,8 +733,20 @@ void bags_round(Canvas& cv, Vector2 c, float r, Vector2 facing, float spread, ui
         const float z = std::max(0.0f, cv.sc.eval(at).h - 1.4f);
         const bool near = at.x + at.y > base.x + base.y + c.x + c.y;
         sandbag(cv, at, z, perp(dir), bag_colour(seed, i), near);
-        if (rnd(seed, i + 40) < 0.5f) sandbag(cv, at, z + 1.6f, perp(dir), bag_colour(seed, i + 100), near);
+        if (rows == 0 && rnd(seed, i + 40) < 0.5f) sandbag(cv, at, z + 1.6f, perp(dir), bag_colour(seed, i + 100), near);
+        for (int row = 1; row < rows; ++row) {  // (each row set back a little, half a bag along)
+            const float a2 = a + step * 0.5f * static_cast<float>(row % 2);
+            const Vector2 d2{std::cos(a2), std::sin(a2)};
+            const Vector2 at2 = add(base, add(c, mul(d2, r + 0.1f - 0.015f * static_cast<float>(row))));
+            sandbag(cv, at2, z + 1.7f * static_cast<float>(row), perp(d2), bag_colour(seed, i + 100 * row), near);
+        }
     }
+}
+
+// Sandbags stacked up, `high` of them, lying along `d`.
+void bag_stack(Canvas& cv, Vector2 g, Vector2 d, int high, uint32_t seed, bool in_front) {
+    const float z = std::max(0.0f, cv.sc.eval(g).h - 1.2f);
+    for (int k = 0; k < high; ++k) sandbag(cv, add(g, mul(d, 0.02f * static_cast<float>(k % 2))), z + 1.7f * static_cast<float>(k), d, bag_colour(seed, k), in_front);
 }
 
 void stake(Canvas& cv, Vector2 g, float tall, bool in_front) {
@@ -741,7 +766,7 @@ void furnish(Canvas& cv) {
     switch (spec.kind) {
         case Kind::Trench:
         case Kind::Foxhole: {
-            if (spec.parapet && spec.damage < 3) {
+            if (spec.parapet && spec.damage < 3 && (spec.kind != Kind::Trench || spec.fit == kNoFit || spec.fit == kMortarPost)) {
                 if (spec.kind == Kind::Trench) {
                     for (const Seg& sg : sc.segs) bags_along(cv, sg.a, sg.b, sg.half, f, h + static_cast<uint32_t>(sg.start * 100.0f));
                 } else {
@@ -754,6 +779,62 @@ void furnish(Canvas& cv) {
                 const Vector2 d = unit(sub(s.b, s.a));
                 const Vector2 p = add(add(s.a, mul(sub(s.b, s.a), 0.55f)), mul(perp(d), 0.06f));
                 box(cv, at(p), d, 0.06f, 0.035f, -9.0f, -6.0f, kCrate, false);
+            }
+            if (spec.kind == Kind::Trench && spec.damage < 3) {
+                switch (spec.fit) {
+                    case kCell: {  // a loophole: two stacks of bags either side of the niche, a plank over them; cartridges on its step
+                        const Vector2 lip = add(sc.rc, mul(f, sc.rr + 0.08f));
+                        const bool near = at(lip).x + at(lip).y > at(sc.rc).x + at(sc.rc).y;
+                        for (const float k : {-1.0f, 1.0f}) bag_stack(cv, at(add(lip, mul(side, 0.1f * k))), f, 3, h + 7u + static_cast<uint32_t>(k + 1.0f), near);
+                        const float top = std::max(0.0f, cv.sc.eval(at(lip)).h - 1.2f) + 5.3f;
+                        box(cv, at(lip), side, 0.15f, 0.04f, top, top + 1.0f, kWood, near, 2.5f);
+                        sandbag(cv, at(add(lip, mul(side, 0.04f))), top + 1.0f, side, bag_colour(h, 70), near);
+                        bags_along(cv, add(c, mul(side, -0.5f)), add(lip, mul(side, -0.2f)), 0.14f, f, h + 3u);
+                        bags_along(cv, add(lip, mul(side, 0.2f)), add(c, mul(side, 0.5f)), 0.14f, f, h + 5u);
+                        box(cv, at(sub(sc.rc, mul(f, 0.02f))), side, 0.045f, 0.03f, -3.2f, -1.4f, kCrate, false);
+                        break;
+                    }
+                    case kNest:  // sandbagged round three high, open at the back; a plank rest for the gun, a belt box
+                        bags_round(cv, sc.rc, sc.rr, f, 2.2f, h + 9u, 3);
+                        box(cv, at(add(sc.rc, mul(f, sc.rr - 0.03f))), side, 0.09f, 0.025f, -1.2f, 0.4f, kWood, true);
+                        box(cv, at(add(sub(sc.rc, mul(f, 0.06f)), mul(side, 0.09f))), f, 0.035f, 0.025f, -7.0f, -5.2f, kCrate, false);
+                        break;
+                    case kAtPost: {  // bags on its flanks two high, the rockets' long box on the lip, rounds by it; nothing behind
+                        for (const float k : {-1.0f, 1.0f}) {
+                            const Vector2 flank = add(sc.rc, mul(side, (sc.rr + 0.1f) * k));
+                            const bool near = at(flank).x + at(flank).y > at(sc.rc).x + at(sc.rc).y;
+                            bag_stack(cv, at(add(flank, mul(f, 0.05f))), f, 2, h + 11u + static_cast<uint32_t>(k + 1.0f), near);
+                            bag_stack(cv, at(sub(flank, mul(f, 0.06f))), f, 2, h + 15u + static_cast<uint32_t>(k + 1.0f), near);
+                        }
+                        const Vector2 lip = add(sc.rc, mul(f, sc.rr + 0.06f));
+                        const float z = std::max(0.0f, cv.sc.eval(at(lip)).h - 1.0f);
+                        box(cv, at(lip), side, 0.09f, 0.03f, z, z + 2.2f, kCrate, true, 2.0f);
+                        for (int i = 0; i < 3; ++i) {  // RPG rounds leaning on it: a tube, its fat head
+                            const Vector2 foot = add(sub(lip, mul(f, 0.05f)), mul(side, -0.06f + 0.06f * static_cast<float>(i)));
+                            const P3 a0 = p3(at(foot), z);
+                            const P3 a1 = p3(at(add(foot, mul(f, 0.03f))), z + 5.0f);
+                            cylinder(cv, a0, a1, 0.6f, {86, 92, 64, 255}, true);
+                            cylinder(cv, a1, p3(at(add(foot, mul(f, 0.04f))), z + 7.0f), 1.1f, {70, 76, 52, 255}, true);
+                        }
+                        break;
+                    }
+                    case kMortarPost:  // bags round its back, the bombs' boxes in niches
+                        bags_round(cv, sc.rc, sc.rr, mul(f, -1.0f), 1.2f, h + 13u);
+                        box(cv, at(add(sc.rc, mul(side, 0.15f))), f, 0.05f, 0.035f, -6.0f, -3.4f, kCrate, false, 2.0f);
+                        box(cv, at(sub(sc.rc, mul(side, 0.15f))), f, 0.05f, 0.035f, -6.0f, -3.4f, kCrate, false, 2.0f);
+                        break;
+                    default: break;
+                }
+                if (spec.fitting != kNoFit && spec.fitting != kDugoutFit) {  // being made: bags waiting on the bank, a spade stuck in
+                    const Vector2 pile = add(c, add(mul(f, spec.fitting == kParapetFit ? 0.33f : -0.33f), mul(side, 0.16f)));
+                    for (int i = 0; i < 4; ++i) {
+                        const Vector2 p = add(pile, mul(side, 0.07f * static_cast<float>(i % 2)));
+                        sandbag(cv, at(p), std::max(0.0f, cv.sc.eval(at(p)).h - 1.0f) + 1.8f * static_cast<float>(i / 2), side, bag_colour(h, 50 + i), true);
+                    }
+                    const Vector2 spade = add(c, add(mul(f, -0.3f), mul(side, -0.14f)));
+                    cylinder(cv, p3(at(spade), -1.0f), p3(at(spade), 7.0f), 0.6f, kWood, true);
+                    box(cv, at(spade), side, 0.03f, 0.008f, -1.5f, 1.5f, kSteel, true);
+                }
             }
             if (spec.upgrading) {  // being made a dugout: logs laid over, more stacked by it
                 for (int i = 0; i < 3; ++i) {
@@ -1129,6 +1210,9 @@ Place place(const Spec& spec, Vector2 local, bool vehicle) {
     };
     switch (spec.kind) {
         case Kind::Trench: {
+            if (spec.fit != kNoFit && sc.round && len(sub(local, sc.rc)) < 0.26f) {  // at the position built into it
+                return {pull(sc.rc, 0.03f), vehicle ? 0.0f : spec.fit == kMortarPost ? 5.0f : 8.0f};
+            }
             Vector2 best = local;
             float best_d = 1e9f;
             for (const Seg& s : sc.segs) {

@@ -36,6 +36,9 @@ enum class CommandType : uint8_t {
     Collect,       // supply trucks: park by the wood or the stone at `target` and take the rear troops' loads in
     Rally,         // a building (target_unit) sends the units it hires to `target`
     LoadShell,     // artillery: load a kind of shell (`ability` = Shell) for the next shots
+    Fortify,       // infantry: fit out the trench tile at `target` (`structure_type` = TrenchFit), facing `target_end`
+    ManWorks,      // infantry: man the trench at `target`, each to a place along it
+    TakeCover,     // infantry: into the nearest dugout along the trench, remembering their places
 };
 
 // The only way anything outside the engine can change the game state.
@@ -62,7 +65,8 @@ inline bool queueable(CommandType t) {
     return t == CommandType::Move || t == CommandType::AttackMove || t == CommandType::Attack ||
            t == CommandType::AttackGround || t == CommandType::Garrison || t == CommandType::Gather ||
            t == CommandType::Build || t == CommandType::Haul || t == CommandType::Observe || t == CommandType::Ability ||
-           t == CommandType::Supply || t == CommandType::Collect || t == CommandType::Retrain || t == CommandType::Unload;
+           t == CommandType::Supply || t == CommandType::Collect || t == CommandType::Retrain || t == CommandType::Unload ||
+           t == CommandType::Fortify || t == CommandType::ManWorks;
 }
 
 }  // namespace engine

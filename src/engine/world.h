@@ -35,6 +35,7 @@ enum class Order : uint8_t {
     Ability,       // using the skill order_ability at order_point (to order_point2)
     Supply,        // a service vehicle looking after the unit `serves`
     Collect,       // a supply truck parked at order_point by the wood, taking loads in
+    Fortify,       // infantry: walk to the trench tile of order_target and fit it out, then stay at it
 };
 
 inline constexpr Tick kNeverFired = std::numeric_limits<Tick>::max();
@@ -88,6 +89,42 @@ inline constexpr Stock kDugoutCost = {0, 0, 60, 0, 0};
 inline constexpr Tick kDugoutWork = 20 * kTicksPerSecond;
 inline constexpr int32_t kDugoutDiggers = 4;
 inline constexpr int32_t kGrenadeVictims = 3;  // a grenade into a room hurts this many inside
+// How close a digger has to be to the middle of the tile he digs.
+inline constexpr Fixed kDigReach = Fixed::from_ratio(3, 4);
+// A trench tile fitted out (see TrenchFit): a man at a position in it.
+inline constexpr int32_t kPositionCover = 60;      // in a firing cell, an anti-tank post, a mortar's position
+inline constexpr int32_t kNestCover = 65;          // a machine gunner in his nest
+inline constexpr int32_t kCellAimPercent = 110;    // small arms from a firing cell: the weapon rested on it
+inline constexpr int32_t kNestAimPercent = 125;    // a machine gun from its nest
+inline constexpr int32_t kAtPostAimPercent = 125;  // an RPG from its post, at a vehicle
+// Manning a trench: its tiles nearest the one clicked, this many at most.
+inline constexpr int32_t kManningReach = 64;
+// A route along a trench: this many of its tiles searched at most; taken if
+// it's no longer than this many times the way across the open, and 4 tiles.
+inline constexpr int32_t kTrenchRouteNodes = 512;
+inline constexpr int32_t kTrenchDetour = 3;
+// Taking cover out of a trench: the nearest dugout this far off.
+inline constexpr Fixed kCoverReach = Fixed::from_int(8);
+
+// Fitting a trench tile out: one man's work (up to kDugoutDiggers dig at
+// once), and what it costs.
+struct FitDef {
+    const char* name;
+    Tick work;
+    Stock cost;
+};
+inline const FitDef& fit_def(TrenchFit fit) {
+    static constexpr FitDef kFits[kTrenchFitCount] = {
+        {"Trench", 1, {}},
+        {"Firing cell", 6 * kTicksPerSecond, {}},
+        {"Machine-gun nest", 10 * kTicksPerSecond, {0, 0, 20, 0, 0}},
+        {"Anti-tank post", 8 * kTicksPerSecond, {0, 0, 10, 0, 0}},
+        {"Mortar position", 10 * kTicksPerSecond, {}},
+        {"Parapet", kParapetWork, {}},
+        {"Dugout", kDugoutWork, kDugoutCost},
+    };
+    return kFits[std::min(static_cast<size_t>(fit), kTrenchFitCount - 1)];
+}
 
 // Direct fire far out: beyond a gun's effective range its accuracy falls,
 // down to this share at the full range (a tank firing 50 tiles out).
@@ -495,6 +532,13 @@ struct Unit {
         Command cmd;
     };
     std::vector<Queued> queued;
+    // Along a trench to a tile of it (a communication trench): its tiles in
+    // turn, as long as the order still goes to `via_goal`.
+    std::vector<TilePos> via;
+    TilePos via_goal{};
+    // Its place in a trench (manned there, or where it was when it took cover
+    // in a dugout): out of the dugout, back to it. x < 0: none.
+    TilePos post{-1, -1};
 
     // Rear troops and trucks at work.
     TilePos gather_tile{};  // the forest or rock being worked
@@ -693,6 +737,10 @@ public:
     const Structure* haul_destination(const Unit& truck, Resource cargo) const;
     // Open ground a trench, foxhole or parapet can go on.
     bool diggable(TilePos t) const;
+    // A trench, a foxhole, a gun pit, a dugout: works a man goes along under cover.
+    bool trench_like(TilePos t) const;
+    // Whether the player can fit out his works at t with `fit` now.
+    bool can_fit(PlayerId player, TilePos t, TrenchFit fit) const;
     // Mines and charges. A player sees his own mines and the ones his sappers found.
     const std::vector<Mine>& mines() const { return mines_; }
     bool knows(PlayerId player, const Mine& m) const {
@@ -832,6 +880,16 @@ private:
     void update_ability(Unit& u);
     void finish_ability(Unit& u);
     void update_upgrades();
+    // Trenches put together (world_works.cpp).
+    void apply_fortify(const Command& cmd);
+    void apply_man_works(const Command& cmd);
+    void apply_take_cover(const Command& cmd);
+    void update_fortify(Unit& u);
+    void finish_fitting(Structure& s, const std::vector<Unit*>& diggers);
+    std::vector<TilePos> trench_route(TilePos from, TilePos to) const;
+    void route_by_trench(Unit& u, TilePos goal) const;
+    void man_place(Unit& u, TilePos t, bool first);  // sends him to his place on a trench tile
+    void face_front(Unit& u) const;
     // A lobbed shot: arcs over everything, comes down at the aim point.
     void lob(Unit& shooter, FixedVec2 aim, const WeaponDef& weapon, bool enters, Shell shell = Shell::He);
     EntityId place_fieldwork(StructureType type, PlayerId owner, TilePos t, FixedVec2 facing);

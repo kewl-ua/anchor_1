@@ -24,12 +24,17 @@ enum class Kind : uint8_t {
     Hedgehogs,  // two steel hedgehogs
 };
 
+// What's built into a trench tile (as the engine's TrenchFit numbers them).
+enum Fit : uint8_t { kNoFit, kCell, kNest, kAtPost, kMortarPost, kParapetFit, kDugoutFit };
+
 struct Spec {
     Kind kind = Kind::Trench;
     uint8_t links = 0;       // where a trench goes on to: +x 1, -x 2, +y 4, -y 8; wire corner to corner too: +x+y 16, -x-y 32, +x-y 64, -x+y 128
     bool parapet = false;    // a breastwork on the side it faces
     Vector2 facing{1, 0};    // on the ground (a gun pit: the way the gun faced)
-    bool upgrading = false;  // a foxhole being made a dugout: logs by it
+    bool upgrading = false;  // being made a dugout: logs over it, more by it
+    uint8_t fit = kNoFit;      // a trench tile: what's built into it (a Fit), facing `facing`
+    uint8_t fitting = kNoFit;  // what it's being fitted out with
     int damage = 0;          // 0 whole .. 3 caved in
     uint32_t seed = 0;
 };

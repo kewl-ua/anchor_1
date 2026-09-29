@@ -147,7 +147,7 @@ private:
     // The command grid. Each cell holds an action; its hotkey is the cell's.
     enum class Action : uint8_t {
         None, AttackMove, Stop, FireAt, Observe, Haul, Retrain, BuildMenu, Back, Build, Hire, Ability, Upgrade, Unload,
-        Research, ConvertMenu, Convert, Gather, Dismount, Shell, Section
+        Research, ConvertMenu, Convert, Gather, Dismount, Shell, Section, FortifyMenu, Fortify, FitTile, TakeCover
     };
     struct Cell {
         Action action = Action::None;
@@ -160,7 +160,7 @@ private:
     void order_ability(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
                        engine::AbilityId ability, Vector2 target, Vector2 end);
 
-    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability, Convert, Gather };
+    enum class Targeting { None, AttackMove, AttackGround, Observe, Ability, Convert, Gather, Fortify };
 
     engine::PlayerId player_;
     std::vector<engine::EntityId> selection_;  // sorted, unique
@@ -173,6 +173,17 @@ private:
     std::optional<Placement> placement_;
     bool build_menu_ = false;  // rear troops: the grid shows what they can build
     bool convert_menu_ = false;  // rear troops: what depot to make of a village building
+    // Foot soldiers: the grid shows what they can fit into a trench (Targeting::Fortify: that one);
+    // where the button went down on the ground (dragged: the way it faces, a parapet's line).
+    bool fortify_menu_ = false;
+    engine::TrenchFit fortifying_ = engine::TrenchFit::Cell;
+    std::optional<Vector2> fortify_press_;
+    void update_fortify(const engine::World& world, render::WorldRenderer& renderer, net::Lockstep& lockstep, Vector2 here,
+                        bool over_hud, bool pressed, bool released, bool shift);
+    void order_fortify(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer, Vector2 from, Vector2 to);
+    void order_man_works(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer, engine::TilePos tile);
+    // The way works on a tile face by default: their breastwork's way, or away from our headquarters.
+    Vector2 default_facing(const engine::World& world, engine::TilePos t) const;
     // A building's grid opened at a section (a Family: its tanks, its IFVs and APCs...), for this building.
     engine::EntityId section_ = 0;
     uint8_t section_kind_ = 0;

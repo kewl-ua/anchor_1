@@ -16,8 +16,6 @@ namespace {
 constexpr int32_t kSweepShots = 15;
 constexpr Tick kSweepInterval = 3;
 constexpr Fixed kSweepSpread = Fixed::from_int(3);
-// How close a digger has to be to the middle of the tile he digs.
-constexpr Fixed kDigReach = Fixed::from_ratio(3, 4);
 
 }  // namespace
 
@@ -134,6 +132,7 @@ void World::apply_upgrade(const Command& cmd) {
     if (!can_afford(stock, kDugoutCost)) return;
     pay(stock, kDugoutCost);
     s->upgrading = true;
+    s->fitting = TrenchFit::Dugout;
     s->upgrade_work = 0;
 }
 
@@ -155,39 +154,33 @@ void World::apply_unload(const Command& cmd) {
     }
     const Structure* s = find_structure(cmd.target_unit);
     if (!s || s->owner != cmd.player || (!is_shelter(role_of(*s)) && s->type != StructureType::Hospital)) return;
+    // Out of a dugout, back to their places in the trench ("to positions!").
+    const bool dugout = s->type == StructureType::Dugout;
     const std::vector<EntityId> inside = s->garrison;
     for (EntityId id : inside) {
         if (Unit* u = find_unit_mut(id)) {
             leave_structure(*u);
             u->order = Order::Idle;
+            if (dugout && u->post.x >= 0 && trench_like(u->post)) man_place(*u, u->post, true);
         }
     }
 }
 
+// Works being fitted out: the men standing in it and the men sent to it dig (up to four).
 void World::update_upgrades() {
     for (Structure& s : structures_) {
         if (!s.upgrading) continue;
         const TilePos tile = s.tiles.front();
         std::vector<Unit*> diggers;
         for (Unit& u : units_) {
-            if (u.owner != s.owner || u.inside || unit_type(u.type).vehicle || tile_of(u.pos) != tile) continue;
-            if (static_cast<int32_t>(diggers.size()) < kDugoutDiggers) diggers.push_back(&u);
+            if (u.owner != s.owner || u.inside || u.riding || unit_type(u.type).vehicle || u.hp <= 0) continue;
+            const bool standing = tile_of(u.pos) == tile && !u.moving && u.order != Order::Fortify;
+            const bool sent = u.order == Order::Fortify && u.order_target == s.id &&
+                              (tile_center(tile) - u.pos).length_sq_raw() <= square_raw(kDigReach);
+            if ((standing || sent) && static_cast<int32_t>(diggers.size()) < kDugoutDiggers) diggers.push_back(&u);
         }
         s.upgrade_work += static_cast<Tick>(diggers.size());
-        if (s.upgrade_work < kDugoutWork) continue;
-
-        // Done: roofed over, and the men who dug it are inside.
-        s.upgrading = false;
-        s.type = StructureType::Dugout;
-        s.hp = structure_type(StructureType::Dugout).max_hp;
-        s.parapet = false;
-        s.owner = kNoOwner;
-        map_.set_terrain(tile.x, tile.y, Terrain::Dugout);
-        on_map_changed();
-        for (Unit* u : diggers) {
-            u->order = Order::Idle;
-            enter(*u, s);
-        }
+        if (s.upgrade_work >= fit_def(s.fitting).work) finish_fitting(s, diggers);
     }
 }
 

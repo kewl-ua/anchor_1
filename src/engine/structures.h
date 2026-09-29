@@ -58,6 +58,21 @@ enum class StructureType : uint8_t {
 // in a wood; a hide of branches in the crops, the reeds, the rubble; out in
 // the open, an artificial stump he sits in (as the old field manuals have it).
 enum class PostKind : uint8_t { Stump, Tree, Hide };
+// What's built into a trench tile, as towers and gates into AoE's walls: a
+// firing position of a kind, a machine-gun nest. While a tile is being fitted
+// out, what with (a breastwork, a dugout besides).
+enum class TrenchFit : uint8_t {
+    None,
+    Cell,        // a rifleman's firing cell: a step, a niche in the front wall
+    MgNest,      // a machine-gun nest: sandbagged round, a rest for the gun
+    AtPost,      // an anti-tank post: the RPG's, a clear space behind for its blast
+    MortarPost,  // a round pit off the trench for a mortar or an AGS
+    Parapet,     // (being built) a breastwork on it
+    Dugout,      // (being built) a dugout dug out of it
+    Count,
+};
+inline constexpr size_t kTrenchFitCount = static_cast<size_t>(TrenchFit::Count);
+
 // What a gun pit was dug for (it plays the same, it looks its own): a
 // towed gun's emplacement, a horseshoe of earth open at the back; a mortar's
 // round pit; a self-propelled gun's caponier, a ramp down into it.
@@ -180,6 +195,11 @@ struct Structure {
     PostKind post = PostKind::Stump;
     // A gun pit: what for (its `facing` is the way the gun faced when it was dug).
     PitKind pit = PitKind::Gun;
+    // A trench tile: what's built into it (facing `facing`); while it's
+    // `upgrading`, what it's being fitted with and which way that will face.
+    TrenchFit fit = TrenchFit::None;
+    TrenchFit fitting = TrenchFit::None;
+    FixedVec2 fit_facing{};
 
     // Where the units it hires go (AoE's rally point): rear troops to work
     // if it's on the wood or the stone, trucks to collect there.

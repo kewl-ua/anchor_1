@@ -1208,6 +1208,126 @@ Command use_ability_at(PlayerId player, std::vector<EntityId> units, AbilityId a
     return cmd;
 }
 
+// A trench tile fitted out, as a wall with its towers: a machine-gun nest
+// (materials up front), the men sent there dig it and stay at it; then a
+// dugout dug out of another tile of it, the men ending up inside.
+void test_trench_fittings() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {10, 0, 100, 0, 0});
+    for (int32_t x = 8; x <= 12; ++x) w.place_structure(StructureType::Trench, 0, {x, 10}, 1, 1);
+    const EntityId a = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(17, 25));
+    const EntityId b = w.spawn_unit(0, UnitTypeId::MachineGunner, at_half(19, 25));
+    Command nest{.type = CommandType::Fortify, .player = 0, .units = {a, b}, .target = at_half(21, 21),
+                 .structure_type = static_cast<uint8_t>(TrenchFit::MgNest), .target_end = at_half(21, 15)};
+    issue(sim, nest);
+    for (int i = 0; i < 5; ++i) sim.step();
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Materials)] == 80);
+    CHECK(sim.world().structure_at({10, 10})->upgrading);
+    for (Tick i = 0; i < 20 * kTicksPerSecond; ++i) sim.step();
+    const Structure* s = sim.world().structure_at({10, 10});
+    CHECK(s && s->fit == TrenchFit::MgNest && !s->upgrading && s->facing.y < Fixed{});
+    CHECK((sim.world().find_unit(b)->order == Order::Idle && sim.world().find_unit(b)->post == TilePos{10, 10}));
+    CHECK(!sim.world().can_fit(0, {10, 10}, TrenchFit::Cell));  // (a nest there already)
+    CHECK(!sim.world().can_fit(1, {11, 10}, TrenchFit::Cell));  // (not his trench)
+
+    Command dug{.type = CommandType::Fortify, .player = 0, .units = {a, b}, .target = at_half(17, 21),
+                .structure_type = static_cast<uint8_t>(TrenchFit::Dugout), .target_end = at_half(17, 15)};
+    issue(sim, dug);
+    for (Tick i = 0; i < 30 * kTicksPerSecond; ++i) sim.step();
+    const Structure* d = sim.world().structure_at({8, 10});
+    CHECK(sim.world().map().terrain(8, 10) == Terrain::Dugout);
+    CHECK(d && d->type == StructureType::Dugout && d->garrison.size() == 2);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Materials)] == 20);
+}
+
+// Manning a trench: the machine gunner to the nest, a rifleman to the firing
+// cell, the other to the trench by it; each faces the front at his place.
+void test_manning_a_trench() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    for (int32_t x = 6; x <= 14; ++x) w.place_structure(StructureType::Trench, 0, {x, 10}, 1, 1);
+    auto fit = [&](int32_t x, TrenchFit f) {
+        Structure* s = w.structure_for_setup(w.structure_at({x, 10})->id);
+        s->fit = f;
+        s->facing = {Fixed{}, Fixed::from_int(1)};
+    };
+    fit(12, TrenchFit::MgNest);
+    fit(9, TrenchFit::Cell);
+    // (coming from behind the front: they walk the other way to get there)
+    const EntityId mg = w.spawn_unit(0, UnitTypeId::MachineGunner, at_half(21, 13));
+    const EntityId r1 = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(23, 13));
+    const EntityId r2 = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(19, 13));
+    Command man = make_order(CommandType::ManWorks, 0, {mg, r1, r2}, 0, 0);
+    man.target = at_half(21, 21);
+    issue(sim, man);
+    for (Tick i = 0; i < 15 * kTicksPerSecond; ++i) sim.step();
+    const Unit* m = sim.world().find_unit(mg);
+    CHECK((tile_of(m->pos) == TilePos{12, 10} && m->order == Order::Idle && m->facing.y > Fixed{} && m->facing.x == Fixed{}));
+    CHECK((tile_of(sim.world().find_unit(r1)->pos) == TilePos{9, 10}));  // (the first of them to the cell)
+    CHECK((tile_of(sim.world().find_unit(r2)->pos) == TilePos{10, 10}));
+    CHECK((sim.world().find_unit(r2)->post == TilePos{10, 10}));
+}
+
+// Taking cover: the men in the trench go along it into the dugout at its
+// end; everyone out of it ("to positions!") brings each back to his place.
+void test_take_cover_and_back() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    for (int32_t x = 6; x <= 12; ++x) w.place_structure(StructureType::Trench, 0, {x, 10}, 1, 1);
+    const EntityId dugout = w.place_structure(StructureType::Dugout, 0, {5, 10}, 1, 1);
+    const EntityId a = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(23, 21));
+    const EntityId b = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(19, 21));
+    for (int i = 0; i < 5; ++i) sim.step();
+    issue(sim, make_order(CommandType::TakeCover, 0, {a, b}, 0, 0));
+    for (Tick i = 0; i < 20 * kTicksPerSecond; ++i) sim.step();
+    CHECK(sim.world().find_unit(a)->inside == dugout && sim.world().find_unit(b)->inside == dugout);
+    CHECK((sim.world().find_unit(a)->post == TilePos{11, 10} && sim.world().find_unit(b)->post == TilePos{9, 10}));
+    Command out = make_order(CommandType::Unload, 0, {}, 0, 0);
+    out.target_unit = dugout;
+    issue(sim, out);
+    for (Tick i = 0; i < 20 * kTicksPerSecond; ++i) sim.step();
+    CHECK((tile_of(sim.world().find_unit(a)->pos) == TilePos{11, 10}));
+    CHECK((tile_of(sim.world().find_unit(b)->pos) == TilePos{9, 10}));
+    CHECK(sim.world().find_unit(a)->inside == 0);
+}
+
+// From one end of a trench to the other, along it: a U-shaped one, its ends
+// across the open from each other; he never leaves it.
+void test_moves_along_the_trench() {
+    Simulation sim(1, TileMap(30, 20));
+    World& w = sim.world_for_setup();
+    for (int32_t y = 10; y <= 14; ++y) w.place_structure(StructureType::Trench, 0, {5, y}, 1, 1);
+    for (int32_t x = 6; x <= 10; ++x) w.place_structure(StructureType::Trench, 0, {x, 14}, 1, 1);
+    for (int32_t y = 10; y <= 13; ++y) w.place_structure(StructureType::Trench, 0, {10, y}, 1, 1);
+    const EntityId man = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(11, 21));
+    Command go = make_move(0, {man}, 0, 0);
+    go.target = at_half(21, 21);
+    issue(sim, go);
+    bool in_it = true;
+    for (Tick i = 0; i < 40 * kTicksPerSecond; ++i) {
+        sim.step();
+        in_it = in_it && sim.world().trench_like(tile_of(sim.world().find_unit(man)->pos));
+    }
+    CHECK(in_it);
+    CHECK((tile_of(sim.world().find_unit(man)->pos) == TilePos{10, 10}));
+}
+
+// A machine gunner in his nest takes fewer hits than in the plain trench.
+void test_machine_gun_nest_cover() {
+    auto trench = [](bool nest) {
+        return [nest](Simulation& sim, EntityId) {
+            const EntityId id = sim.world_for_setup().place_structure(StructureType::Trench, 0, {10, 10}, 1, 1);
+            if (nest) sim.world_for_setup().structure_for_setup(id)->fit = TrenchFit::MgNest;
+            settle(sim);
+        };
+    };
+    const int32_t plain = damage_taken(false, trench(false), UnitTypeId::MachineGunner);
+    const int32_t nest = damage_taken(false, trench(true), UnitTypeId::MachineGunner);
+    CHECK(plain > 0);
+    CHECK(nest * 100 < plain * 70);  // (65% of the hits against 50%)
+}
+
 // A foxhole dug out into a dugout: materials up front, the men in it do
 // the work and end up inside, sheltered and blind, until a grenade comes in.
 void test_foxhole_becomes_a_dugout() {
@@ -5032,7 +5152,7 @@ void test_crops_swamps_and_craters() {
     for (int i = 0; i < 400; ++i) sim.step();
     issue(sim, use_ability(0, {sapper}, AbilityId::LayApMine, 12, 12));
     for (int i = 0; i < 400; ++i) sim.step();
-    CHECK(sim.world().mines().size() == 1 && (sim.world().mines().front().tile == TilePos{12, 12}));
+    CHECK((sim.world().mines().size() == 1 && (sim.world().mines().front().tile == TilePos{12, 12})));
 }
 
 // Heavy shells bursting on open ground leave craters behind.
@@ -6805,6 +6925,11 @@ int main() {
     test_trench_fight_ignores_cover();
     test_trench_fight();
     test_foxhole_becomes_a_dugout();
+    test_trench_fittings();
+    test_manning_a_trench();
+    test_take_cover_and_back();
+    test_moves_along_the_trench();
+    test_machine_gun_nest_cover();
     test_grenades_fall_into_foxholes();
     test_out_of_fuel_but_still_shooting();
     test_tanker_refuels_vehicles_nearby();

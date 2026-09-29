@@ -65,7 +65,7 @@ bool has_target_point(engine::CommandType type) {
            type == engine::CommandType::AttackGround || type == engine::CommandType::Gather ||
            type == engine::CommandType::Build || type == engine::CommandType::Observe ||
            type == engine::CommandType::Ability || type == engine::CommandType::Collect ||
-           type == engine::CommandType::Rally;
+           type == engine::CommandType::Rally || type == engine::CommandType::Fortify || type == engine::CommandType::ManWorks;
 }
 
 bool has_target_unit(engine::CommandType type) {
@@ -87,7 +87,11 @@ void write_command(Writer& w, const engine::Command& cmd) {
     }
     if (has_target_unit(cmd.type)) w.u32(cmd.target_unit);
     if (cmd.type == engine::CommandType::Train) w.u8(cmd.unit_type);
-    if (cmd.type == engine::CommandType::Build) w.u8(cmd.structure_type);
+    if (cmd.type == engine::CommandType::Build || cmd.type == engine::CommandType::Fortify) w.u8(cmd.structure_type);
+    if (cmd.type == engine::CommandType::Fortify) {
+        w.i32(cmd.target_end.x.raw);
+        w.i32(cmd.target_end.y.raw);
+    }
     if (cmd.type == engine::CommandType::Research) w.u8(cmd.upgrade);
     if (cmd.type == engine::CommandType::Haul) w.u8(cmd.cargo);
     if (cmd.type == engine::CommandType::LoadShell) w.u8(cmd.ability);
@@ -101,7 +105,7 @@ void write_command(Writer& w, const engine::Command& cmd) {
 std::optional<engine::Command> read_command(Reader& r) {
     engine::Command cmd;
     const uint8_t type = r.u8();
-    if (type > static_cast<uint8_t>(engine::CommandType::LoadShell)) return std::nullopt;
+    if (type > static_cast<uint8_t>(engine::CommandType::TakeCover)) return std::nullopt;
     cmd.type = static_cast<engine::CommandType>(type);
     const uint8_t flags = r.u8();
     if (flags > 1) return std::nullopt;
@@ -118,7 +122,11 @@ std::optional<engine::Command> read_command(Reader& r) {
     }
     if (has_target_unit(cmd.type)) cmd.target_unit = r.u32();
     if (cmd.type == engine::CommandType::Train) cmd.unit_type = r.u8();
-    if (cmd.type == engine::CommandType::Build) cmd.structure_type = r.u8();
+    if (cmd.type == engine::CommandType::Build || cmd.type == engine::CommandType::Fortify) cmd.structure_type = r.u8();
+    if (cmd.type == engine::CommandType::Fortify) {
+        cmd.target_end.x = engine::Fixed::from_raw(r.i32());
+        cmd.target_end.y = engine::Fixed::from_raw(r.i32());
+    }
     if (cmd.type == engine::CommandType::Research) cmd.upgrade = r.u8();
     if (cmd.type == engine::CommandType::Haul) cmd.cargo = r.u8();
     if (cmd.type == engine::CommandType::LoadShell) cmd.ability = r.u8();

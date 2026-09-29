@@ -66,6 +66,17 @@ public:
     };
     void set_hover(const Hover& hover) { hover_ = hover; }
 
+    // Fitting a trench out: the tiles it would go on (green where it can,
+    // red where it can't) and the way it would face.
+    struct FortifyGhost {
+        std::vector<engine::TilePos> tiles;
+        std::vector<bool> valid;
+        bool arrow = false;
+        Vector2 from{};  // (on the ground)
+        Vector2 to{};
+    };
+    void set_fortify_ghost(FortifyGhost ghost) { fortify_ghost_ = std::move(ghost); }
+
     // Spawns effects for what happened since the last frame (impacts, deaths)
     // and ages them. Call once per frame after the simulation advanced.
     void update(const engine::World& world, float dt);
@@ -419,6 +430,7 @@ private:
     // fences, woodpiles, wells, fruit trees. One per tile, found once per map.
     std::vector<uint8_t> village_;
     Hover hover_{};
+    FortifyGhost fortify_ghost_{};
     mutable RenderTexture2D hover_target_{};
     mutable Shader outline_{};
     mutable int outline_texel_loc_ = -1;

@@ -562,6 +562,92 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene.starts_with("trenchline") && options.mode == Options::Mode::Offline) {
+        // Offline, out in the field: a trench line with a breastwork, a
+        // communication trench back from it. The men fit it out themselves:
+        // the machine gunners a nest, riflemen firing cells, the grenadier an
+        // anti-tank post, the mortar crew its position off the communication
+        // trench, two riflemen a dugout at its end; then (queued) they man
+        // it, each to his place. `trenchline_cover`: then they take cover in
+        // the dugout (Shift-queued too).
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        const Vector2 b = render::to_vector2(base);
+        auto ahead = [&](float d, float side) {
+            d += 28.0f;
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        auto tile = [&](float d, float side) { return engine::tile_of(ahead(d, side)); };
+        const engine::FixedVec2 front = render::to_fixed_vec2({fwd, -fwd});
+        engine::World& w = game.world_for_setup();
+        flat_field(w, ahead(12.0f, 0.0f), 11);
+        w.set_stock(me, {50, 500, 500, 500, 500});
+        const auto line = engine::trench_line(tile(14.0f, -5.0f), tile(14.0f, 4.0f));
+        for (const engine::TilePos& t : line) {
+            if (engine::Structure* st = w.structure_for_setup(w.place_structure(engine::StructureType::Trench, me, t, 1, 1))) {
+                st->parapet = true;
+                st->facing = front;
+            }
+        }
+        // (the communication trench from the middle of the line back)
+        std::vector<engine::TilePos> back;
+        {
+            const engine::TilePos mid = line[line.size() / 2];
+            const engine::TilePos rear = tile(9.0f, -0.5f);
+            for (const engine::TilePos& t : engine::trench_line(mid, rear)) {
+                if (w.structure_at(t)) continue;
+                w.place_structure(engine::StructureType::Trench, me, t, 1, 1);
+                back.push_back(t);
+            }
+        }
+        auto spawn = [&](engine::UnitTypeId type, float d, float side) { return w.spawn_unit(me, type, ahead(d, side)); };
+        const engine::EntityId mg1 = spawn(engine::UnitTypeId::MachineGunner, 8.0f, -3.0f);
+        const engine::EntityId mg2 = spawn(engine::UnitTypeId::MachineGunner, 8.0f, -2.2f);
+        const engine::EntityId r1 = spawn(engine::UnitTypeId::Rifleman, 8.0f, -1.0f);
+        const engine::EntityId r2 = spawn(engine::UnitTypeId::Rifleman, 8.0f, -0.2f);
+        const engine::EntityId r3 = spawn(engine::UnitTypeId::Rifleman, 8.0f, 0.6f);
+        const engine::EntityId r4 = spawn(engine::UnitTypeId::Rifleman, 8.0f, 1.4f);
+        const engine::EntityId r5 = spawn(engine::UnitTypeId::Rifleman, 7.0f, -2.0f);
+        const engine::EntityId r6 = spawn(engine::UnitTypeId::Rifleman, 7.0f, -1.2f);
+        const engine::EntityId rpg = spawn(engine::UnitTypeId::Grenadier, 8.0f, 2.2f);
+        const engine::EntityId mortar = spawn(engine::UnitTypeId::Mortar, 7.0f, 0.5f);
+        // A trench tile of the line nearest a point on it.
+        auto on_line = [&](float side) {
+            const engine::TilePos want = tile(14.0f, side);
+            engine::TilePos best = line.front();
+            int32_t best_d = 1 << 30;
+            for (const engine::TilePos& t : line) {
+                const int32_t d = std::abs(t.x - want.x) + std::abs(t.y - want.y);
+                if (d < best_d) {
+                    best = t;
+                    best_d = d;
+                }
+            }
+            return best;
+        };
+        auto fortify = [&](std::vector<engine::EntityId> units, engine::TilePos t, engine::TrenchFit fit) {
+            const engine::FixedVec2 c = engine::tile_center(t);
+            game.submit({.type = engine::CommandType::Fortify, .units = std::move(units), .target = c,
+                         .structure_type = static_cast<uint8_t>(fit), .target_end = c + front});
+        };
+        fortify({mg1, mg2}, on_line(-3.0f), engine::TrenchFit::MgNest);
+        fortify({r1, r2}, on_line(-1.0f), engine::TrenchFit::Cell);
+        fortify({r3, r4}, on_line(1.5f), engine::TrenchFit::Cell);
+        fortify({rpg}, on_line(3.0f), engine::TrenchFit::AtPost);
+        fortify({mortar}, back[back.size() / 2], engine::TrenchFit::MortarPost);
+        fortify({r5, r6}, back.back(), engine::TrenchFit::Dugout);
+        const std::vector<engine::EntityId> all{mg1, mg2, r1, r2, r3, r4, rpg, mortar};
+        engine::Command man{.type = engine::CommandType::ManWorks, .units = all, .target = engine::tile_center(on_line(0.0f)), .queued = true};
+        game.submit(man);
+        if (options.scene == "trenchline_cover") {
+            engine::Command cover{.type = engine::CommandType::TakeCover, .units = all, .queued = true};
+            game.submit(cover);
+        }
+        game.select_units(all);
+        // (`trenchline_line`: the camera on the front line.)
+        return render::to_vector2(options.scene == "trenchline_line" ? ahead(14.0f, -0.5f) : ahead(12.0f, -0.5f));
+    }
+
     if (options.scene.starts_with("fieldworks") && options.mode == Options::Mode::Offline) {
         // Offline, out in the field: a line of trench with a breastwork to
         // the front, a communication trench back to a dugout, foxholes (one

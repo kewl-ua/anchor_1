@@ -35,6 +35,8 @@ constexpr int32_t kFoliagePercentShell = 8;
 constexpr Tick kImpactHistory = 3 * kTicksPerSecond;
 // How close to a house's walls a soldier must be to get in.
 constexpr Fixed kEnterDistance = Fixed::from_int(1);
+// Along a trench: this close to the middle of a tile, on to the next.
+constexpr Fixed kViaReach = Fixed::from_ratio(3, 10);
 
 const UnitTypeDef& def_of(const Unit& u) { return unit_type(u.type); }
 MoveClass class_of(const Unit& u) { return move_class(def_of(u)); }
@@ -235,6 +237,11 @@ void World::apply_garrison(const Command& cmd) {
         u->chase_path.reset();
         u->speed_cap = Fixed{};
         u->engaged = 0;
+        if (s->type == StructureType::Dugout) {  // from the trench: along it, and back to his place when he comes out
+            const TilePos here = map_.clamp_tile(tile_of(u->pos));
+            if (trench_like(here) && map_.terrain(here) != Terrain::Dugout) u->post = here;
+            route_by_trench(*u, goal);
+        }
     }
 }
 
@@ -610,6 +617,9 @@ void World::execute(const Command& cmd) {
         case CommandType::Collect: apply_collect(cmd); break;
         case CommandType::Rally: apply_rally(cmd); break;
         case CommandType::LoadShell: apply_load_shell(cmd); break;
+        case CommandType::Fortify: apply_fortify(cmd); break;
+        case CommandType::ManWorks: apply_man_works(cmd); break;
+        case CommandType::TakeCover: apply_take_cover(cmd); break;
         case CommandType::Stop: apply_stop(cmd); break;
     }
 }
@@ -674,6 +684,7 @@ void World::apply_group_move(const Command& cmd, Order order) {
             u->speed_cap = n > 1 ? slowest : Fixed{};
             u->order_target = 0;
             u->engaged = 0;
+            route_by_trench(*u, goal);  // (from a trench to a tile of it: along it)
         }
     }
 }
@@ -802,7 +813,10 @@ void World::update_unit(Unit& u) {
             break;
 
         case Order::Move:
-            if (navigate(u, u.order_point, u.order_path, u.order_goal, true) != Step::Moved) finish_order();
+            if (navigate(u, u.order_point, u.order_path, u.order_goal, true) != Step::Moved) {
+                finish_order();
+                face_front(u);  // at a position in a trench: to its front
+            }
             if (def_of(u).tank && is_armed(def_of(u))) fire_on_the_move(u);
             break;
 
@@ -849,6 +863,10 @@ void World::update_unit(Unit& u) {
 
         case Order::Build:
             update_building(u);
+            break;
+
+        case Order::Fortify:
+            update_fortify(u);
             break;
 
         case Order::Haul:
@@ -1008,6 +1026,19 @@ World::Step World::navigate(Unit& u, FixedVec2 point, std::shared_ptr<const Flow
                             bool formation) {
     if (def_of(u).fuel_capacity.raw > 0 && u.fuel.raw <= 0) return Step::Blocked;  // dry: going nowhere
     const MoveClass cls = class_of(u);
+
+    // Along a trench to a tile of it: tile by tile, under cover.
+    if (!u.via.empty()) {
+        if (u.via_goal != field_goal) {
+            u.via.clear();
+        } else {
+            if ((tile_center(u.via.front()) - u.pos).length_sq_raw() <= square_raw(kViaReach)) u.via.erase(u.via.begin());
+            if (!u.via.empty()) {
+                if (step_towards(u, tile_center(u.via.front()), formation) != Step::Blocked) return Step::Moved;
+                u.via.clear();  // (in the way: the usual way)
+            }
+        }
+    }
 
     // Close and nothing in the way: walk straight there.
     if ((point - u.pos).length_sq_raw() <= square_raw(kDirectRange) && straight_walkable(map_, u.pos, point, cls)) {
@@ -1300,6 +1331,11 @@ void World::fire(Unit& shooter, FixedVec2 aim, Fixed aim_height, const WeaponDef
         if (works->type == StructureType::Trench && shooter.still < kSettleTicks &&
             weapon.damage_type == DamageType::Bullet) {
             shot.damage_percent = kTrenchWalkingFirePercent;
+        }
+        if (works->type == StructureType::Trench && shooter.still >= kSettleTicks) {  // at a position: the weapon rested
+            if (works->fit == TrenchFit::Cell && weapon.damage_type == DamageType::Bullet) accuracy = accuracy * kCellAimPercent / 100;
+            if (works->fit == TrenchFit::MgNest && shooter.type == UnitTypeId::MachineGunner) accuracy = accuracy * kNestAimPercent / 100;
+            if (works->fit == TrenchFit::AtPost && weapon.damage_type == DamageType::AntiTank) accuracy = accuracy * kAtPostAimPercent / 100;
         }
     }
     if (shooter.type == UnitTypeId::Assault && (aim - shooter.pos).length_sq_raw() <= square_raw(kCloseQuarters)) {
@@ -1635,6 +1671,9 @@ int32_t World::cover_percent(const Unit& victim, const Shot& shot) const {
     if (works->type == StructureType::Foxhole) cover = kFoxholeCover;
     if (works->type == StructureType::GunPit) cover = kGunPitCover;
     if (works->type == StructureType::Trench) cover = victim.still >= kSettleTicks ? kTrenchCover : kTrenchWalkingCover;
+    if (works->type == StructureType::Trench && works->fit != TrenchFit::None && victim.still >= kSettleTicks) {  // at a position
+        cover = works->fit == TrenchFit::MgNest && victim.type == UnitTypeId::MachineGunner ? kNestCover : kPositionCover;
+    }
     if (works->parapet) {
         const FixedVec2 to_shot = shot.from - victim.pos;
         const int64_t front = static_cast<int64_t>(to_shot.x.raw) * works->facing.x.raw +
@@ -1882,6 +1921,15 @@ uint64_t World::checksum() const {
         mix(static_cast<uint32_t>(u.riders.size()));
         for (EntityId id : u.riders) mix(id);
         mix(u.riding);
+        mix(static_cast<uint32_t>(u.via.size()));
+        for (const TilePos& t : u.via) {
+            mix(static_cast<uint32_t>(t.x));
+            mix(static_cast<uint32_t>(t.y));
+        }
+        mix(static_cast<uint32_t>(u.via_goal.x));
+        mix(static_cast<uint32_t>(u.via_goal.y));
+        mix(static_cast<uint32_t>(u.post.x));
+        mix(static_cast<uint32_t>(u.post.y));
         mix(static_cast<uint32_t>(u.queued.size()));
         for (const Unit::Queued& q : u.queued) {
             mix(q.group);
@@ -1995,6 +2043,9 @@ uint64_t World::checksum() const {
         mix(s.antenna);
         mix(static_cast<uint8_t>(s.post));
         mix(static_cast<uint8_t>(s.pit));
+        mix(static_cast<uint8_t>(s.fit));
+        mix(static_cast<uint8_t>(s.fitting));
+        mix_vec(s.fit_facing);
         for (int32_t amount : s.cargo) mix(static_cast<uint32_t>(amount));
         mix(s.next_train);
         mix(s.parapet ? 1 : 0);

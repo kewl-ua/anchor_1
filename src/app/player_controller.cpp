@@ -58,9 +58,14 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         placing_.reset();
         build_menu_ = false;
         convert_menu_ = false;
+        fortify_menu_ = false;
         section_ = 0;
     }
     if (selection_.empty()) targeting_ = Targeting::None;
+    if (!has_foot_soldiers(world)) {
+        fortify_menu_ = false;
+        if (targeting_ == Targeting::Fortify) targeting_ = Targeting::None;
+    }
     if (!has_workers(world)) {
         placing_.reset();
         build_menu_ = false;
@@ -98,6 +103,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
         }
     }
 
+    const bool fortifying = targeting_ == Targeting::Fortify;
+    update_fortify(world, renderer, lockstep, ground_under(world, camera, mouse), over_hud,
+                   IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !hud.button_at(mouse), IsMouseButtonReleased(MOUSE_BUTTON_LEFT), shift);
+
     // Orders can target the minimap too, like in AoE II.
     const std::optional<Vector2> minimap_ground = hud.minimap_to_ground(mouse);
 
@@ -115,8 +124,8 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
                     build_menu_ = false;
                 }
             }
-        } else if (aiming_line) {
-            // handled above: a line is dragged
+        } else if (aiming_line || fortifying) {
+            // handled above: dragged
         } else if (targeting() && target) {
             if (targeting_ == Targeting::AttackMove) order_attack_move(lockstep, renderer, *target);
             if (targeting_ == Targeting::AttackGround) order_attack_ground(lockstep, renderer, *target);
@@ -221,6 +230,10 @@ void PlayerController::update(const engine::World& world, net::Lockstep& lockste
             } else if (structure && structure->type == engine::StructureType::Hospital && structure->owner == player_ &&
                        structure->built && has_foot_soldiers(world)) {
                 order_garrison(lockstep, structure->id);  // the wounded to their beds
+            } else if (structure && structure->owner == player_ && has_foot_soldiers(world) &&
+                       (structure->type == engine::StructureType::Trench || structure->type == engine::StructureType::Foxhole ||
+                        structure->type == engine::StructureType::GunPit)) {
+                order_man_works(lockstep, world, renderer, structure->tiles.front());  // each to a place along it
             } else if (structure && structure->owner != engine::kNoOwner && structure->owner != player_) {
                 // The enemy's (a house or dugout he holds, his headquarters...): shelled, as AoE II attacks a building.
                 order_attack_ground(lockstep, renderer, render::to_vector2(structure->center));
@@ -367,6 +380,12 @@ void PlayerController::update_hint(const engine::World& world, const render::Rts
     if (s && s->type == engine::StructureType::Workshop && s->owner == player_ && s->built && has_vehicles(world)) {
         hint_ = "RMB: to the workshop: parked by it, vehicles get repaired (a material a second each)";
         cursor_ = hud::Cursor::Build;
+        return;
+    }
+    if (s && s->owner == player_ && has_foot_soldiers(world) &&
+        (s->type == engine::StructureType::Trench || s->type == engine::StructureType::Foxhole || s->type == engine::StructureType::GunPit)) {
+        hint_ = "RMB: man the trench: each to a place along it (nests, posts, cells first)";
+        cursor_ = hud::Cursor::Enter;
         return;
     }
     if (s && s->owner != engine::kNoOwner && s->owner != player_) {
@@ -524,10 +543,30 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             put(0, Action::Upgrade, 0, "Dugout", "Dig it out into a dugout: the men standing in it do the work",
                 engine::kDugoutCost)
                 .enabled = !s->upgrading;
+            put(5, Action::FitTile, static_cast<uint8_t>(engine::TrenchFit::Parapet), "Parapet",
+                "A breastwork on its front (the men standing in it do the work)")
+                .enabled = world.can_fit(player_, s->tiles.front(), engine::TrenchFit::Parapet);
+        }
+        if (s->type == engine::StructureType::Trench) {  // what to fit into this tile of it: the men standing in it dig
+            static constexpr engine::TrenchFit kTileFits[] = {engine::TrenchFit::Cell, engine::TrenchFit::MgNest, engine::TrenchFit::AtPost,
+                                                              engine::TrenchFit::MortarPost, engine::TrenchFit::Dugout, engine::TrenchFit::Parapet};
+            static constexpr const char* kLabels[] = {"Cell", "MG nest", "AT post", "Mortar pos.", "Dugout", "Parapet"};
+            for (size_t i = 0; i < std::size(kTileFits); ++i) {
+                const engine::FitDef& fit = engine::fit_def(kTileFits[i]);
+                put(i, Action::FitTile, static_cast<uint8_t>(kTileFits[i]), kLabels[i],
+                    TextFormat("%s here, the men standing in it digging (%d s for one)", fit.name,
+                               static_cast<int>(fit.work / engine::kTicksPerSecond)),
+                    fit.cost)
+                    .enabled = world.can_fit(player_, s->tiles.front(), kTileFits[i]);
+            }
         }
         if ((engine::is_shelter(engine::role_of(*s)) || s->type == engine::StructureType::Hospital) &&
             !s->garrison.empty()) {
-            put(0, Action::Unload, 0, "Leave", "Everyone out");
+            if (s->type == engine::StructureType::Dugout) {
+                put(0, Action::Unload, 0, "Positions", "To positions: out, each back to his place in the trench");
+            } else {
+                put(0, Action::Unload, 0, "Leave", "Everyone out");
+            }
         }
         // What it hires along the top row, what it researches along the bottom
         // row, then the middle one. What doesn't fit is nested in sections:
@@ -595,6 +634,35 @@ void PlayerController::rebuild_grid(const engine::World& world) {
     const std::optional<engine::UnitTypeId> lead = leading_type(world);
     if (!lead) return;
     const engine::UnitTypeDef& def = engine::unit_type(*lead);
+
+    if (!def.vehicle && fortify_menu_) {
+        // What they can fit into a trench, as the walls' towers and gates in AoE II.
+        struct Fit {
+            engine::TrenchFit fit;
+            const char* label;
+            const char* tooltip;
+        };
+        static constexpr Fit kFits[] = {
+            {engine::TrenchFit::Cell, "Cell",
+             "Firing cell on a trench tile: a step, a niche. A man at it: 60% cover, +10% aim with small arms. 6 s of digging for one man"},
+            {engine::TrenchFit::MgNest, "MG nest",
+             "Machine-gun nest on a trench tile, sandbagged round. A machine gunner in it: 65% cover, +25% aim. 10 s"},
+            {engine::TrenchFit::AtPost, "AT post",
+             "Anti-tank post on a trench tile: the RPG's, room behind for its blast. 60% cover, the RPG +25% aim at vehicles. 8 s"},
+            {engine::TrenchFit::MortarPost, "Mortar pos.",
+             "Mortar position off a trench tile: a round pit for a mortar or an AGS, 60% cover. 10 s"},
+            {engine::TrenchFit::Dugout, "Dugout",
+             "Dugout on a trench tile or a foxhole: 8 men, bullets and fragments don't reach them. 20 s (up to 4 men dig)"},
+            {engine::TrenchFit::Parapet, "Parapet",
+             "Breastworks along the trench: drag a line over it. +25% cover against fire from the front. 5 s a tile"},
+        };
+        for (size_t i = 0; i < std::size(kFits); ++i) {
+            put(i, Action::Fortify, static_cast<uint8_t>(kFits[i].fit), kFits[i].label, kFits[i].tooltip, engine::fit_def(kFits[i].fit).cost)
+                .active = targeting_ == Targeting::Fortify && fortifying_ == kFits[i].fit;
+        }
+        put(14, Action::Back, 0, "Back", "Back (Esc)");
+        return;
+    }
 
     if (def.worker && build_menu_) {
         // Barracks along the top and middle rows, depots along the bottom one.
@@ -773,6 +841,14 @@ void PlayerController::rebuild_grid(const engine::World& world) {
             targeting_ == Targeting::AttackMove;
     }
     put(6, Action::Stop, 0, "Stop", "Stop");
+    if (!def.vehicle) {
+        put(8, Action::FortifyMenu, 0, "Fortify",
+            "Fortify the trench (as walls and towers in AoE II): firing cells, machine-gun nests, anti-tank posts, "
+            "mortar positions, dugouts, breastworks. RMB on our trench: man it, each to a place along it");
+        put(7, Action::TakeCover, 0, "Cover",
+            "Take cover: into the nearest dugout along the trench, each remembering his place "
+            "(the dugout's 'Positions' brings them back)");
+    }
     if (def.troop_capacity > 0) {
         int aboard = 0;
         for (engine::EntityId id : selection_) {
@@ -802,6 +878,32 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Stop: order_stop(lockstep); break;
         case Action::Retrain: order_retrain(lockstep); break;
         case Action::BuildMenu: build_menu_ = true; break;
+        case Action::FortifyMenu: fortify_menu_ = true; break;
+        case Action::Fortify:
+            targeting_ = Targeting::Fortify;
+            fortifying_ = static_cast<engine::TrenchFit>(cell.param);
+            fortify_press_.reset();
+            break;
+        case Action::FitTile: {
+            // The tile selected: marked for it, paid; the men standing in it dig.
+            const engine::Structure* s = world.find_structure(selected_structure_);
+            if (!s) break;
+            const engine::TilePos t = s->tiles.front();
+            const Vector2 c = render::to_vector2(engine::tile_center(t));
+            const Vector2 f = default_facing(world, t);
+            send(lockstep, {.type = engine::CommandType::Fortify, .target = engine::tile_center(t), .structure_type = cell.param,
+                            .target_end = render::to_fixed_vec2({c.x + f.x, c.y + f.y})});
+            break;
+        }
+        case Action::TakeCover: {
+            engine::Command cover{.type = engine::CommandType::TakeCover};
+            for (engine::EntityId id : selection_) {
+                const engine::Unit* u = world.find_unit(id);
+                if (u && !engine::unit_type(u->type).vehicle) cover.units.push_back(id);
+            }
+            if (!cover.units.empty()) send(lockstep, std::move(cover));
+            break;
+        }
         case Action::ConvertMenu: convert_menu_ = true; break;
         case Action::Section:
             section_ = selected_structure_;
@@ -811,8 +913,9 @@ void PlayerController::press_cell(net::Lockstep& lockstep, const engine::World& 
         case Action::Back:
             build_menu_ = false;
             convert_menu_ = false;
+            fortify_menu_ = false;
             section_ = 0;
-            if (targeting_ == Targeting::Convert) targeting_ = Targeting::None;
+            if (targeting_ == Targeting::Convert || targeting_ == Targeting::Fortify) targeting_ = Targeting::None;
             break;
         case Action::Convert:
             targeting_ = Targeting::Convert;
@@ -927,6 +1030,122 @@ void PlayerController::update_placement(const engine::World& world, const render
         static_cast<int32_t>(std::floor(ground.y - static_cast<float>(def.height) * 0.5f + 0.5f))};
     const bool affordable = engine::can_afford(world.stock(player_), def.cost);
     placement_ = Placement{*placing_, origin, affordable && world.can_place(*placing_, origin)};
+}
+
+Vector2 PlayerController::default_facing(const engine::World& world, engine::TilePos t) const {
+    const engine::Structure* s = world.structure_at(t);
+    if (s && (s->parapet || s->fit != engine::TrenchFit::None)) {
+        const Vector2 f = render::to_vector2(s->facing);
+        const float l = std::hypot(f.x, f.y);
+        if (l > 0.0f) return {f.x / l, f.y / l};
+    }
+    // Away from home: from our headquarters to it.
+    const Vector2 c = render::to_vector2(engine::tile_center(t));
+    for (const engine::Structure& hq : world.structures()) {
+        if (hq.type != engine::StructureType::Headquarters || hq.owner != player_) continue;
+        const Vector2 d{c.x - render::to_vector2(hq.center).x, c.y - render::to_vector2(hq.center).y};
+        const float l = std::hypot(d.x, d.y);
+        if (l > 0.0f) return {d.x / l, d.y / l};
+    }
+    return {0.7071f, -0.7071f};
+}
+
+// Fitting out the trench: the ghost follows the cursor over it; the button
+// pressed on a tile and let go (dragged: the way it faces; a parapet: along
+// the line) sends the order.
+void PlayerController::update_fortify(const engine::World& world, render::WorldRenderer& renderer, net::Lockstep& lockstep, Vector2 here,
+                                      bool over_hud, bool pressed, bool released, bool shift) {
+    render::WorldRenderer::FortifyGhost ghost;
+    if (targeting_ != Targeting::Fortify) {
+        fortify_press_.reset();
+        renderer.set_fortify_ghost(std::move(ghost));
+        return;
+    }
+    auto tile = [](Vector2 g) { return engine::TilePos{static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))}; };
+    if (pressed && !over_hud) fortify_press_ = here;
+    const Vector2 from = fortify_press_ ? *fortify_press_ : here;
+    if (fortifying_ == engine::TrenchFit::Parapet) {
+        for (const engine::TilePos& t : engine::trench_line(tile(from), tile(here))) {
+            ghost.tiles.push_back(t);
+            ghost.valid.push_back(world.can_fit(player_, t, fortifying_));
+        }
+    } else if (!over_hud || fortify_press_) {
+        const engine::TilePos t = tile(from);
+        ghost.tiles.push_back(t);
+        ghost.valid.push_back(world.can_fit(player_, t, fortifying_));
+        const Vector2 c = render::to_vector2(engine::tile_center(t));
+        Vector2 f{here.x - c.x, here.y - c.y};
+        const float l = std::hypot(f.x, f.y);
+        f = fortify_press_ && l > 0.35f ? Vector2{f.x / l, f.y / l} : default_facing(world, t);
+        ghost.arrow = true;
+        ghost.from = c;
+        ghost.to = {c.x + f.x * 0.7f, c.y + f.y * 0.7f};
+    }
+    if (fortify_press_ && released) {
+        order_fortify(lockstep, world, renderer, *fortify_press_, here);
+        fortify_press_.reset();
+        if (!shift) targeting_ = Targeting::None;  // shift keeps it armed for more
+    }
+    renderer.set_fortify_ghost(std::move(ghost));
+}
+
+void PlayerController::order_fortify(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer, Vector2 from,
+                                     Vector2 to) {
+    engine::Command base{.type = engine::CommandType::Fortify, .structure_type = static_cast<uint8_t>(fortifying_)};
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (u && !engine::unit_type(u->type).vehicle) base.units.push_back(id);
+    }
+    if (base.units.empty()) return;
+    auto tile = [](Vector2 g) { return engine::TilePos{static_cast<int32_t>(std::floor(g.x)), static_cast<int32_t>(std::floor(g.y))}; };
+    if (fortifying_ == engine::TrenchFit::Parapet) {
+        // Along the line, over its trench tiles: facing across it, away from home.
+        Vector2 d{to.x - from.x, to.y - from.y};
+        const float l = std::hypot(d.x, d.y);
+        const Vector2 away = default_facing(world, tile(from));
+        Vector2 n = l > 0.3f ? Vector2{-d.y / l, d.x / l} : away;
+        if (n.x * away.x + n.y * away.y < 0.0f) n = {-n.x, -n.y};
+        const bool queue = queue_next_;
+        bool first = true;
+        for (const engine::TilePos& t : engine::trench_line(tile(from), tile(to))) {
+            if (!world.can_fit(player_, t, fortifying_)) continue;
+            const Vector2 c = render::to_vector2(engine::tile_center(t));
+            engine::Command cmd = base;
+            cmd.target = engine::tile_center(t);
+            cmd.target_end = render::to_fixed_vec2({c.x + n.x, c.y + n.y});
+            queue_next_ = queue || !first;  // (one after the other)
+            send(lockstep, std::move(cmd));
+            first = false;
+        }
+        queue_next_ = queue;
+        if (!first) renderer.add_order_ping(to, false);
+        return;
+    }
+    const engine::TilePos t = tile(from);
+    if (!world.can_fit(player_, t, fortifying_)) return;
+    const Vector2 c = render::to_vector2(engine::tile_center(t));
+    Vector2 f{to.x - c.x, to.y - c.y};
+    const float l = std::hypot(f.x, f.y);
+    f = l > 0.35f ? Vector2{f.x / l, f.y / l} : default_facing(world, t);
+    base.target = engine::tile_center(t);
+    base.target_end = render::to_fixed_vec2({c.x + f.x, c.y + f.y});
+    send(lockstep, std::move(base));
+    renderer.add_order_ping(c, false);
+}
+
+// Man the trench: the foot soldiers each to a place along it; the rest just go there.
+void PlayerController::order_man_works(net::Lockstep& lockstep, const engine::World& world, render::WorldRenderer& renderer,
+                                       engine::TilePos tile) {
+    engine::Command man{.type = engine::CommandType::ManWorks, .target = engine::tile_center(tile)};
+    engine::Command move{.type = engine::CommandType::Move, .target = engine::tile_center(tile)};
+    for (engine::EntityId id : selection_) {
+        const engine::Unit* u = world.find_unit(id);
+        if (!u) continue;
+        (engine::unit_type(u->type).vehicle ? move : man).units.push_back(id);
+    }
+    if (!man.units.empty()) send(lockstep, std::move(man));
+    if (!move.units.empty()) send(lockstep, std::move(move));
+    renderer.add_order_ping(render::to_vector2(engine::tile_center(tile)), false);
 }
 
 void PlayerController::select_army(const engine::World& world) {

@@ -8143,7 +8143,12 @@ std::optional<works::Spec> works_now(const engine::World& world, int tx, int ty,
         const Vector2 f = to_vector2(s->facing);
         if (f.x != 0.0f || f.y != 0.0f) spec.facing = f;
         spec.parapet = s->parapet;
-        spec.upgrading = s->upgrading;
+        spec.upgrading = s->upgrading && s->fitting == engine::TrenchFit::Dugout;
+        spec.fit = static_cast<uint8_t>(s->fit);
+        spec.fitting = s->upgrading ? static_cast<uint8_t>(s->fitting) : 0;
+        if (s->upgrading && (s->fit_facing.x.raw != 0 || s->fit_facing.y.raw != 0) && s->fit == engine::TrenchFit::None) {
+            spec.facing = to_vector2(s->fit_facing);  // (what's being made faces its own way)
+        }
         const int32_t max_hp = engine::structure_type(s->type).max_hp;
         spec.damage = max_hp > 0 ? damage_stage(1.0f - static_cast<float>(s->hp) / static_cast<float>(max_hp)) : 0;
     }
@@ -8221,7 +8226,8 @@ uint32_t look_of(const works::Area& area) {
         const works::Spec& s = area.spec[k];
         in(static_cast<uint32_t>(s.kind));
         in(s.links);
-        in((s.parapet ? 1u : 0u) | (s.upgrading ? 2u : 0u) | static_cast<uint32_t>(s.damage) << 2);
+        in((s.parapet ? 1u : 0u) | (s.upgrading ? 2u : 0u) | static_cast<uint32_t>(s.damage) << 2 | static_cast<uint32_t>(s.fit) << 4 |
+           static_cast<uint32_t>(s.fitting) << 8);
         in(static_cast<uint32_t>(std::lround(std::atan2(s.facing.y, s.facing.x) * 8.0f / 3.14159265f)) & 15u);
     }
     return h;
@@ -8373,6 +8379,28 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
         const Color color = world.diggable(t) ? theme::kSelection : theme::kDanger;
         fill_quad(on_terrain(map, {x, y}), on_terrain(map, {x + 1, y}), on_terrain(map, {x + 1, y + 1}),
                   on_terrain(map, {x, y + 1}), ColorAlpha(color, 0.3f));
+    }
+    // What's being fitted into the trench, where, facing which way.
+    for (size_t i = 0; i < fortify_ghost_.tiles.size(); ++i) {
+        const engine::TilePos t = fortify_ghost_.tiles[i];
+        const auto x = static_cast<float>(t.x);
+        const auto y = static_cast<float>(t.y);
+        const Color color = i < fortify_ghost_.valid.size() && fortify_ghost_.valid[i] ? theme::kSelection : theme::kDanger;
+        const Vector2 c[4] = {on_terrain(map, {x, y}), on_terrain(map, {x + 1, y}), on_terrain(map, {x + 1, y + 1}), on_terrain(map, {x, y + 1})};
+        fill_quad(c[0], c[1], c[2], c[3], ColorAlpha(color, 0.25f));
+        for (int k = 0; k < 4; ++k) DrawLineEx(c[k], c[(k + 1) % 4], 1.5f, ColorAlpha(color, 0.9f));
+    }
+    if (fortify_ghost_.arrow) {
+        const Vector2 a = on_terrain(map, fortify_ghost_.from, 2.0f);
+        const Vector2 b = on_terrain(map, fortify_ghost_.to, 2.0f);
+        const Vector2 d{b.x - a.x, b.y - a.y};
+        const float l = std::max(0.001f, std::hypot(d.x, d.y));
+        const Vector2 u{d.x / l, d.y / l};
+        DrawLineEx(a, b, 2.0f, {245, 240, 220, 230});
+        DrawTriangle(b, {b.x - u.x * 7.0f - u.y * 4.0f, b.y - u.y * 7.0f + u.x * 4.0f}, {b.x - u.x * 7.0f + u.y * 4.0f, b.y - u.y * 7.0f - u.x * 4.0f},
+                     {245, 240, 220, 230});
+        DrawTriangle(b, {b.x - u.x * 7.0f + u.y * 4.0f, b.y - u.y * 7.0f - u.x * 4.0f}, {b.x - u.x * 7.0f - u.y * 4.0f, b.y - u.y * 7.0f + u.x * 4.0f},
+                     {245, 240, 220, 230});
     }
     if (const engine::Structure* s = world.find_structure(selected_structure)) {
         const Rectangle r = footprint(*s, -0.15f);
@@ -9982,7 +10010,9 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose_raw(const engine::Uni
                           u.order_ability == AbilityId::LayWire || u.order_ability == AbilityId::PlaceHedgehogs ||
                           u.order_ability == AbilityId::BuildPillbox || u.order_ability == AbilityId::LayApMine ||
                           u.order_ability == AbilityId::LayAtMine || u.order_ability == AbilityId::ClearMines);
-    if ((u.type == UnitTypeId::Worker && u.order == Order::Build) || digging) return {Pose::Work, static_cast<int>(t * 2.2f) % 2};
+    if ((u.type == UnitTypeId::Worker && u.order == Order::Build) || digging || u.order == Order::Fortify) {
+        return {Pose::Work, static_cast<int>(t * 2.2f) % 2};
+    }
     if ((u.type == UnitTypeId::Mortar || u.type == UnitTypeId::Ags) &&
         (u.deployed || u.engaged != 0 || u.order == Order::AttackGround || shot < 3.0f)) {
         return {Pose::Crew, 0};
