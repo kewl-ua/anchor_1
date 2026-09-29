@@ -111,6 +111,7 @@ private:
         Vector2 facing{1.0f, 0.0f};
         uint32_t seed = 0;
         bool sunk = false;   // a tank that went under in a bog
+        bool drowned = false;  // a man who died in the water (see draw_drowned)
         bool blown = false;  // a tank whose rounds went up: its turret thrown off
         uint8_t cargo = 0;   // a truck's load (see Cargo): what burns, goes off, lies about
         float height = 0.0f;  // up in the air when last seen, pixels (an aircraft's)
@@ -121,6 +122,8 @@ private:
         Vector2 from{};
         bool crashed = false;
     };
+    // A man dead in the water: face down, bloated, gone down, or down and up again.
+    void draw_drowned(const engine::TileMap& map, const Remains& r, float fade) const;
     // Where an aircraft coming down is now: over the ground, up (pixels), the way its nose points.
     static void fall_of(const Remains& r, Vector2& ground, float& z, Vector2& dir);
     // Smoke, flames, clods of earth, spray, sparks, a muzzle's flash, spent
@@ -372,6 +375,8 @@ private:
     const SpriteSheet* sheet(SpritePart part, int variant, engine::PlayerId owner) const;
     // `cut`: nothing drawn below that screen line (what's sunk in a pit, down in a trench).
     void draw_sprite(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint = WHITE, float cut = 1e9f) const;
+    // A sprite seen through the water: wavering row by row.
+    void draw_sprite_wavy(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint, float phase) const;
     // Fog state of a tile for the viewer.
     static constexpr int kUnexplored = 0;
     static constexpr int kRemembered = 1;  // explored, not in view now

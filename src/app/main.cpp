@@ -575,6 +575,47 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene == "drowned_men" && options.mode == Options::Mode::Offline) {
+        // Offline: men of both sides in the river nearest the base, killed
+        // there on the 20th tick: face down, bloated, gone down, come up again.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const Vector2 b = render::to_vector2(base);
+        const engine::TileMap& map = world.map();
+        std::optional<engine::TilePos> water;
+        float best = 1e9f;
+        for (int32_t y = 0; y < map.height(); ++y) {
+            for (int32_t x = 0; x < map.width(); ++x) {
+                if (map.terrain(x, y) != engine::Terrain::Water) continue;
+                const float d = std::hypot(static_cast<float>(x) + 0.5f - b.x, static_cast<float>(y) + 0.5f - b.y);
+                bool bridge_near = false;  // (open water, away from the bridges)
+                for (int32_t dy = -6; dy <= 6 && !bridge_near; ++dy) {
+                    for (int32_t dx = -6; dx <= 6; ++dx) bridge_near = bridge_near || (map.contains_tile(x + dx, y + dy) && map.terrain(x + dx, y + dy) == engine::Terrain::Bridge);
+                }
+                if (d < best && d >= 12.0f && !bridge_near) {
+                    best = d;
+                    water = engine::TilePos{x, y};
+                }
+            }
+        }
+        if (!water) return std::nullopt;
+        engine::World& w = game.world_for_setup();
+        int n = 0;
+        for (int32_t dy = -3; dy <= 3 && n < 10; ++dy) {
+            for (int32_t dx = -3; dx <= 3 && n < 10; ++dx) {
+                const engine::TilePos t{water->x + dx, water->y + dy};
+                if (!map.contains(t) || map.terrain(t) != engine::Terrain::Water || (dx + dy) % 2 != 0) continue;
+                const engine::EntityId id = w.spawn_unit(static_cast<engine::PlayerId>(n % 2 == 0 ? me : 1 - me), engine::UnitTypeId::Rifleman,
+                                                         engine::tile_center(t));
+                engine::Unit* u = w.unit_for_setup(id);  // (out in the water, where no one could stand)
+                u->pos = u->prev_pos = engine::tile_center(t);
+                g_doomed.push_back(id);
+                ++n;
+            }
+        }
+        g_doom_tick = 2;
+        return render::to_vector2(engine::tile_center(*water));
+    }
+
     if (options.scene.starts_with("mines") && options.mode == Options::Mode::Offline) {
         // Offline: the axes' mines out in the field ahead of the base, a row
         // of each: ours (TM-62M, M14, Claymores) and the enemy's our sapper

@@ -36,6 +36,7 @@ constexpr float kBlastLifetime = 3.6f;  // (the longest blast's sheet: a crash's
 constexpr float kMushroomBlast = 4.5f;  // a Blast this big (tiles) is an aircraft's crash: the mushroom
 constexpr float kWreckLifetime = 25.0f;
 constexpr float kBodyLifetime = 20.0f;
+constexpr float kDrownedLifetime = 120.0f;  // the river keeps them a while
 
 // A circle of radius 1 tile on the ground is drawn as an ellipse with these semi-axes.
 constexpr float kCircleRx = iso::kTileWidth * 0.5f * 1.41421356f;
@@ -1587,6 +1588,25 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         }
         remains_.push_back(last);
         remains_.back().blown = std::find(blown.begin(), blown.end(), id) != blown.end();
+        if (!last.vehicle) {
+            const engine::TilePos t = world.map().clamp_tile({static_cast<int32_t>(std::floor(last.ground.x)), static_cast<int32_t>(std::floor(last.ground.y))});
+            if (world.map().terrain(t) == engine::Terrain::Water) {  // into the river: a splash
+                remains_.back().drowned = true;
+                for (int i = 0; i < 12; ++i) {
+                    const float a = fx_random() * 6.2831853f;
+                    Particle p{};
+                    p.kind = Particle::Kind::Spray;
+                    p.ground = last.ground;
+                    p.z = 1.0f;
+                    p.vel = {std::cos(a) * 0.5f * fx_random(), std::sin(a) * 0.5f * fx_random()};
+                    p.vz = 30.0f + 40.0f * fx_random();
+                    p.life = 0.7f + 0.4f * fx_random();
+                    p.size = 1.2f + fx_random();
+                    p.color = {222, 232, 236, 255};
+                    particles_.push_back(p);
+                }
+            }
+        }
         if (remains_.back().blown && !last.sunk) {  // its rounds going up: a fireball, black smoke boiling up
             spawn_flash(last.ground, 12.0f, 18.0f, {255, 236, 170, 255});
             blasts_.push_back({last.ground, 0.0f, 1.6f, 4.0f});
@@ -2248,7 +2268,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     std::erase_if(blasts_, [](const Blast& b) { return b.age >= kBlastLifetime; });
     std::erase_if(remains_, [](const Remains& r) {
         const bool whole = drawn_as_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner).has_value() || gun_or_plane(engine::unit_type(r.type));
-        const float life = whole ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : kBodyLifetime;
+        const float life = whole ? kTankWreckLifetime : r.vehicle ? kWreckLifetime : r.drowned ? kDrownedLifetime : kBodyLifetime;
         return r.age >= life;
     });
 }
@@ -10234,10 +10254,12 @@ void WorldRenderer::draw_remains(const engine::TileMap& map) const {
         if (drawn_as_armor(engine::unit_type(r.type)) || truck_model(r.type, r.owner) || gun_or_plane(engine::unit_type(r.type))) {
             continue;  // drawn whole, with the others (draw_wreck)
         }
-        const float lifetime = r.vehicle ? kWreckLifetime : kBodyLifetime;
+        const float lifetime = r.vehicle ? kWreckLifetime : r.drowned ? kDrownedLifetime : kBodyLifetime;
         const float fade = std::clamp((lifetime - r.age) / 3.0f, 0.0f, 1.0f);  // fade out over the last 3 s
         const Vector2 p = on_terrain(map, r.ground);
-        if (r.vehicle) {
+        if (r.drowned) {
+            draw_drowned(map, r, fade);
+        } else if (r.vehicle) {
             draw_scorch(p, 0, false, fade, r.seed);
         } else {
             // He falls: reeling, on his knees, down on his back; blood under him spreading.
@@ -10248,6 +10270,73 @@ void WorldRenderer::draw_remains(const engine::TileMap& map) const {
             draw_sprite(soldier_sheet(kit_of(r.type), r.owner), p, r.facing, soldiers::first_frame(soldiers::Pose::Die) + f,
                         ColorAlpha(WHITE, fade));
         }
+    }
+}
+
+// A man dead in the water, as his seed has it. Face down, low in it, his
+// back and his helmet out, bobbing, the water lapping in rings round him;
+// bloated, high on his back, spread out; gone down, a dark shape under the
+// surface wavering, bubbles coming up; or gone down and, a few seconds on,
+// come up again. Every one of them first goes under in the splash and his
+// blood spreads thin on the water.
+void WorldRenderer::draw_drowned(const engine::TileMap& map, const Remains& r, float fade) const {
+    const int kind = static_cast<int>((r.seed >> 9) % 4u);
+    const float t = static_cast<float>(GetTime());
+    const float phase = static_cast<float>(r.seed % 628u) * 0.01f;
+    const Vector2 p = on_terrain(map, r.ground);
+    const bool bloated = kind == 1;
+    const bool stays_down = kind == 2;
+    // Lying across the view as the water has turned him (end on, he'd look to be standing in it).
+    static constexpr float kAcross[] = {-0.785f, 0.0f, -1.571f, 2.356f, 1.571f, 3.1416f};
+    const float turn = kAcross[(r.seed >> 13) % 6u];
+    const Vector2 lie{std::cos(turn), std::sin(turn)};
+    // How far under: all of him going down in the splash; the one who comes up again after 6 s, over 3.
+    float under = 1.0f - std::clamp((r.age - 0.3f) / 1.2f, 0.0f, 1.0f);
+    if (stays_down) under = 1.0f;
+    if (kind == 3) under = 1.0f - std::clamp((r.age - 6.0f) / 3.0f, 0.0f, 1.0f);
+    // His blood, thin on the water, spreading.
+    fill_ground_ellipse(p, 0.08f + 0.28f * std::min(1.0f, r.age / 12.0f), ColorAlpha({128, 62, 54, 255}, 0.14f * fade));
+    const SpriteSheet& sheet = soldier_sheet(kit_of(r.type), r.owner);
+    const soldiers::Pose pose = bloated ? soldiers::Pose::Bloated : soldiers::Pose::Float;
+    const int frame = soldiers::first_frame(pose) + (bloated ? 0 : static_cast<int>(t * 0.6f + phase) % 2);
+    if (under > 0.0f) {  // under the surface: dim, blue-green, wavering, deeper the more under
+        const Vector2 deep{p.x, p.y + 3.0f * under};
+        draw_sprite_wavy(sheet, deep, lie, frame, ColorAlpha({86, 116, 128, 255}, 0.55f * under * fade), t * 3.0f + phase);
+        if (r.age < 45.0f) {  // bubbles coming up
+            for (int k = 0; k < 3; ++k) {
+                const float q = std::fmod(t * 0.7f + phase + static_cast<float>(k) * 0.37f, 1.0f);
+                if (q > 0.55f) continue;
+                const Vector2 b{p.x + std::sin(static_cast<float>(k) * 2.3f + phase) * 4.0f, p.y + 1.0f - q * 6.0f * under};
+                DrawCircleLinesV(b, 1.0f, lit(ColorAlpha({214, 230, 234, 255}, (1.0f - q / 0.55f) * 0.8f * fade)));
+            }
+        }
+    }
+    if (under < 1.0f) {  // afloat: wet and dark, bobbing; the near side under the water
+        const float bob = std::sin(t * 1.4f + phase) * (bloated ? 0.8f : 0.5f);
+        const float up = bloated ? -1.0f : 0.5f;  // (the bloated ride high, the others low)
+        draw_sprite(sheet, {p.x, p.y + up + bob}, lie, frame, ColorAlpha({170, 176, 172, 255}, (1.0f - under) * fade));
+        fill_ground_ellipse({r.ground.x + 0.08f, r.ground.y + 0.08f}, bloated ? 0.18f : 0.26f,
+                            ColorAlpha({64, 98, 118, 255}, (bloated ? 0.2f : 0.38f) * (1.0f - under) * fade));
+        // The water lapping round him in rings.
+        for (int k = 0; k < 2; ++k) {
+            const float q = std::fmod(t * 0.35f + phase + static_cast<float>(k) * 0.5f, 1.0f);
+            draw_ground_ellipse(p, 0.22f + 0.3f * q, ColorAlpha({206, 222, 226, 255}, 0.4f * (1.0f - q) * (1.0f - under) * fade));
+        }
+    }
+}
+
+// Row by row, each pixel row shifted a little side to side with the ripple.
+void WorldRenderer::draw_sprite_wavy(const SpriteSheet& sheet, Vector2 at, Vector2 dir, int frame, Color tint, float phase) const {
+    float a = std::atan2(dir.y, dir.x);
+    if (a < 0.0f) a += 6.2831853f;
+    const int d = static_cast<int>(std::lround(a / 6.2831853f * static_cast<float>(sheet.dirs))) % sheet.dirs;
+    const float x0 = std::round(at.x - sheet.origin.x);
+    const float y0 = std::round(at.y - sheet.origin.y);
+    for (int row = 0; row < sheet.h; row += 2) {
+        const float shift = std::round(std::sin(phase + static_cast<float>(row) * 0.7f) * 1.2f);
+        const Rectangle src{static_cast<float>(d * sheet.w), static_cast<float>((frame % sheet.frames) * sheet.h + row), static_cast<float>(sheet.w), 2.0f};
+        const Rectangle dst{x0 + shift, y0 + static_cast<float>(row), static_cast<float>(sheet.w), 2.0f};
+        DrawTexturePro(sheet.atlas, src, dst, {0.0f, 0.0f}, 0.0f, lit(tint));
     }
 }
 

@@ -30,6 +30,8 @@ enum class Pose : uint8_t {
     Heave,      // throwing his load up into a truck's bed, down by a door: lifting it, away
     CarryBars,    // walking to the base with a bundle of short sawn bars in his arms (no truck at the wood)
     CarryBlocks,  // the same with a few blocks of stone
+    Float,        // drowned: face down in the water, his arms out ahead, his legs trailing (a sway of them)
+    Bloated,      // drowned a while: swollen, on his back, arms and legs spread, his helmet gone
     Count,
 };
 

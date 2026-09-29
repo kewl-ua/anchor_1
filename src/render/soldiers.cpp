@@ -15,7 +15,7 @@ namespace {
 // before the ground is squashed to half its height).
 constexpr float kPxPerTile = iso::kTileWidth * 0.5f * 1.41421356f;
 
-constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1, 2, 8, 8, 2, 8, 8};
+constexpr std::array<int, static_cast<size_t>(Pose::Count)> kFrames = {2, 8, 2, 2, 2, 2, 3, 1, 4, 2, 1, 2, 1, 2, 8, 8, 2, 8, 8, 2, 1};
 
 // A point on him: ahead, to his left, up (pixels).
 struct V3 {
@@ -68,6 +68,8 @@ struct Body {
     bool blocks = false;  // a few blocks of stone in his arms
     bool grenade = false;  // one in his right hand
     bool bipod = false;    // the machine gun on its legs
+    float bloat = 1.0f;    // swollen: his body and limbs this much thicker
+    bool bareheaded = false;  // his helmet gone
 };
 
 Body mix(const Body& a, const Body& b, float t) {
@@ -505,6 +507,37 @@ Body pose(Kit kit, Pose p, int i) {
             b.none = unarmed(kit);
             break;
         }
+        case Pose::Float: {  // face down, low in the water: arms out ahead, legs trailing and sagging
+            const float sway = static_cast<float>(i) * 0.5f;
+            b.pelvis = {-3.2f, 0.0f, 0.5f};
+            hips(b);
+            b.knee[0] = {-7.4f, -1.5f, 0.1f};
+            b.knee[1] = {-7.2f, 1.6f, 0.0f};
+            b.foot[0] = {-11.0f, -2.1f - sway * 0.6f, -0.5f};
+            b.foot[1] = {-10.7f, 2.2f + sway * 0.4f, -0.6f};
+            upper(b, {1.4f, 0.0f, 0.8f}, {4.3f, 0.0f, 0.3f});
+            b.shoulder[0].z = b.shoulder[1].z = 0.9f;
+            b.hand[0] = {5.0f + sway, -4.4f, -0.1f};
+            b.hand[1] = {5.5f - sway, 4.3f, -0.2f};
+            b.none = true;  // (his weapon gone down)
+            break;
+        }
+        case Pose::Bloated: {  // on his back, swollen, spread out, riding high
+            b.pelvis = {-2.6f, 0.0f, 1.6f};
+            hips(b);
+            b.knee[0] = {-6.6f, -2.7f, 1.7f};
+            b.knee[1] = {-6.4f, 2.8f, 1.8f};
+            b.foot[0] = {-10.2f, -3.9f, 1.1f};
+            b.foot[1] = {-10.0f, 4.0f, 1.2f};
+            upper(b, {1.6f, 0.0f, 2.3f}, {4.5f, 0.0f, 1.7f});
+            b.shoulder[0].z = b.shoulder[1].z = 2.4f;
+            b.hand[0] = {3.0f, -6.2f, 1.3f};
+            b.hand[1] = {2.8f, 6.3f, 1.2f};
+            b.none = true;
+            b.bloat = 1.5f;
+            b.bareheaded = true;
+            break;
+        }
         case Pose::Crew:
         default: {
             kneel_legs(b);
@@ -866,8 +899,8 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
         const float dp = fig.depth(b.knee[s]);
         parts.push_back({dp, [&, s, dp] {
                              fig.begin(dim(dp));
-                             fig.capsule(b.hip[s], b.knee[s], 0.98f, 0.8f, look.cloth);
-                             fig.capsule(b.knee[s], b.foot[s] + V3{0.0f, 0.0f, 1.2f}, 0.78f, 0.7f, look.cloth);
+                             fig.capsule(b.hip[s], b.knee[s], 0.98f * b.bloat, 0.8f * b.bloat, look.cloth);
+                             fig.capsule(b.knee[s], b.foot[s] + V3{0.0f, 0.0f, 1.2f}, 0.78f * b.bloat, 0.7f * b.bloat, look.cloth);
                              const V3 toe = b.foot[s] + unit(V3{1.0f, 0.0f, 0.0f}) * 1.5f;
                              fig.capsule(b.foot[s] + V3{-0.2f, 0.0f, 1.4f}, b.foot[s] + V3{0.0f, 0.0f, 0.3f}, 0.82f, 0.82f, look.boots);
                              fig.capsule(b.foot[s] + V3{-0.4f, 0.0f, 0.3f}, V3{toe.f, toe.l, 0.35f}, 0.82f, 0.72f, look.boots);
@@ -887,14 +920,14 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     const bool vest = kit != Kit::Rear;
     parts.push_back({middle, [&] {
                          fig.begin();
-                         fig.capsule(b.pelvis, b.chest, 1.45f, 2.05f, look.cloth);
+                         fig.capsule(b.pelvis, b.chest, 1.45f * b.bloat, 2.05f * b.bloat, look.cloth);
                          fig.end();
                      }});
     if (vest) {
         parts.push_back({middle + 0.01f, [&] {
                              fig.begin();
                              const float w = kit == Kit::Assault ? 2.2f : 2.05f;
-                             fig.capsule(mix(b.pelvis, b.chest, 0.34f), mix(b.pelvis, b.chest, 0.96f), w - 0.1f, w + 0.1f, look.vest);
+                             fig.capsule(mix(b.pelvis, b.chest, 0.34f), mix(b.pelvis, b.chest, 0.96f), (w - 0.1f) * b.bloat, (w + 0.1f) * b.bloat, look.vest);
                              fig.end();
                          }});
         const V3 pouch = mix(b.pelvis, b.chest, 0.44f) + front * 1.95f;
@@ -966,8 +999,8 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
         const float dp = fig.depth(elbow);
         parts.push_back({dp, [&, s, elbow, dp] {
                              fig.begin(dim(dp));
-                             fig.capsule(b.shoulder[s], elbow, 0.86f, 0.74f, look.cloth);
-                             fig.capsule(elbow, b.hand[s], 0.72f, 0.64f, look.cloth);
+                             fig.capsule(b.shoulder[s], elbow, 0.86f * b.bloat, 0.74f * b.bloat, look.cloth);
+                             fig.capsule(elbow, b.hand[s], 0.72f * b.bloat, 0.64f * b.bloat, look.cloth);
                              fig.capsule(b.shoulder[s], elbow, 0.95f, 0.84f, {look.team}, 0.32f, 0.5f);
                              fig.end();
                          }});
@@ -1066,16 +1099,19 @@ void draw_body(Figure& fig, Kit kit, const Body& b, const Look& look) {
     parts.push_back({dhead, [&] {
                          fig.begin();
                          fig.capsule(b.chest + V3{0.0f, 0.0f, 0.4f}, b.head + V3{0.0f, 0.0f, -1.2f}, 0.7f, 0.7f, look.skin);
-                         fig.ball(b.head, 1.55f, look.skin);
+                         fig.ball(b.head, 1.55f * (b.bareheaded ? 1.15f : 1.0f), look.skin);
                          fig.end();
                      }});
     const V3 eye = b.head + look_dir * 1.3f + V3{0.0f, 0.0f, 0.05f};
-    parts.push_back({fig.depth(eye), [&, eye] {
-                         fig.begin(1.0f, false);
-                         fig.dot(eye, {40, 30, 26, 255});
-                         fig.end();
-                     }});
+    if (!b.bareheaded) {
+        parts.push_back({fig.depth(eye), [&, eye] {
+                             fig.begin(1.0f, false);
+                             fig.dot(eye, {40, 30, 26, 255});
+                             fig.end();
+                         }});
+    }
     parts.push_back({dhead + 0.02f, [&] {
+                         if (b.bareheaded) return;
                          fig.begin();
                          if (kit == Kit::Sniper) {
                              fig.brim(b.head + V3{0.0f, 0.0f, 0.6f}, 2.8f, {118, 112, 76, 255});
