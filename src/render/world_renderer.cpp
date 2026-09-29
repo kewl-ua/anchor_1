@@ -1233,6 +1233,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
     // Bridge decks: along the bridge's tiles from bank to bank, its middle a
     // straight line through them, as wide as they lie either side of it,
     // level with the lowest bank beside it.
+    const std::vector<std::pair<engine::EntityId, iso::Deck>> decks_before = bridge_decks_;
     bridge_decks_.clear();
     for (const engine::Structure& s : world.structures()) {
         if (s.type != engine::StructureType::Bridge || s.tiles.empty()) continue;
@@ -1280,6 +1281,74 @@ void WorldRenderer::update(const engine::World& world, float dt) {
         std::vector<iso::Deck> decks;
         for (const auto& entry : bridge_decks_) decks.push_back(entry.second);
         iso::set_decks(std::move(decks));
+    }
+    // A bridge gone since: it comes down, one way or the other (out of sight,
+    // it's seen lying there after).
+    for (const auto& [id, deck] : decks_before) {
+        if (world.find_structure(id)) continue;
+        FallenBridge f;
+        f.deck = deck;
+        f.seed = tile_hash(static_cast<int>(id) * 7 + 3, static_cast<int>(id) * 13 + 5);
+        f.way = static_cast<int>((f.seed >> 11) & 1u);
+        const float length = deck.v1 - deck.v0;
+        auto unit01 = [](uint32_t h) { return static_cast<float>(h & 0xFFFFu) / 65536.0f; };
+        f.cut = f.way == 0 ? deck.v0 + length * (0.4f + 0.2f * unit01(f.seed >> 3)) : deck.v0 + length * (0.22f + 0.12f * unit01(f.seed >> 5));
+        f.cut2 = deck.v1 - length * (0.22f + 0.12f * unit01(f.seed >> 9));
+        const float v = (deck.v0 + deck.v1) * 0.5f;
+        const float u = deck.middle(v);
+        const Vector2 g{(u - v) * 0.5f, (u + v) * 0.5f};
+        if (!reveal_ && fog(world, static_cast<int>(g.x), static_cast<int>(g.y)) != kInView) {
+            f.age = 60.0f;
+            f.stage = 3;
+        }
+        fallen_bridges_.push_back(f);
+    }
+    for (FallenBridge& f : fallen_bridges_) {
+        f.age += dt;
+        auto ground_on = [&](float v, float across) {
+            const float u = f.deck.middle(v) + across * f.deck.half;
+            return Vector2{(u - v) * 0.5f, (u + v) * 0.5f};
+        };
+        if (f.stage == 0) {  // it breaks: dust out of the breaks, bits of concrete falling
+            f.stage = 1;
+            for (const float v : {f.cut, f.way == 1 ? f.cut2 : f.cut}) {
+                for (int i = 0; i < 14; ++i) {
+                    Particle p{};
+                    p.kind = i % 3 == 0 ? Particle::Kind::Clod : Particle::Kind::Smoke;
+                    p.ground = ground_on(v + (fx_random() - 0.5f) * 0.6f, fx_random() * 2.0f - 1.0f);
+                    p.z = f.deck.height * iso::kElevationStep + 4.0f;
+                    const float a = fx_random() * 6.2831853f;
+                    p.vel = {std::cos(a) * 0.4f, std::sin(a) * 0.4f};
+                    p.vz = p.kind == Particle::Kind::Clod ? 30.0f + 40.0f * fx_random() : 8.0f + 10.0f * fx_random();
+                    p.life = p.kind == Particle::Kind::Clod ? 1.2f : 3.5f + 2.0f * fx_random();
+                    p.size = p.kind == Particle::Kind::Clod ? 1.5f + fx_random() : 4.0f + 3.0f * fx_random();
+                    p.grow = p.kind == Particle::Kind::Clod ? 0.0f : 5.0f;
+                    p.color = p.kind == Particle::Kind::Clod ? Color{150, 146, 138, 255} : Color{176, 170, 158, 190};
+                    particles_.push_back(p);
+                }
+            }
+        }
+        if (f.stage == 1 && f.age > (f.way == 0 ? 0.85f : 0.55f)) {  // into the river: spray
+            f.stage = 2;
+            const int spots = f.way == 0 ? 1 : 3;
+            for (int k = 0; k < spots; ++k) {
+                const float v = f.way == 0 ? f.cut : f.cut + (f.cut2 - f.cut) * (0.2f + 0.3f * static_cast<float>(k));
+                for (int i = 0; i < 24; ++i) {
+                    Particle p{};
+                    p.kind = Particle::Kind::Spray;
+                    p.ground = ground_on(v + (fx_random() - 0.5f) * 0.8f, fx_random() * 2.0f - 1.0f);
+                    p.z = 1.0f;
+                    const float a = fx_random() * 6.2831853f;
+                    const float speed = 0.3f + 0.9f * fx_random();
+                    p.vel = {std::cos(a) * speed, std::sin(a) * speed};
+                    p.vz = 60.0f + 90.0f * fx_random();
+                    p.life = 1.4f + fx_random();
+                    p.size = 1.5f + 1.5f * fx_random();
+                    p.color = {222, 232, 236, 255};
+                    particles_.push_back(p);
+                }
+            }
+        }
     }
 
     // Craters: when each appeared, so fresh ones smoke and look raw.
@@ -9314,6 +9383,7 @@ void WorldRenderer::draw_terrain(const engine::World& world, Rectangle view) con
     }
     g_light = 1.0f;
     draw_bridges(world);
+    draw_fallen_bridges(world);
     draw_spoil_gullies(world, view);
 }
 
@@ -9327,6 +9397,166 @@ void ground_blob(const engine::TileMap& map, Vector2 c, float rx, float ry, Vect
 // hit; along its near side a thick beam whose foot follows the ground, so at
 // both ends it runs into the bank; the piers standing in the river, foam
 // round their feet; its shadow on the water.
+// A bridge brought down. Folded in two: both halves still hanging off the
+// banks, sloping down into the river where they broke, the water round the
+// break foaming. Or its middle gone: two stumps standing out from the banks,
+// their ends broken off ragged, the rods sticking out; what fell lies in the
+// river in slabs, one end up, the piers under it broken off at the water.
+void WorldRenderer::draw_fallen_bridges(const engine::World& world) const {
+    const engine::TileMap& map = world.map();
+    for (const FallenBridge& f : fallen_bridges_) {
+        const iso::Deck& d = f.deck;
+        const float vm = (d.v0 + d.v1) * 0.5f;
+        const Vector2 gm{(d.middle(vm) - vm) * 0.5f, (d.middle(vm) + vm) * 0.5f};
+        const int state = fog(world, static_cast<int>(gm.x), static_cast<int>(gm.y));
+        if (state == kUnexplored) continue;
+        g_light = state == kInView ? 1.0f : kFogLight;
+        auto rnd = [&](int i) { return hash_unit(tile_hash(static_cast<int>(f.seed >> 6) + i * 19, i * 7 + 11)); };
+        auto ground_of = [](float u, float v) { return Vector2{(u - v) * 0.5f, (u + v) * 0.5f}; };
+        auto water_y = [&](float across, float v) {  // the river's (or the bank's) surface there, on the screen
+            const Vector2 g = ground_of(d.middle(v) + across * d.half, v);
+            const int tx = static_cast<int>(std::floor(g.x));
+            const int ty = static_cast<int>(std::floor(g.y));
+            float hgt = 0.0f;
+            if (tx >= 0 && ty >= 0 && tx < cache_width_ && ty < cache_height_) {
+                const float fx = g.x - static_cast<float>(tx);
+                const float fy = g.y - static_cast<float>(ty);
+                const float top = corner(tx, ty) * (1 - fx) + corner(tx + 1, ty) * fx;
+                const float bottom = corner(tx, ty + 1) * (1 - fx) + corner(tx + 1, ty + 1) * fx;
+                hgt = top * (1 - fy) + bottom * fy;
+            }
+            // (A bridge over a river level with its banks is drawn level with the
+            // water: what sinks goes under a little way below its deck.)
+            return std::max(iso::project(g, hgt).y, iso::project(g, d.height).y + 12.0f);
+        };
+        // A point of the deck lifted (or dropped) `lift` pixels; under the water, not seen: at its surface.
+        auto at = [&](float across, float v, float lift) {
+            Vector2 p = iso::project(ground_of(d.middle(v) + across * d.half, v), d.height);
+            p.y = std::min(p.y - lift, water_y(across, v) + 1.0f);
+            return p;
+        };
+        auto wet = [&](float across, float v, float lift) {  // at the water's edge (or under)
+            return iso::project(ground_of(d.middle(v) + across * d.half, v), d.height).y - lift >= water_y(across, v) - 0.5f;
+        };
+        constexpr float kBeam = 11.0f;
+        constexpr float kParapet = 5.0f;
+        const Color concrete{168, 164, 154, 255};
+        const Color road = theme::terrain_color(engine::Terrain::Road);
+        // A piece of the deck from va to vb, dropped at v by lift(v): its beam, its top, its parapets.
+        auto piece = [&](float va, float vb, auto lift) {
+            constexpr int kSteps = 16;
+            auto v_at = [&](int k) { return va + (vb - va) * static_cast<float>(k) / kSteps; };
+            for (int k = 0; k < kSteps; ++k) {  // the beam along its near side
+                const float a = v_at(k);
+                const float b = v_at(k + 1);
+                if (wet(1.0f, a, lift(a)) && wet(1.0f, b, lift(b))) continue;  // (under the water)
+                const Vector2 ta = at(1.0f, a, lift(a));
+                const Vector2 tb = at(1.0f, b, lift(b));
+                const Vector2 ba = at(1.0f, a, lift(a) - kBeam);
+                const Vector2 bb = at(1.0f, b, lift(b) - kBeam);
+                if (ba.y > ta.y + 0.5f || bb.y > tb.y + 0.5f) fill_quad(ta, tb, bb, ba, shade(concrete, 0.66f));
+            }
+            set_grain(grain_of(engine::Terrain::Road));
+            for (int k = 0; k < kSteps; ++k) {  // its top, as far as it's out of the water
+                const float a = v_at(k);
+                const float b = v_at(k + 1);
+                if (wet(-1.0f, a, lift(a)) && wet(-1.0f, b, lift(b)) && wet(1.0f, a, lift(a)) && wet(1.0f, b, lift(b))) continue;
+                fill_quad(at(-1.0f, a, lift(a)), at(-1.0f, b, lift(b)), at(1.0f, b, lift(b)), at(1.0f, a, lift(a)), shade(road, 0.86f));
+            }
+            for (float v = va + 0.5f; v < vb - 0.2f; v += 0.5f) {
+                if (!wet(0.0f, v, lift(v))) DrawLineV(at(-0.85f, v, lift(v)), at(0.85f, v, lift(v)), lit({104, 104, 102, 255}));
+            }
+            set_grain(kObjectGrain);
+            for (const float across : {-1.0f, 1.0f}) {  // the parapets
+                for (int k = 0; k < kSteps; ++k) {
+                    const float a = v_at(k);
+                    const float b = v_at(k + 1);
+                    if (wet(across, a, lift(a) + kParapet) && wet(across, b, lift(b) + kParapet)) continue;
+                    const float kk = across < 0.0f ? 0.9f : 0.76f;
+                    fill_quad(at(across, a, lift(a)), at(across, b, lift(b)), at(across, b, lift(b) + kParapet), at(across, a, lift(a) + kParapet),
+                              shade(concrete, kk));
+                    DrawLineV(at(across, a, lift(a) + kParapet), at(across, b, lift(b) + kParapet), lit(shade(concrete, 1.1f)));
+                }
+            }
+            // Foam where it goes into the water.
+            for (int k = 0; k < kSteps; ++k) {
+                const float a = v_at(k);
+                const float b = v_at(k + 1);
+                if (wet(0.0f, a, lift(a)) != wet(0.0f, b, lift(b))) {
+                    const Vector2 p = at(0.0f, (a + b) * 0.5f, -100.0f);
+                    DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 8.0f, 2.5f, lit({214, 226, 228, 120}));
+                    DrawEllipseLines(static_cast<int>(p.x), static_cast<int>(p.y), 10.0f, 3.0f, lit({230, 238, 240, 150}));
+                }
+            }
+        };
+        // A broken end: ragged, the steel rods sticking out of it.
+        auto broken_end = [&](float v, float lift, float dir, int salt) {
+            for (int i = 0; i < 6; ++i) {
+                const float across = -0.8f + 0.32f * static_cast<float>(i);
+                const Vector2 p = at(across, v, lift - 1.0f - 3.0f * rnd(salt + i));
+                const Vector2 q = at(across + (rnd(salt + 10 + i) - 0.5f) * 0.2f, v + dir * (0.12f + 0.15f * rnd(salt + 20 + i)),
+                                     lift - 2.0f + 3.0f * rnd(salt + 30 + i));
+                DrawLineV(p, q, lit({70, 58, 50, 255}));
+            }
+            for (int i = 0; i < 4; ++i) disc(at(-0.7f + 0.45f * static_cast<float>(i), v, lift - kBeam * rnd(salt + 40 + i)), 1.4f, lit(shade(concrete, 0.7f)));
+        };
+        // How high the deck stands over the water at v (pixels).
+        auto freeboard = [&](float v) {
+            return water_y(0.0f, v) - iso::project(ground_of(d.middle(v), v), d.height).y;
+        };
+        if (f.way == 0) {
+            // Folded in two: each half hinged at its bank, its broken end down in the river.
+            const float t = std::min(1.0f, f.age / 0.95f);
+            const float down = (freeboard(f.cut) + 6.0f) * t * t;  // (its broken ends just under)
+            const float gap = 0.06f;
+            piece(d.v0, f.cut - gap, [&](float v) { return -down * (v - d.v0) / std::max(0.01f, f.cut - d.v0); });
+            piece(f.cut + gap, d.v1, [&](float v) { return -down * (d.v1 - v) / std::max(0.01f, d.v1 - f.cut); });
+            if (t >= 1.0f) {
+                for (int i = 0; i < 7; ++i) {  // bits of it in the water by the break
+                    const Vector2 p = at(-0.9f + 1.8f * rnd(50 + i), f.cut + (rnd(60 + i) - 0.5f) * 0.9f, -100.0f);
+                    DrawEllipse(static_cast<int>(p.x), static_cast<int>(p.y), 2.5f + 2.0f * rnd(70 + i), 1.2f + rnd(80 + i), lit(shade(concrete, 0.6f + 0.3f * rnd(90 + i))));
+                }
+            }
+        } else {
+            // Its middle down, two stumps left.
+            piece(d.v0, f.cut, [](float) { return 0.0f; });
+            piece(f.cut2, d.v1, [](float) { return 0.0f; });
+            broken_end(f.cut, 0.0f, 1.0f, 100);
+            broken_end(f.cut2, 0.0f, -1.0f, 200);
+            const float t = std::min(1.0f, f.age / 0.6f);
+            const float span = f.cut2 - f.cut;
+            if (t < 1.0f) {  // falling, whole, a little askew
+                piece(f.cut + 0.08f, f.cut2 - 0.08f, [&](float v) { return -(freeboard(v) + kBeam + 12.0f) * t * t - 6.0f * t * (v - f.cut) / span; });
+            } else {  // in the river: three slabs, each with one end up out of the water, the other under it
+                for (int k = 0; k < 3; ++k) {
+                    const float a = f.cut + span * (static_cast<float>(k) + 0.08f) / 3.0f;
+                    const float b = f.cut + span * (static_cast<float>(k) + 0.92f) / 3.0f;
+                    const bool up_front = rnd(300 + k) < 0.5f;
+                    const float stick = 5.0f + 6.0f * rnd(310 + k);
+                    piece(a, b, [&](float v) {
+                        const float w = (v - a) / std::max(0.01f, b - a);
+                        return -freeboard(v) - 8.0f + (stick + 8.0f) * (up_front ? 1.0f - w : w);
+                    });
+                }
+            }
+            // The piers under the middle, broken off above the water.
+            const int spans = std::max(2, static_cast<int>((d.v1 - d.v0) / 1.1f));
+            for (int k = 1; k < spans; ++k) {
+                const float v = d.v0 + (d.v1 - d.v0) * static_cast<float>(k) / static_cast<float>(spans);
+                if (v <= f.cut + 0.1f || v >= f.cut2 - 0.1f) continue;
+                const Vector2 foot = at(1.0f, v, -100.0f);
+                const float top = foot.y - 5.0f - 5.0f * rnd(400 + k);
+                fill_quad({foot.x - 5.0f, top + 1.5f}, {foot.x + 5.0f, top}, {foot.x + 5.0f, foot.y}, {foot.x - 5.0f, foot.y}, shade(concrete, 0.55f));
+                fill_quad({foot.x - 5.0f, top + 1.5f}, {foot.x - 1.5f, top + 0.8f}, {foot.x - 1.5f, foot.y}, {foot.x - 5.0f, foot.y}, shade(concrete, 0.8f));
+                DrawEllipse(static_cast<int>(foot.x + 1.5f), static_cast<int>(foot.y), 9.0f, 2.6f, lit({214, 224, 226, 150}));
+            }
+        }
+        set_grain({});
+    }
+    (void)map;
+    g_light = 1.0f;
+}
+
 void WorldRenderer::draw_bridges(const engine::World& world) const {
     const engine::TileMap& map = world.map();
     for (const auto& [id, d] : bridge_decks_) {

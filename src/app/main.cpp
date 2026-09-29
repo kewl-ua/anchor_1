@@ -63,6 +63,8 @@ struct Options {
 // them go (their fuel flaring, their rounds going up).
 std::vector<engine::EntityId> g_doomed;
 engine::Tick g_doom_tick = 0;
+// Structures a scene brings down then (a bridge blown).
+std::vector<engine::EntityId> g_doomed_structures;
 
 // A flat open field round a point, to see what stands on it against.
 void flat_field(engine::World& w, engine::FixedVec2 center, int radius) {
@@ -560,6 +562,24 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const engine::EntityId gun = w.spawn_unit(me, UnitTypeId::Tank, ahead(7.0f, 0.0f));
         game.submit({.type = engine::CommandType::AttackGround, .units = {gun}, .target = ahead(15.0f, -1.0f)});
         return render::to_vector2(ahead(11.0f, 1.5f));
+    }
+
+    if (options.scene.starts_with("bridge_down") && options.mode == Options::Mode::Offline) {
+        // Offline: the bridge nearest the base (`bridge_down2`: the next one)
+        // blown a second in, the camera on it: it comes down, one way or the other.
+        const Vector2 b = render::to_vector2(engine::demo_base_position(world.map().width(), me));
+        std::vector<std::pair<float, const engine::Structure*>> bridges;
+        for (const engine::Structure& st : world.structures()) {
+            if (st.type != engine::StructureType::Bridge) continue;
+            const Vector2 c = render::to_vector2(st.center);
+            bridges.push_back({std::hypot(c.x - b.x, c.y - b.y), &st});
+        }
+        std::sort(bridges.begin(), bridges.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+        const size_t pick = options.scene == "bridge_down2" ? 1 : 0;
+        if (bridges.size() <= pick) return std::nullopt;
+        g_doomed_structures = {bridges[pick].second->id};
+        g_doom_tick = 20;
+        return render::to_vector2(bridges[pick].second->center);
     }
 
     if (options.scene.starts_with("trenchline") && options.mode == Options::Mode::Offline) {
@@ -2059,6 +2079,12 @@ int main(int argc, char** argv) {
                     if (engine::Unit* u = game->world_for_setup().unit_for_setup(id)) u->hp = 0;
                 }
                 g_doomed.clear();
+            }
+            if (smoke && !g_doomed_structures.empty() && game->world().tick() >= g_doom_tick) {  // the scene's structures brought down now
+                for (const engine::EntityId id : g_doomed_structures) {
+                    if (engine::Structure* st = game->world_for_setup().structure_for_setup(id)) st->hp = 0;
+                }
+                g_doomed_structures.clear();
             }
             if (smoke && (options->scene == "build" || options->scene == "logistics" || options->scene == "rally" ||
                           options->scene == "rear" || options->scene.starts_with("armory"))) {

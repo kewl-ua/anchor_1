@@ -452,6 +452,19 @@ private:
     }
     // Each bridge's deck, from its tiles (see iso::Deck).
     std::vector<std::pair<engine::EntityId, iso::Deck>> bridge_decks_;
+    // A bridge brought down, as it goes and as it lies after: folded in two
+    // into the river, or its middle dropped in pieces, two stumps left.
+    struct FallenBridge {
+        iso::Deck deck;
+        int way = 0;        // 0 folded in two, 1 two stumps and the middle down
+        float cut = 0.0f;   // along it (v): the fold; where the middle begins
+        float cut2 = 0.0f;  // where the middle ends
+        float age = 0.0f;
+        uint32_t seed = 0;
+        int stage = 0;  // dust, splash done
+    };
+    std::vector<FallenBridge> fallen_bridges_;
+    void draw_fallen_bridges(const engine::World& world) const;
     void draw_bridges(const engine::World& world) const;
     int cache_width_ = 0;
     int cache_height_ = 0;
