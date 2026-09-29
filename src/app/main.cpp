@@ -564,6 +564,54 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         return render::to_vector2(ahead(11.0f, 1.5f));
     }
 
+    if (options.scene.starts_with("mines") && options.mode == Options::Mode::Offline) {
+        // Offline: the axes' mines out in the field ahead of the base, a row
+        // of each: ours (TM-62M, M14, Claymores) and the enemy's our sapper
+        // has found (TM-62M, PMN-2, MON-50s); `mines_blast`: an enemy's man
+        // walks into a Claymore's tripwire.
+        const engine::FixedVec2 base = engine::demo_base_position(world.map().width(), me);
+        const Vector2 b = render::to_vector2(base);
+        const float fwd = me == 0 ? 1.0f : -1.0f;
+        engine::World& w = game.world_for_setup();
+        auto ahead = [&](float d, float side) {
+            d += 24.0f;  // (out of sight of the base)
+            return render::to_fixed_vec2({b.x + (d + side) * fwd, b.y - (d - side) * fwd});
+        };
+        flat_field(w, ahead(0.0f, 0.0f), 7);
+        const engine::PlayerId enemy = 1 - me;
+        auto facing = [](float x, float y) {
+            const float l = std::hypot(x, y);
+            return render::to_fixed_vec2({x / l, y / l});
+        };
+        using engine::MineKind;
+        const std::array<MineKind, 6> row = {MineKind::AntiTank, MineKind::AntiTank, MineKind::AntiPersonnel,
+                                             MineKind::AntiPersonnel, MineKind::Directional, MineKind::Directional};
+        for (int r = 0; r < 2; ++r) {
+            const engine::PlayerId owner = r == 0 ? me : enemy;
+            for (size_t i = 0; i < row.size(); ++i) {
+                const engine::TilePos t = engine::tile_of(ahead(static_cast<float>(r) * 2.0f - 1.0f, static_cast<float>(i) * 0.8f - 2.6f));
+                // (the directional ones: one to the enemy, one across the way)
+                const engine::FixedVec2 f = i == 4 ? facing(fwd * (r == 0 ? 1.0f : -1.0f), -fwd * (r == 0 ? 1.0f : -1.0f)) : facing(fwd, fwd);
+                w.mine_for_setup(owner, t, row[i], row[i] == MineKind::Directional ? f : engine::FixedVec2{},
+                                 static_cast<uint8_t>(r == 0 ? 0 : 1u << me));  // (the enemy's found)
+            }
+        }
+        game.select_units({w.spawn_unit(me, engine::UnitTypeId::Sapper, ahead(-2.2f, -1.8f))});  // (his skills in the grid)
+        if (options.scene == "mines_blast") {
+            // Ours facing him: he comes at it from out in front.
+            const engine::TilePos t = engine::tile_of(ahead(-1.0f, 0.6f));
+            const engine::FixedVec2 from = ahead(2.2f, 0.6f);
+            engine::Unit* u = w.unit_for_setup(w.spawn_unit(enemy, engine::UnitTypeId::Rifleman, from));
+            u->order = engine::Order::Move;
+            u->order_point = engine::tile_center(t);
+            u->order_goal = t;
+            u->order_path.reset();
+            u->rounds = 0;
+            u->hp = 100000;  // (not brought down on the way by the base's guns)
+        }
+        return render::to_vector2(ahead(0.0f, 0.0f));
+    }
+
     if (options.scene.starts_with("engineers") && options.mode == Options::Mode::Offline) {
         // Offline: two pontoon parks bridge the river nearest the base, off
         // to the side of its bridge; a UR-77 fires a line charge over the
@@ -630,7 +678,7 @@ std::optional<Vector2> start_smoke_scene(app::Game& game, const Options& options
         const engine::PlayerId enemy = 1 - me;
         for (int i = 0; i < 12; ++i) {
             const engine::TilePos t = engine::tile_of(ahead(5.0f + static_cast<float>(i % 4) * 1.3f, -2.0f + static_cast<float>(i / 4) * 1.6f));
-            w.mine_for_setup(enemy, t, i % 3 == 0);
+            w.mine_for_setup(enemy, t, i % 3 == 0 ? engine::MineKind::AntiTank : engine::MineKind::AntiPersonnel);
         }
         for (const engine::TilePos& t : engine::trench_line(engine::tile_of(ahead(8.0f, -3.0f)), engine::tile_of(ahead(8.0f, 3.0f)))) {
             w.place_structure(engine::StructureType::Wire, enemy, t, 1, 1);

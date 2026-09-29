@@ -854,9 +854,9 @@ constexpr UnitTypeDef kUnitTypes[] = {
         .engineer = true,
         .rounds_capacity = 60,
         .rounds_per_supply = 30,
-        .abilities = {AbilityId::LayApMine, AbilityId::LayAtMine, AbilityId::ClearMines, AbilityId::LayWire,
-                      AbilityId::PlaceHedgehogs, AbilityId::BuildPillbox, AbilityId::Demolish},
-        .ability_count = 7,
+        .abilities = {AbilityId::LayApMine, AbilityId::LayAtMine, AbilityId::LayDirectionalMine, AbilityId::ClearMines,
+                      AbilityId::LayWire, AbilityId::PlaceHedgehogs, AbilityId::BuildPillbox, AbilityId::Demolish},
+        .ability_count = 8,
     },
     kGvozdika,
     {
@@ -1138,9 +1138,9 @@ constexpr AbilityDef kAbilities[] = {
                 .range = tiles(60), .reload = seconds(4), .projectile_speed = tiles_per_second(12),
                 .splash_radius = tiles(1), .accuracy = 100, .miss_spread = tiles(0), .indirect = true,
                 .min_range = tiles(3), .lethal = true, .wall_damage = kTankWallDamage}},
-    {.name = "Anti-personnel mine (5 ammunition)", .label = "AP mine", .target = AbilityTarget::Point,
+    {.name = "Anti-personnel mine, a PMN-2 / an M14 (5 ammunition)", .label = "AP mine", .target = AbilityTarget::Point,
      .range = tiles(0), .cooldown = 0},
-    {.name = "Anti-tank mine (10 ammunition)", .label = "AT mine", .target = AbilityTarget::Point,
+    {.name = "Anti-tank mine, a TM-62M (10 ammunition)", .label = "AT mine", .target = AbilityTarget::Point,
      .range = tiles(0), .cooldown = 0},
     {.name = "Clear the enemy mines found around a point", .label = "Clear", .target = AbilityTarget::Point,
      .range = tiles(0), .cooldown = 0},
@@ -1177,6 +1177,10 @@ constexpr AbilityDef kAbilities[] = {
     {.name = "Pontoon bridge: straight across the river from the nearer bank, a section a tile (3 s and 15 materials each; "
              "more pontoon parks, faster)",
      .label = "Pontoon", .target = AbilityTarget::Point, .range = tiles(0), .cooldown = 0},
+    // A MON-50, a Claymore: on its legs where the sapper stands.
+    {.name = "Directional mine here, a MON-50 / a Claymore, aimed a way (8 ammunition): an enemy's man at its tripwire, 2 tiles out, sets it off; "
+             "its fragments fly 4 tiles out across a 54-degree sector, into everyone there (a trench's walls stop them)",
+     .label = "Dir. mine", .target = AbilityTarget::Direction, .range = tiles(0), .cooldown = 0},
 };
 static_assert(std::size(kAbilities) == kAbilityCount);
 

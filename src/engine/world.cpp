@@ -2001,8 +2001,9 @@ uint64_t World::checksum() const {
         mix(m.owner);
         mix(static_cast<uint32_t>(m.tile.x));
         mix(static_cast<uint32_t>(m.tile.y));
-        mix(m.anti_tank ? 1 : 0);
+        mix(static_cast<uint32_t>(m.kind));
         mix(m.found_by);
+        mix_vec(m.facing);
     }
     mix(next_mine_id_);
     for (uint32_t bits : upgrades_) mix(bits);

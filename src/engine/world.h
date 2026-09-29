@@ -268,12 +268,21 @@ inline constexpr Fixed kMediumBurst = Fixed::from_int(1);
 inline constexpr int32_t kHeavyCraterPercent = 60;
 inline constexpr int32_t kMediumCraterPercent = 25;
 
-// Engineering. A mine covers its tile: the first enemy of the right kind to
-// come onto it (infantry for an AP mine, vehicles for an AT one) sets it
-// off. The enemy doesn't see it until one of his sappers comes this close.
+// Engineering. A pressure mine covers its tile: the first enemy of the
+// right kind to come onto it (infantry for an AP mine, vehicles for an AT
+// one) sets it off. A directional one (a MON-50, a Claymore) stands on its
+// legs facing a way, a tripwire out in front: an enemy's man into its
+// sector that close trips it, and its fragments fly out across the sector
+// into everyone there, ours too (a trench's walls stop them). The enemy
+// doesn't see a mine until one of his sappers comes this close.
 inline constexpr Fixed kMineDetection = Fixed::from_ratio(5, 2);
 inline constexpr Stock kApMineCost = {0, 0, 0, 5, 0};
 inline constexpr Stock kAtMineCost = {0, 0, 0, 10, 0};
+inline constexpr Stock kDirectionalMineCost = {0, 0, 0, 8, 0};
+inline constexpr Fixed kTripwireReach = Fixed::from_int(2);
+inline constexpr Fixed kDirectionalReach = Fixed::from_int(4);
+// Its sector, a MON-50's 54 degrees: cos^2 of the half angle, in fifths (cos^2 26.6 = 4/5).
+inline constexpr int32_t kDirectionalSectorFifths = 4;
 inline constexpr Tick kMineWork = 4 * kTicksPerSecond;
 inline constexpr Tick kClearWork = 5 * kTicksPerSecond;
 inline constexpr Fixed kClearRadius = Fixed::from_ratio(3, 2);
@@ -476,13 +485,23 @@ struct Fire {
     PlayerId owner = 0;  // whose shell it was
 };
 
+// What a mine is (see kMineDetection). Its model is the axis's own: the
+// renderer's.
+enum class MineKind : uint8_t {
+    AntiPersonnel,  // pressure: PMN-2, M14
+    AntiTank,       // pressure: TM-62M
+    Directional,    // on its legs, a tripwire: MON-50, M18A1 Claymore
+};
+
 // A mine on a tile.
 struct Mine {
     uint32_t id = 0;
     PlayerId owner = 0;
     TilePos tile{};
-    bool anti_tank = false;
+    MineKind kind = MineKind::AntiPersonnel;
     uint8_t found_by = 0;  // bit per player that knows where it is
+    FixedVec2 facing{};    // a directional one's: the way it faces (a unit vector)
+    bool anti_tank() const { return kind == MineKind::AntiTank; }
 };
 
 // A demolition charge ticking against a structure.
@@ -663,6 +682,7 @@ struct Impact {
     EntityId blown = 0;  // a tank whose rounds went up: its turret thrown off
     Shell shell = Shell::He;  // what shell it was (how its smoke looks)
     Fixed height{};  // up in the sky: how high over the ground, levels
+    FixedVec2 toward{};  // a directional mine's: the way its fragments flew
 };
 
 // An aircraft brought down in the air: it falls on ahead from where it was
@@ -722,7 +742,9 @@ public:
     // Setup and tests: direct access to a unit (to hand it a nearly empty tank...).
     Unit* unit_for_setup(EntityId id) { return find_unit_mut(id); }
     Structure* structure_for_setup(EntityId id) { return find_structure_mut(id); }
-    void mine_for_setup(PlayerId owner, TilePos t, bool anti_tank) { mines_.push_back({next_mine_id_++, owner, t, anti_tank, 0}); }
+    void mine_for_setup(PlayerId owner, TilePos t, MineKind kind, FixedVec2 facing = {}, uint8_t found_by = 0) {
+        mines_.push_back({next_mine_id_++, owner, t, kind, found_by, facing});
+    }
     std::vector<Fire>& fires_for_setup() { return fires_; }
 
     // Houses and bridges come from the map's House/Bridge tiles; player
@@ -1039,7 +1061,8 @@ private:
     void burst_into_flames(FixedVec2 at, PlayerId owner, const WeaponDef& fire, EntityId blown = 0);
 
     // Engineering (world_engineering.cpp).
-    void lay_mine(Unit& u, bool anti_tank);
+    void lay_mine(Unit& u, MineKind kind);
+    void set_off_directional(const Mine& m);
     void clear_mines(Unit& u);
     void put_up_obstacles(Unit& u, StructureType type);
     void start_pillbox(Unit& u);

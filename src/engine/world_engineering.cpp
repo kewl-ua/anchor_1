@@ -19,6 +19,9 @@ constexpr WeaponDef kApMine{.name = "Anti-personnel mine", .damage = 50, .damage
 constexpr WeaponDef kAtMine{.name = "Anti-tank mine", .damage = 160, .damage_type = DamageType::AntiTank,
                             .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{}, .splash_radius = Fixed{},
                             .accuracy = 100, .miss_spread = Fixed{}};
+constexpr WeaponDef kDirectionalMine{.name = "Directional mine", .damage = 60, .damage_type = DamageType::Explosive,
+                                     .range = kDirectionalReach, .reload = 0, .projectile_speed = Fixed{},
+                                     .splash_radius = Fixed{}, .accuracy = 100, .miss_spread = Fixed{}};
 constexpr WeaponDef kCharge{.name = "Demolition charge", .damage = 900, .damage_type = DamageType::AntiTank,
                             .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
                             .splash_radius = Fixed::from_ratio(3, 2), .accuracy = 100, .miss_spread = Fixed{}};
@@ -33,26 +36,58 @@ constexpr WeaponDef kLineChargeRip{.name = "Line charge", .damage = 800, .damage
                                    .range = Fixed{}, .reload = 0, .projectile_speed = Fixed{},
                                    .splash_radius = Fixed::from_int(1), .accuracy = 100, .miss_spread = Fixed{}};
 
+// Whether a point is in a directional mine's sector, no farther out than `reach`.
+bool in_sector(const Mine& m, FixedVec2 p, Fixed reach) {
+    const FixedVec2 d = p - tile_center(m.tile);
+    const uint64_t far = d.length_sq_raw();
+    if (far > square_raw(reach)) return false;
+    const Fixed along = d.x * m.facing.x + d.y * m.facing.y;
+    if (along.raw <= 0) return false;
+    const auto a = static_cast<uint64_t>(along.raw);
+    return a * a * 5 >= far * static_cast<uint64_t>(kDirectionalSectorFifths);
+}
+
 }  // namespace
 
-// Walk to the tile, work on it, pay from the stock, and the mine is in.
-void World::lay_mine(Unit& u, bool anti_tank) {
-    const TilePos t = map_.clamp_tile(tile_of(u.order_point));
+// A pressure mine: walk to the tile, work on it, pay from the stock, and
+// it's in. A directional one goes where he stands, facing the way he was
+// shown.
+void World::lay_mine(Unit& u, MineKind kind) {
+    const bool directional = kind == MineKind::Directional;
+    const FixedVec2 facing = u.order_point - u.pos;
+    const TilePos t = map_.clamp_tile(tile_of(directional ? u.pos : u.order_point));
     const bool taken = std::any_of(mines_.begin(), mines_.end(), [&](const Mine& m) { return m.tile == t; });
-    // Not in concrete: a mine needs earth to go into.
-    if (taken || !map_.passable(t, MoveClass::Foot) || map_.terrain(t) == Terrain::Road) return finish_ability(u);
-    if ((tile_center(t) - u.pos).length_sq_raw() > square_raw(kWorkReach)) {
+    // Not in concrete: a mine needs earth to go into (one on its legs stands on anything).
+    if (taken || !map_.passable(t, MoveClass::Foot) || (!directional && map_.terrain(t) == Terrain::Road) ||
+        (directional && facing.x.raw == 0 && facing.y.raw == 0)) {
+        return finish_ability(u);
+    }
+    if (!directional && (tile_center(t) - u.pos).length_sq_raw() > square_raw(kWorkReach)) {
         navigate(u, tile_center(t), u.order_path, t, false);
         return;
     }
+    if (directional) u.facing = facing;
     if (++u.work < kMineWork) return;
     Stock& stock = stock_[u.owner % kMaxPlayers];
-    const Stock& cost = anti_tank ? kAtMineCost : kApMineCost;
+    const Stock& cost = kind == MineKind::AntiTank ? kAtMineCost : directional ? kDirectionalMineCost : kApMineCost;
     if (can_afford(stock, cost)) {
         pay(stock, cost);
-        mines_.push_back({next_mine_id_++, u.owner, t, anti_tank, 0});
+        mines_.push_back({next_mine_id_++, u.owner, t, kind, 0, directional ? facing * (Fixed::from_int(1) / facing.length()) : FixedVec2{}});
     }
     finish_ability(u);
+}
+
+// A directional mine goes off: its fragments across its sector, into every
+// man there (a trench's walls stop them; armor shrugs them off).
+void World::set_off_directional(const Mine& m) {
+    const FixedVec2 at = tile_center(m.tile);
+    const int32_t percent = has_upgrade(m.owner, UpgradeId::HeavyCharges) ? kHeavyChargePercent : 100;
+    recent_impacts_.push_back({tick_, at, UnitTypeId::Sapper, Fixed::from_ratio(1, 3)});
+    recent_impacts_.back().toward = m.facing;
+    for (const Unit& u : units_) {
+        if (u.inside || u.airborne || u.hp <= 0 || unit_type(u.type).vehicle || !in_sector(m, u.pos, kDirectionalReach)) continue;
+        hurt(u, kDirectionalMine, {at, 0, true, false, percent});
+    }
 }
 
 // Lift the enemy mines we have found around the point, nearest first.
@@ -157,15 +192,26 @@ void World::plant_charge(Unit& u) {
 void World::update_mines() {
     std::vector<uint32_t> gone;
     for (const Mine& m : mines_) {
+        if (m.kind == MineKind::Directional) {  // a man of the enemy's at the tripwire
+            const bool tripped = std::any_of(units_.begin(), units_.end(), [&](const Unit& u) {
+                return u.owner != m.owner && !u.inside && !u.airborne && u.hp > 0 && !unit_type(u.type).vehicle &&
+                       in_sector(m, u.pos, kTripwireReach);
+            });
+            if (tripped) {
+                set_off_directional(m);
+                gone.push_back(m.id);
+            }
+            continue;
+        }
         for (const Unit& u : units_) {
             if (u.owner == m.owner || u.inside || u.airborne || u.hp <= 0) continue;
-            if (unit_type(u.type).vehicle != m.anti_tank || tile_of(u.pos) != m.tile) continue;
+            if (unit_type(u.type).vehicle != m.anti_tank() || tile_of(u.pos) != m.tile) continue;
             const FixedVec2 at = tile_center(m.tile);
-            const WeaponDef& blast = m.anti_tank ? kAtMine : kApMine;
+            const WeaponDef& blast = m.anti_tank() ? kAtMine : kApMine;
             const int32_t percent = has_upgrade(m.owner, UpgradeId::HeavyCharges) ? kHeavyChargePercent : 100;
-            recent_impacts_.push_back({tick_, at, u.type, m.anti_tank ? Fixed::from_int(1) : blast.splash_radius});
+            recent_impacts_.push_back({tick_, at, u.type, m.anti_tank() ? Fixed::from_int(1) : blast.splash_radius});
             hurt(u, blast, {at, 0, true, true, percent});
-            if (!m.anti_tank) {  // the fragments fly
+            if (!m.anti_tank()) {  // the fragments fly
                 for (const Unit& other : units_) {
                     if (other.id == u.id || other.inside || other.airborne || unit_type(other.type).vehicle) continue;
                     if ((other.pos - u.pos).length_sq_raw() <= square_raw(blast.splash_radius)) {

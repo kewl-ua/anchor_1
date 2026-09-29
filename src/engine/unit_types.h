@@ -161,6 +161,7 @@ enum class AbilityId : uint8_t {
     BuildPost,     // scout: an observation post where he stands, as the ground allows, watching a direction
     LineCharge,    // mine-clearing vehicle: a rocket drags a hose of explosive over a minefield; it goes off along it
     LayPontoon,    // pontoon park: a pontoon bridge straight across the river from the nearer bank
+    LayDirectionalMine,  // sapper: a directional mine where he stands, aimed a way, a tripwire out in front
     Count,
 };
 inline constexpr size_t kAbilityCount = static_cast<size_t>(AbilityId::Count);

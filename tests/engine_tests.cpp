@@ -4024,6 +4024,60 @@ void test_mines() {
     CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Ammo)] == 10 - kApMineCost[static_cast<size_t>(Resource::Ammo)]);
 }
 
+// A directional mine: where the sapper stands, facing the way he was shown,
+// 8 ammunition. Ours walking in front of it, the enemy's going by off to
+// its side and his armor leave it be; the enemy's man at its tripwire sets it off: every
+// man in its sector hurt, ours too, and nobody behind it, beyond its reach
+// or in armor.
+void test_directional_mine() {
+    Simulation sim(1, TileMap(40, 20));
+    World& w = sim.world_for_setup();
+    w.set_stock(0, {0, 0, 0, 20, 0});
+    const EntityId sapper = w.spawn_unit(0, UnitTypeId::Sapper, at_half(21, 21));
+    issue(sim, use_ability_at(0, {sapper}, AbilityId::LayDirectionalMine, at_half(41, 23)));
+    for (Tick i = 0; i < kMineWork + 10; ++i) sim.step();
+    CHECK(sim.world().mines().size() == 1);
+    const Mine laid = sim.world().mines().front();
+    CHECK(laid.kind == MineKind::Directional && (laid.tile == TilePos{10, 10}));
+    CHECK(laid.facing.x.raw > Fixed::from_ratio(9, 10).raw && laid.facing.y.raw > 0);
+    CHECK(sim.world().stock(0)[static_cast<size_t>(Resource::Ammo)] == 20 - kDirectionalMineCost[static_cast<size_t>(Resource::Ammo)]);
+    w.unit_for_setup(sapper)->hp = 0;
+    sim.step();
+
+    // Ours across its front, the enemy's by its side: nothing.
+    const EntityId ours = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(23, 17));
+    issue(sim, make_move(0, {ours}, 11, 13));
+    for (int i = 0; i < 300; ++i) sim.step();
+    w.unit_for_setup(ours)->hp = 0;
+    const EntityId by = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(13, 25));
+    issue(sim, make_move(1, {by}, 16, 12));
+    for (int i = 0; i < 400; ++i) sim.step();
+    w.unit_for_setup(by)->hp = 0;
+    const EntityId tank = w.spawn_unit(1, UnitTypeId::Tank, at_half(23, 13));  // (its tracks through the wire: a man's mine)
+    issue(sim, make_move(1, {tank}, 11, 15));
+    for (int i = 0; i < 400; ++i) sim.step();
+    CHECK(sim.world().find_unit(tank)->pos.y.raw > Fixed::from_int(13).raw);
+    w.unit_for_setup(tank)->hp = 0;
+    sim.step();
+    CHECK(sim.world().mines().size() == 1);
+
+    // The enemy's man at the tripwire: it goes off.
+    const EntityId in_front = w.spawn_unit(0, UnitTypeId::Rifleman, at_half(26, 22));   // ours, in the sector
+    const EntityId further = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(28, 20));    // 3.5 tiles out
+    const EntityId behind = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(17, 21));
+    const EntityId beyond = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(31, 21));     // 4.5 tiles out
+    const EntityId aside = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(23, 25));      // 2 tiles off to the side
+    const EntityId armor = w.spawn_unit(1, UnitTypeId::Tank, at_half(27, 21));
+    const EntityId tripper = w.spawn_unit(1, UnitTypeId::Rifleman, at_half(24, 21));    // 1.5 tiles out
+    sim.step();
+    CHECK(sim.world().mines().empty());
+    sim.step();  // (the damage dealt)
+    const int32_t full = unit_type(UnitTypeId::Rifleman).max_hp;
+    CHECK(hp_of(sim, tripper) < full && hp_of(sim, in_front) < full && hp_of(sim, further) < full);
+    CHECK(hp_of(sim, behind) == full && hp_of(sim, beyond) == full && hp_of(sim, aside) == full);
+    CHECK(hp_of(sim, armor) == unit_type(UnitTypeId::Tank).max_hp);
+}
+
 // The enemy doesn't know a mine is there until one of his sappers comes
 // close; then a sapper can lift it.
 void test_sappers_find_and_clear_mines() {
@@ -7016,6 +7070,7 @@ int main() {
     test_upgrade_effects();
     test_mines();
     test_sappers_find_and_clear_mines();
+    test_directional_mine();
     test_line_charge_clears_a_lane();
     test_pontoon_bridge();
     test_wire_and_hedgehogs();

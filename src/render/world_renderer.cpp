@@ -788,6 +788,59 @@ void WorldRenderer::spawn_sparks(Vector2 at, float z, int n, Color color, float 
     }
 }
 
+// A MON, a Claymore going off: a flash, its fragments out across its
+// sector striking the ground, the dust they kick up hanging along it.
+void WorldRenderer::spawn_fan(Vector2 at, Vector2 toward) {
+    const float l = std::hypot(toward.x, toward.y);
+    if (l <= 0.0f) return;
+    const float heading = std::atan2(toward.y, toward.x);
+    constexpr float kHalf = 0.47f;  // (its 54 degrees)
+    const float reach = to_float(engine::kDirectionalReach);
+    spawn_flash(at, 5.0f, 8.0f, {255, 236, 180, 255});
+    for (int i = 0; i < 30; ++i) {  // the fragments
+        const float a = heading + (fx_random() * 2.0f - 1.0f) * kHalf;
+        const float v = reach * (1.6f + 0.8f * fx_random());
+        Particle p{};
+        p.kind = Particle::Kind::Spark;
+        p.ground = at;
+        p.z = 4.0f;
+        p.vel = {std::cos(a) * v, std::sin(a) * v};
+        p.vz = 4.0f + 8.0f * fx_random();
+        p.life = 0.35f + 0.2f * fx_random();
+        p.size = 1.0f;
+        p.color = {255, 214, 140, 255};
+        particles_.push_back(p);
+    }
+    for (int i = 0; i < 18; ++i) {  // dust off the ground where they strike
+        const float a = heading + (fx_random() * 2.0f - 1.0f) * kHalf;
+        const float d = reach * (0.2f + 0.8f * std::sqrt(fx_random()));
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = {at.x + std::cos(a) * d, at.y + std::sin(a) * d};
+        p.z = 1.0f + 3.0f * fx_random();
+        p.vel = {std::cos(a) * 0.35f, std::sin(a) * 0.35f};
+        p.vz = 3.0f;
+        p.life = 1.2f + 1.0f * fx_random();
+        p.size = 2.0f + 1.5f * fx_random();
+        p.grow = 3.0f;
+        p.color = {150, 134, 104, 170};
+        particles_.push_back(p);
+    }
+    for (int i = 0; i < 6; ++i) {  // its own smoke, grey, where it stood
+        Particle p{};
+        p.kind = Particle::Kind::Smoke;
+        p.ground = {at.x + std::cos(heading) * 0.2f * fx_random(), at.y + std::sin(heading) * 0.2f * fx_random()};
+        p.z = 3.0f + 3.0f * fx_random();
+        p.vel = {std::cos(heading) * 0.5f + (fx_random() - 0.5f) * 0.2f, std::sin(heading) * 0.5f + (fx_random() - 0.5f) * 0.2f};
+        p.vz = 5.0f;
+        p.life = 1.6f + fx_random();
+        p.size = 2.5f + fx_random();
+        p.grow = 4.0f;
+        p.color = {120, 118, 110, 200};
+        particles_.push_back(p);
+    }
+}
+
 // Whoever fired, beside the smoke: the recoil of a vehicle's gun; an
 // instant hit striking sparks off the vehicle it hit; an autocannon's or a
 // machine gun's spent cases flying out of it.
@@ -1413,6 +1466,7 @@ void WorldRenderer::update(const engine::World& world, float dt) {
             }
             continue;
         }
+        if (impact.toward.x.raw != 0 || impact.toward.y.raw != 0) spawn_fan(to_vector2(impact.pos), to_vector2(impact.toward));
         blasts_.push_back({to_vector2(impact.pos), 0.0f, std::max(splash, 0.2f)});
         const bool fire = impact.shooter_type == engine::UnitTypeId::FuelTanker;  // a load going up: fire, not a shell's dust (drawn with the wreck)
         if (splash > 0.0f && !fire) spawn_burst(world, to_vector2(impact.pos), splash, static_cast<uint8_t>(burst_of(impact)));
@@ -8565,13 +8619,7 @@ void WorldRenderer::draw(const engine::World& world, const RtsCamera& camera, fl
     draw_remains(map);
 
     // Mines we know of: ours, and the enemy's our sappers found. Charges ticking.
-    for (const engine::Mine& m : world.mines()) {
-        if (!reveal_ && (!world.knows(viewer_, m) || fog(world, m.tile.x, m.tile.y) == kUnexplored)) continue;
-        const Vector2 p = on_terrain(map, to_vector2(engine::tile_center(m.tile)));
-        const float r = m.anti_tank ? 0.2f : 0.12f;
-        fill_ground_ellipse(p, r, m.anti_tank ? Color{90, 96, 60, 255} : Color{60, 62, 58, 255});
-        draw_ground_ellipse(p, r, m.owner == viewer_ ? theme::player_color(m.owner) : theme::kDanger);
-    }
+    draw_mines(world);
     for (const engine::Charge& c : world.charges()) {
         if (!reveal_ && c.owner != viewer_ && !in_view(world, to_vector2(c.pos))) continue;
         const Vector2 p = on_terrain(map, to_vector2(c.pos), 3.0f);
@@ -9559,6 +9607,80 @@ void ground_blob(const engine::TileMap& map, Vector2 c, float rx, float ry, Vect
 // break foaming. Or its middle gone: two stumps standing out from the banks,
 // their ends broken off ragged, the rods sticking out; what fell lies in the
 // river in slabs, one end up, the piers under it broken off at the water.
+// Mines we know of: ours, and the enemy's our sappers found (with the fog
+// lifted, all of them). Each the axis's own model, lying where the sapper
+// put it in its tile; a directional one on its legs in the tile's middle,
+// its tripwire out in front to a peg. By ours a stake with our colour on
+// it; by the enemy's found ones a sapper's red and white flag.
+void WorldRenderer::draw_mines(const engine::World& world) const {
+    const engine::TileMap& map = world.map();
+    set_grain({});
+    auto pixel_line = [](Vector2 a, Vector2 b, Color c) {
+        const int x0 = static_cast<int>(std::floor(a.x));
+        const int y0 = static_cast<int>(std::floor(a.y));
+        const int x1 = static_cast<int>(std::floor(b.x));
+        const int y1 = static_cast<int>(std::floor(b.y));
+        const int n = std::max(std::abs(x1 - x0), std::abs(y1 - y0));
+        for (int k = 0; k <= n; ++k) {
+            const float t = n == 0 ? 0.0f : static_cast<float>(k) / static_cast<float>(n);
+            DrawRectangle(static_cast<int>(std::lround(static_cast<float>(x0) + static_cast<float>(x1 - x0) * t)),
+                          static_cast<int>(std::lround(static_cast<float>(y0) + static_cast<float>(y1 - y0) * t)), 1, 1, c);
+        }
+    };
+    for (const engine::Mine& m : world.mines()) {
+        const bool known = world.knows(viewer_, m);
+        if (!reveal_ && (!known || fog(world, m.tile.x, m.tile.y) == kUnexplored)) continue;
+        const uint32_t seed = m.id * 2654435761u;
+        const mines::Model model = mines::model_of(m.kind, engine::axis_of(m.owner));
+        const bool directional = m.kind == engine::MineKind::Directional;
+        const Vector2 facing = to_vector2(m.facing);
+        const int dir = directional ? mines::dir_of(facing) : 0;
+        const int variant = static_cast<int>((seed >> 24) % 4u);
+        const uint32_t key = static_cast<uint32_t>(model) * 256u + static_cast<uint32_t>(dir) * 8u + static_cast<uint32_t>(variant);
+        auto it = mine_sprites_.find(key);
+        if (it == mine_sprites_.end()) {
+            mines::Sprite baked = mines::bake(model, dir, static_cast<uint32_t>(variant) * 7919u + 17u);
+            MineSprite sprite{LoadTextureFromImage(baked.img), baked.origin, baked.fuze};
+            SetTextureFilter(sprite.tex, TEXTURE_FILTER_POINT);
+            UnloadImage(baked.img);
+            it = mine_sprites_.emplace(key, sprite).first;
+        }
+        Vector2 ground = to_vector2(engine::tile_center(m.tile));
+        if (!directional) {  // (not laid on a grid)
+            ground.x += static_cast<float>((seed >> 4) & 0xFFu) / 255.0f * 0.36f - 0.18f;
+            ground.y += static_cast<float>((seed >> 12) & 0xFFu) / 255.0f * 0.36f - 0.18f;
+        }
+        const Vector2 p = on_terrain(map, ground);
+        const Vector2 at{std::round(p.x), std::round(p.y)};
+        if (directional && (known || m.owner == viewer_)) {
+            // The tripwire: off its fuze at a slant out in front, to a peg.
+            const float l = std::max(0.001f, std::hypot(facing.x, facing.y));
+            const Vector2 f{facing.x / l, facing.y / l};
+            const float slant = (seed & 1u) ? 0.38f : -0.38f;
+            const Vector2 out{f.x * std::cos(slant) - f.y * std::sin(slant), f.x * std::sin(slant) + f.y * std::cos(slant)};
+            const Vector2 peg = on_terrain(map, {ground.x + out.x * 1.6f, ground.y + out.y * 1.6f});
+            const Vector2 pin{std::round(peg.x), std::round(peg.y)};
+            pixel_line({at.x + it->second.fuze.x, at.y + it->second.fuze.y}, {pin.x, pin.y - 2.0f}, lit(Color{176, 174, 158, 140}));
+            DrawRectangle(static_cast<int>(pin.x), static_cast<int>(pin.y) - 3, 1, 4, lit(Color{96, 74, 50, 255}));
+        }
+        DrawTextureV(it->second.tex, {at.x - it->second.origin.x, at.y - it->second.origin.y}, lit(WHITE));
+        if (m.owner == viewer_ || known) {
+            // Its marker: a stake behind it, a scrap of cloth on top.
+            const int sx = static_cast<int>(at.x) - (directional ? 8 : 7);
+            const int sy = static_cast<int>(at.y) - 1;
+            DrawRectangle(sx, sy - 7, 1, 8, lit(Color{92, 70, 46, 255}));
+            if (m.owner == viewer_) {
+                DrawRectangle(sx + 1, sy - 7, 3, 2, lit(theme::player_color(m.owner)));
+            } else {
+                DrawRectangle(sx + 1, sy - 7, 3, 1, lit(Color{206, 40, 32, 255}));
+                DrawRectangle(sx + 1, sy - 6, 3, 1, lit(Color{236, 232, 222, 255}));
+            }
+            DrawRectangle(sx + 4, sy - 7, 1, 2, lit(Color{40, 34, 26, 255}));
+            DrawRectangle(sx + 1, sy - 5, 3, 1, lit(Color{40, 34, 26, 160}));
+        }
+    }
+}
+
 // A line charge: the rocket out over the minefield on its arc, the hose
 // paying out behind it; landed, the hose lies along the ground in its
 // segments, till it goes off.
@@ -10432,7 +10554,8 @@ std::pair<soldiers::Pose, int> WorldRenderer::soldier_pose_raw(const engine::Uni
                           u.order_ability == AbilityId::BuildParapet || u.order_ability == AbilityId::DigGunPit ||
                           u.order_ability == AbilityId::LayWire || u.order_ability == AbilityId::PlaceHedgehogs ||
                           u.order_ability == AbilityId::BuildPillbox || u.order_ability == AbilityId::LayApMine ||
-                          u.order_ability == AbilityId::LayAtMine || u.order_ability == AbilityId::ClearMines);
+                          u.order_ability == AbilityId::LayAtMine || u.order_ability == AbilityId::LayDirectionalMine ||
+                          u.order_ability == AbilityId::ClearMines);
     if ((u.type == UnitTypeId::Worker && u.order == Order::Build) || digging || u.order == Order::Fortify) {
         return {Pose::Work, static_cast<int>(t * 2.2f) % 2};
     }

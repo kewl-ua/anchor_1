@@ -15,6 +15,7 @@
 #include "render/camera.h"
 #include "render/iso.h"
 #include "render/soldiers.h"
+#include "render/mines.h"
 #include "render/works.h"
 
 namespace render {
@@ -228,8 +229,18 @@ private:
     void draw_services(const engine::World& world, float alpha) const;
     // Line charges: the rocket flying out, its hose dragged after it, lying there till it goes off.
     void draw_line_charges(const engine::World& world, float alpha) const;
+    // Mines we know of, each the axis's own model (see mines::Model), and their markers.
+    void draw_mines(const engine::World& world) const;
+    struct MineSprite {
+        Texture2D tex{};
+        Vector2 origin{};
+        Vector2 fuze{};
+    };
+    mutable std::unordered_map<uint32_t, MineSprite> mine_sprites_;
     void spawn_flash(Vector2 at, float z, float size, Color color);
     void spawn_sparks(Vector2 at, float z, int n, Color color, float speed);
+    // A directional mine going off at `at`: its fragments out across its sector the way of `toward`.
+    void spawn_fan(Vector2 at, Vector2 toward);
     void fired(const engine::World& world, const engine::Unit& u);
     void update_vehicles(const engine::World& world, float dt);
     uint32_t fx_rng_ = 0x2545F491u;

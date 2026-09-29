@@ -538,8 +538,11 @@ void World::update_ability(Unit& u) {
         }
 
         case AbilityId::LayApMine:
+            return lay_mine(u, MineKind::AntiPersonnel);
         case AbilityId::LayAtMine:
-            return lay_mine(u, u.order_ability == AbilityId::LayAtMine);
+            return lay_mine(u, MineKind::AntiTank);
+        case AbilityId::LayDirectionalMine:
+            return lay_mine(u, MineKind::Directional);
         case AbilityId::ClearMines:
             return clear_mines(u);
         case AbilityId::LayWire:

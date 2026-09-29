@@ -112,6 +112,7 @@ target_link_libraries(theme INTERFACE engine raylib)
 add_library(render STATIC
     src/render/camera.cpp
     src/render/iso.cpp
+    src/render/mines.cpp
     src/render/plants.cpp
     src/render/soldiers.cpp
     src/render/works.cpp
